@@ -222,7 +222,7 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     start_timestep_hook(**vars())
 
     while udiff[0] > max_error and inner_iter < num_iter:
-        print("iteration:", inner_iter, udiff[0], max_error, num_iter)
+        #print("iteration:", inner_iter, udiff[0], max_error, num_iter)
         inner_iter += 1
 
         t0 = OasisTimer("Tentative velocity")

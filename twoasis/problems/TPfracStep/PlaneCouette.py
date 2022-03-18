@@ -4,7 +4,6 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from ..TPfracStep import *
-from ..DrivenCavity import *
 import matplotlib.pyplot as plt
 
 #set_log_active(False)

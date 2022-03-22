@@ -11,6 +11,7 @@ iters_on_first_timestep = 10
 def setup(u_components, u, v, p, q, bcs, dt,
           scalar_components, V, Q, x_, p_, u_, A_cache, q_,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
+          angles, ds,
           velocity_update_solver, assemble_matrix, homogenize,
           GradFunction, PhiGradFunction, DivFunction, TPsource, **NS_namespace):
     """Preassemble matrices."""
@@ -45,6 +46,13 @@ def setup(u_components, u, v, p, q, bcs, dt,
 
     # Allocate phase field matrices
     fprime = potential_linear_derivative(phi, phi_1)
+    fwprime = wall_potential_linear_derivative(phi, phi_1)
+
+    Fpft = -sigma_bar / epsilon * fprime * eta * dx
+    #Fpft = fprime * eta * dx
+    for theta, mark in angles:
+        Fpft += sigma * math.cos(theta) * fwprime * eta * ds(mark)
+    apft, Lpft = lhs(Fpft), rhs(Fpft)
 
     #FM = assemble_matrix(phi * xi * dx + g * eta * dx)
     #FK = assemble_matrix(M * inner(grad(g), grad(xi)) * dx - sigma_bar * epsilon * dot(grad(phi), grad(eta)) * dx)
@@ -63,7 +71,7 @@ def setup(u_components, u, v, p, q, bcs, dt,
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
     a_pf = -inner(dot(grad(xi), u_), phi) * dx
     Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx), assemble_matrix(inner(grad(phi), grad(eta)) * dx))
-    Fpft = (Matrix(Mpf[0]), lhs(fprime * eta * dx), rhs(fprime * eta * dx))
+    Fpft = (Matrix(Mpf[0]), apft, Lpft)
     Apf = Matrix(Mpf[0])
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
@@ -92,7 +100,7 @@ def setup(u_components, u, v, p, q, bcs, dt,
     if bcs['p'] == []:
         attach_pressure_nullspace(Apt, x_, Q)
 
-    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__)
+    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__, sigma_bar=sigma_bar)
     return d
 
 def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
@@ -178,7 +186,7 @@ def assemble_first_inner_iter(A, a_conv, dt, Mt, scalar_components,
         # Add transient, convection and diffusion
         b_tmp[ui].axpy(1. / dt, Mt[0] * x_1[ui])
         TPT.assemble_rhs(i)
-        #b_tmp[ui].axpy(1., TPT.vector())
+        b_tmp[ui].axpy(1., TPT.vector())
 
     # Update u_adv used as convecting velocity
     for i, ui in enumerate(u_components):
@@ -296,7 +304,7 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve scalar equation."""
     pass
 
-def phase_field_assemble(dt, M, sigma, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, **NS_namespace):
+def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, **NS_namespace):
     """Assemble phase field equation."""
 
     assemble(a_pf, tensor=Apf)
@@ -306,11 +314,11 @@ def phase_field_assemble(dt, M, sigma, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_
     Apf.axpy(M, Kpf[0], True)
 
     Apf.axpy(1., Mpf[1], True)
-    Apf.axpy(-sigma * epsilon, Kpf[1], True)
-    Apf.axpy(-sigma / epsilon, Fpft[0], True)
+    Apf.axpy(-sigma_bar * epsilon, Kpf[1], True)
+    Apf.axpy(1., Fpft[0], True)
 
     assemble(Fpft[2], tensor=b['phig'])
-    b['phig'] *= -sigma / epsilon
+    #b['phig'] *= -sigma_bar / epsilon
     # Add mass
     b['phig'].axpy(1. / dt, Mpf[0] * x_1['phig'])
 

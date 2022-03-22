@@ -34,7 +34,7 @@ NS_parameters.update(
     print_intermediate_info=10,
     print_velocity_pressure_convergence=False,
 
-    # Parameters used to tweek output
+    # Parameters used to tweak output
     plot_interval=10,
     checkpoint=10,       # Overwrite solution in Checkpoint folder each checkpoint
     save_step=10,        # Store solution each save_step
@@ -102,17 +102,7 @@ NS_parameters.update(
 
     phase_field_krylov_solver=dict(
         solver_type='gmres',
-        preconditioner_type='jacobi'),
-
-    nut_krylov_solver=dict(
-        method='WeightedAverage',  # Or 'default'
-        solver_type='cg',
-        preconditioner_type='jacobi'),
-
-    nu_nn_krylov_solver=dict(
-        method='WeightedAverage',  # Or 'default'
-        solver_type='cg',
-        preconditioner_type='jacobi'),
+        preconditioner_type='jacobi')
 )
 
 
@@ -139,3 +129,9 @@ def temporal_hook(**NS_namespace):
 def phase_field_hook(**NS_namespace):
     """Called prior to scalar solve."""
     pass
+
+def mark_subdomains(**NS_namespace):
+    return dict()
+
+def contact_angles(**NS_namespace):
+    return []

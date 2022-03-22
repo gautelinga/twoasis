@@ -3,10 +3,10 @@ __date__ = "2013-06-25"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from re import sub
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
+from os import makedirs
 
 class PBC(SubDomain):
     def __init__(self, Lx, Ly):
@@ -32,30 +32,32 @@ class PBC(SubDomain):
             y[0] = x[0]
             y[1] = x[1] - self.Ly
 
+
 class Walls(SubDomain):
-    def __init__(self, pos_, r_):
-        self.pos_ = pos_
-        self.r_ = r_
+    def __init__(self, Lx, Ly, rad):
+        self.Lx = Lx
+        self.Ly = Ly
+        self.rad = rad
         SubDomain.__init__(self)
 
     def inside(self, x, on_bnd):
-        x_ = np.outer(x, np.ones(len(self.pos_))).T
-        dr_ = np.linalg.norm(x_ - self.pos_, axis=1)
-        return any(dr_ < self.r_ + DOLFIN_EPS_LARGE)
+        r_ = [
+            np.sqrt(x[0]**2 + x[1]**2),
+            np.sqrt((x[0] - self.Lx / 2)**2 + (x[1] - self.Ly / 2)**2),
+            np.sqrt((x[0] - self.Lx / 2)**2 + (x[1] + self.Ly / 2)**2),
+            np.sqrt((x[0] + self.Lx / 2)**2 + (x[1] - self.Ly / 2)**2),
+            np.sqrt((x[0] + self.Lx / 2)**2 + (x[1] + self.Ly / 2)**2)
+        ]
+        return any([r < self.rad + DOLFIN_EPS_LARGE for r in r_])
 
 def inlet(x, on_bnd):
     return on_bnd and near(x[0], 0)
 
-def get_fname(Lx, Ly, rad, R, N, res, ext):
-    meshparams = dict(Lx=Lx, Ly=Ly, rad=rad, R=R, N=N, res=res, ext=ext)
-    fname = "meshes/periodic_porous_Lx{Lx}_Ly{Ly}_r{rad}_R{R}_N{N}_dx{res}.{ext}".format(**meshparams)    
-    return fname
 
 # Create a mesh
-def mesh(Lx, Ly, rad, R, N, res, **params):
+def mesh(Lx, Ly, rad, res, **params):
     mesh = Mesh()
-    #fname = "meshes/periodic_porous_Lx20_Ly10_rad0.25_N300_dx0.05.h5"
-    fname = get_fname(Lx, Ly, rad, R, N, res, "h5")
+    fname = "meshes/cyl_arr_Lx{}_Ly{}_rad{}_dx{}.h5".format(Lx, Ly, rad, res)
     with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
         h5f.read(mesh, "mesh", False)
     return mesh
@@ -64,24 +66,23 @@ def mesh(Lx, Ly, rad, R, N, res, **params):
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
         T=100.0,
-        Lx=4,
-        Ly=8,
-        rad=0.5,
-        N=19,
-        res=0.05,
-        R=0.55,
-        dt=0.05,
+        Lx=1.,
+        Ly=np.sqrt(3),
+        rad=0.33,
+        res=0.02,
+        dt=0.01,
         rho=[1, 1],
         mu=[1, 1],
-        epsilon=0.05,
-        sigma=5.0,
-        M=0.0001,
-        theta=np.pi/2,
+        epsilon=0.02,
+        sigma=1.0,
+        theta=np.pi/4,
+        M=0.00001,
         F0=[0., 10.],
         g0=[0., 0.],
         velocity_degree=1,
-        folder="porous2d_results",
+        folder="cylarr2d_results",
         plot_interval=10,
+        stat_interval=10,
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
@@ -99,17 +100,14 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         constrained_domain=PBC(NS_parameters["Lx"], NS_parameters["Ly"])
     ))
 
-def mark_subdomains(subdomains, dim, Lx, Ly, rad, R, N, res, **NS_namespace):
-    fname = get_fname(Lx, Ly, rad, R, N, res, "dat")
-    obst = np.loadtxt(fname)
-    x = obst[:, :dim]
-    r = obst[:, dim]
-    wall = Walls(x, r)
+def mark_subdomains(subdomains, Lx, Ly, rad, **NS_namespace):
+    wall = Walls(Lx, Ly, rad)
     wall.mark(subdomains, 1)
     return dict()
 
 def contact_angles(theta, **NS_namespace):
     return [(theta, 1)]
+
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):
@@ -134,8 +132,10 @@ def acceleration(g0, **NS_namespace):
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Ly, **NS_namespace):
     phig_init = interpolate(Expression(
         #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-        "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-        epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+        #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+        "tanh((sqrt(pow(x[0]-x0, 2)+pow(x[1]-y0, 2))-r0)/(sqrt(2)*epsilon))",
+        epsilon=epsilon, Ly=Ly, x0=0.02, y0=0.6, r0=0.2,
+        degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
@@ -144,12 +144,21 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Ly, **NS_namespace):
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(mesh, velocity_degree, **NS_namespace):
+def pre_solve_hook(mesh, velocity_degree, newfolder, **NS_namespace):
+    volume = assemble(Constant(1.) * dx(domain=mesh))
+    statsfolder = path.join(newfolder, "Stats")
+    if MPI.rank(MPI.comm_world) == 0:
+        try:
+            makedirs(statsfolder)
+        except:
+            pass
     Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
-    return dict(uv=Function(Vv))
+    return dict(uv=Function(Vv), statsfolder=statsfolder, volume=volume)
 
 
-def temporal_hook(q_, tstep, u_, p_, phi_, plot_interval, **NS_namespace):
+def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
+                  sigma, epsilon, volume, statsfolder,
+                  plot_interval, stat_interval, **NS_namespace):
     info_red("tstep = {}".format(tstep))
     if tstep % plot_interval == 0 and False:
         plot(u_, title='Velocity')
@@ -159,7 +168,17 @@ def temporal_hook(q_, tstep, u_, p_, phi_, plot_interval, **NS_namespace):
         #plot(p_, title='Pressure')
         #plot(q_['alfa'], title='alfa')
         #plot(q_['beta'], title='beta')
-
+    if tstep % stat_interval == 0:
+        u0m = assemble(q_['u0'] * dx) / volume
+        u1m = assemble(q_['u1'] * dx) / volume
+        phim = assemble(phi_ * dx) / volume
+        E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
+        E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
+        E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        # Do not forget boundary term in E_int !
+        if MPI.rank(MPI.comm_world) == 0:
+            with open(statsfolder + "/tdata.dat", "a") as tfile:
+                tfile.write("%d %.8f %.8f %.8f %.8f %.8f %.8f %.8f\n" % (tstep, t, u0m, u1m, phim, E_kin, E_int, E_pot))
 
 def theend_hook(u_, p_, testing, **NS_namespace):
     if not testing:

@@ -94,8 +94,11 @@ g_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
 W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),
                   constrained_domain=constrained_domain)
 
-#subd = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
-#subd.set_all(0)
+subdomains = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
+subdomains.set_all(0)
+mark_subdomains(**vars())
+ds = Measure("ds", domain=mesh, subdomain_data=subdomains)
+
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)
 #with XDMFFile(mesh.mpi_comm(), "subd.xdmf") as xdmff:
@@ -165,6 +168,8 @@ print_solve_info = use_krylov_solvers and krylov_solvers['monitor_convergence']
 
 # Boundary conditions
 bcs = create_bcs(**vars())
+
+angles = contact_angles(**vars())
 
 """
 # LES setup

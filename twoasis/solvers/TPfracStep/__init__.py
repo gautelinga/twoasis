@@ -15,6 +15,7 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "scalar_solve", "get_solvers", "setup",
            "print_velocity_pressure_info", "phase_field_solve", "phase_field_assemble",
            "potential_linear_derivative", "potential_derivative_approx",
+           "wall_potential_linear_derivative",
            "weighted_arithmetic_mean", "weighted_geometric_mean", 
            "weighted_arithmetic_derivative"]
 
@@ -78,9 +79,13 @@ def phase_field_assemble(**NS_namespace):
 def phase_field_solve(**NS_namespace):
     """Solve scalar equation."""
     pass
+
 def potential_linear_derivative(phi, phi0):
     """ Linearised derivative of phase field potential. """
     return phi0**3 - phi0 + (3*phi0**2 - 1.) * (phi - phi0)
+
+def wall_potential_linear_derivative(phi, phi0):
+    return 3.*(1. - phi0**2)/4. - 3.*phi0/2.* (phi - phi0)
 
 def potential_derivative_approx(phi_, phi_1, phi_2):
     phi_ab = 1.5 * phi_1 - 0.5 * phi_2

@@ -100,7 +100,7 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
         for comp, tstepfile in tstepfiles.items():
             if comp == "u":
                 # Create vector function and assigners
-                uv = AssignedVectorFunction(u_)
+                uv = AssignedVectorFunction(u_, name="u")
 
                 # Assign solution to vector
                 uv()

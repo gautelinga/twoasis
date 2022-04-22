@@ -38,7 +38,7 @@ from twoasis.solvers import scalar_assemble
 commandline_kwargs = parse_command_line()
 
 # Find the problem module
-default_problem = 'DrivenCavity'
+default_problem = 'CylArr2D'
 problemname = commandline_kwargs.get('problem', default_problem)
 problemspec = importlib.util.find_spec('.'.join(('twoasis.problems.TPfracStep', problemname)))
 if problemspec is None:

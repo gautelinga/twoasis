@@ -65,7 +65,7 @@ def mesh(Lx, Ly, rad, res, **params):
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
-        T=100.0,
+        T=1000.0,
         Lx=1.,
         Ly=np.sqrt(3),
         rad=0.33,
@@ -87,7 +87,8 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True)
+        use_krylov_solvers=True,
+        solver="IPCS")
 
     #scalar_components += ["alfa", "beta"]
     #Schmidt["alfa"] = 1.

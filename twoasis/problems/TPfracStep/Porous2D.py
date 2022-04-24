@@ -7,6 +7,7 @@ from re import sub
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
+from os import makedirs
 
 class PBC(SubDomain):
     def __init__(self, Lx, Ly):
@@ -73,19 +74,22 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         dt=0.05,
         rho=[1, 1],
         mu=[1, 1],
+        theta=np.pi/3,
         epsilon=0.05,
         sigma=5.0,
         M=0.0001,
-        theta=np.pi/2,
         F0=[0., 10.],
         g0=[0., 0.],
         velocity_degree=1,
         folder="porous2d_results",
         plot_interval=10,
+        stat_interval=10,
+        timestamps_interval=10,
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True)
+        use_krylov_solvers=True,
+        solver="IPCS")
 
     #scalar_components += ["alfa", "beta"]
     #Schmidt["alfa"] = 1.
@@ -144,12 +148,46 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Ly, **NS_namespace):
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(mesh, velocity_degree, **NS_namespace):
-    Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
-    return dict(uv=Function(Vv))
+def pre_solve_hook(mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, rad, res, dt, **NS_namespace):
+    volume = assemble(Constant(1.) * dx(domain=mesh))
+    statsfolder = path.join(newfolder, "Stats")
+    timestampsfolder = path.join(newfolder, "Timestamps")
 
+    # Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
+    uv = AssignedVectorFunction(u_, name="u")
 
-def temporal_hook(q_, tstep, u_, p_, phi_, plot_interval, **NS_namespace):
+    if MPI.rank(MPI.comm_world) == 0 and not path.exists(statsfolder):
+        makedirs(statsfolder)
+
+    if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
+        makedirs(timestampsfolder)
+
+    if MPI.rank(MPI.comm_world) == 0:
+        with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
+            keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"]
+            for key in keys:
+                ofile.write("{}={}\n".format(key, eval(key)))
+        with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
+            ofile.write("velocity_space=P{}\n".format(velocity_degree))
+            ofile.write("pressure_space=P{}\n".format(pressure_degree))
+            ofile.write("timestamps=timestamps.dat\n")
+            ofile.write("mesh=mesh.h5\n")
+            ofile.write("periodic_x=true\n")
+            ofile.write("periodic_y=true\n")
+            ofile.write("periodic_z=true\n")
+            ofile.write("rho=1.0\n")
+    with HDF5File(mesh.mpi_comm(),
+                  path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
+        h5f.write(mesh, "mesh")
+
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+
+def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
+                  sigma, epsilon, volume, statsfolder, timestampsfolder,
+                  plot_interval, stat_interval, timestamps_interval,
+                  uv, mesh,
+                  **NS_namespace):
     info_red("tstep = {}".format(tstep))
     if tstep % plot_interval == 0 and False:
         plot(u_, title='Velocity')
@@ -159,7 +197,29 @@ def temporal_hook(q_, tstep, u_, p_, phi_, plot_interval, **NS_namespace):
         #plot(p_, title='Pressure')
         #plot(q_['alfa'], title='alfa')
         #plot(q_['beta'], title='beta')
+    if tstep % stat_interval == 0:
+        u0m = assemble(q_['u0'] * dx) / volume
+        u1m = assemble(q_['u1'] * dx) / volume
+        phim = assemble(phi_ * dx) / volume
+        E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
+        E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
+        E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        # Do not forget boundary term in E_int !
+        if MPI.rank(MPI.comm_world) == 0:
+            with open(statsfolder + "/tdata.dat", "a") as tfile:
+                tfile.write("%d %.8f %.8f %.8f %.8f %.8f %.8f %.8f\n" % (tstep, t, u0m, u1m, phim, E_kin, E_int, E_pot))
+    if tstep % timestamps_interval == 0:
+        uv()
 
+        h5fname = "up_{}.h5".format(tstep)
+
+        with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
+            h5f.write(uv, "u")
+            h5f.write(p_, "p")
+
+        if MPI.rank(MPI.comm_world) == 0:
+            with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
+                ofile.write("{:.6f} {}\n".format(t, h5fname))
 
 def theend_hook(u_, p_, testing, **NS_namespace):
     if not testing:

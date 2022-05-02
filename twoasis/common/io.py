@@ -14,7 +14,7 @@ from twoasis.problems import info_red
 
 __all__ = ["create_initial_folders", "save_solution", "save_tstep_solution_h5",
            "save_checkpoint_solution_h5", "check_if_kill", "check_if_reset_statistics",
-           "init_from_restart", "merge_visualization_files", "merge_xml_files"]
+           "init_from_restart", "merge_visualization_files", "merge_xml_files", "MPI"]
 
 
 def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
@@ -173,16 +173,16 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, u_components,
         system('rm {0}'.format(path.join(checkpointfolder, "params_old.dat")))
 
 
-def check_if_kill(folder, killtime, total_timer):
-    """Check if user has put a file named killoasis in folder or if given killtime has been reached."""
+def check_if_kill(folder, killtime, total_timer, key='killtwoasis'):
+    """Check if user has put a file named {key} in folder or if given killtime has been reached."""
     found = 0
-    if 'killoasis' in listdir(folder):
+    if key in listdir(folder):
         found = 1
     collective = MPI.sum(MPI.comm_world, found)
     if collective > 0:
         if MPI.rank(MPI.comm_world) == 0:
-            remove(path.join(folder, 'killoasis'))
-            info_red('killoasis Found! Stopping simulations cleanly...')
+            remove(path.join(folder, key))
+            info_red(key+' found! Stopping simulations cleanly...')
         return True
     else:
         elapsed_time = float(total_timer.elapsed()[0])
@@ -194,30 +194,30 @@ def check_if_kill(folder, killtime, total_timer):
             return False
 
 
-def check_if_pause(folder):
+def check_if_pause(folder, key='pausetwoasis'):
     """Check if user has put a file named pauseoasis in folder."""
     found = 0
-    if 'pauseoasis' in listdir(folder):
+    if key in listdir(folder):
         found = 1
     collective = MPI.sum(MPI.comm_world, found)
     if collective > 0:
         if MPI.rank(MPI.comm_world) == 0:
-            info_red('pauseoasis Found! Simulations paused. Remove ' + path.join(folder, 'pauseoasis') + ' to resume simulations...')
+            info_red(key+' found! Simulations paused. Remove ' + path.join(folder, 'pauseoasis') + ' to resume simulations...')
         return True
     else:
         return False
 
 
-def check_if_reset_statistics(folder):
+def check_if_reset_statistics(folder, key='resettwoasis'):
     """Check if user has put a file named resetoasis in folder."""
     found = 0
-    if 'resetoasis' in listdir(folder):
+    if key in listdir(folder):
         found = 1
     collective = MPI.sum(MPI.comm_world, found)
     if collective > 0:
         if MPI.rank(MPI.comm_world) == 0:
-            remove(path.join(folder, 'resetoasis'))
-            info_red('resetoasis Found!')
+            remove(path.join(folder, key))
+            info_red(key+' found!')
         return True
     else:
         return False
@@ -245,7 +245,7 @@ def init_from_restart(restart_folder, sys_comp, uc_comp, u_components,
                     q_2[ui].vector().apply('insert')
 
 
-def merge_visualization_files(newfolder, **namesapce):
+def merge_visualization_files(newfolder, **namespace):
     timefolder = path.join(newfolder, 'Timeseries')
     # Gather files
     xdmf_files = list(glob.glob(path.join(timefolder, "*.xdmf")))

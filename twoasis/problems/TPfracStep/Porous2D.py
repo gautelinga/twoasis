@@ -3,6 +3,8 @@ __date__ = "2013-06-25"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
+from copy import deepcopy
+from ntpath import join
 from re import sub
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
@@ -148,7 +150,7 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Ly, **NS_namespace):
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
+def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
                    F0, g0, mu, rho, sigma, M, theta, epsilon, rad, res, dt, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
@@ -171,6 +173,7 @@ def pre_solve_hook(mesh, u_, newfolder, velocity_degree, pressure_degree, Assign
         with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
             ofile.write("velocity_space=P{}\n".format(velocity_degree))
             ofile.write("pressure_space=P{}\n".format(pressure_degree))
+            ofile.write("phase_field_space=P{}\n".format(velocity_degree))
             ofile.write("timestamps=timestamps.dat\n")
             ofile.write("mesh=mesh.h5\n")
             ofile.write("periodic_x=true\n")
@@ -180,8 +183,26 @@ def pre_solve_hook(mesh, u_, newfolder, velocity_degree, pressure_degree, Assign
     with HDF5File(mesh.mpi_comm(),
                   path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
         h5f.write(mesh, "mesh")
+    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
 
     return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+
+def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
+    uv()
+
+    h5fname = "up_{}.h5".format(tstep)
+
+    phi__, g__ = q_['phig'].split(deepcopy=True)
+    phi__.rename("phi", "phi")
+
+    with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
+        h5f.write(uv, "u")
+        h5f.write(p_, "p")
+        h5f.write(phi__, "phi")
+
+    if MPI.rank(MPI.comm_world) == 0:
+        with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
+            ofile.write("{:.6f} {}\n".format(t, h5fname))
 
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, statsfolder, timestampsfolder,
@@ -207,25 +228,12 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
-                tfile.write("%d %.8f %.8f %.8f %.8f %.8f %.8f %.8f\n" % (tstep, t, u0m, u1m, phim, E_kin, E_int, E_pot))
+                tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(
+                    tstep, t, u0m, u1m, phim, E_kin, E_int, E_pot))
     if tstep % timestamps_interval == 0:
-        uv()
-
-        h5fname = "up_{}.h5".format(tstep)
-
-        with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
-            h5f.write(uv, "u")
-            h5f.write(p_, "p")
-
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
-                ofile.write("{:.6f} {}\n".format(t, h5fname))
+        write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
 
 def theend_hook(u_, p_, testing, **NS_namespace):
-    if not testing:
-        plot(u_, title='Velocity')
-        plot(p_, title='Pressure')
-
     u_norm = norm(u_[0].vector())
     if MPI.rank(MPI.comm_world) == 0 and testing:
         print("Velocity norm = {0:2.6e}".format(u_norm))

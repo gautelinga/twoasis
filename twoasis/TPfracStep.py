@@ -47,7 +47,8 @@ if problemspec is None:
     raise RuntimeError(problemname + ' not found')
 
 # Import the problem module
-print('Importing problem module '+problemname+':\n'+problemspec.origin)
+if MPI.rank(MPI.comm_world) == 0:
+    print('Importing problem module '+problemname+':\n'+problemspec.origin)
 problemmod = importlib.util.module_from_spec(problemspec)
 problemspec.loader.exec_module(problemmod)
 
@@ -215,8 +216,8 @@ vars().update(pre_solve_hook(**vars()))
 
 tx = OasisTimer('Timestep timer')
 tx.start()
-stop = False
 total_timer = OasisTimer("Start simulations", True)
+stop = save_solution(**vars())
 while t < (T - tstep * DOLFIN_EPS) and not stop:
     t += dt
     tstep += 1

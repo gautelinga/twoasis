@@ -34,5 +34,5 @@ setup(name = "twoasis",
                   "twoasis.common",
                   ],
       package_dir = {"twoasis": "twoasis"},
-      entry_points = {'console_scripts': ['twoasis=twoasis.run_twoasis:main']},
+      entry_points = {'console_scripts': ['twoasis=twoasis.run_twoasis:main', 'quickstats=twoasis.quickstats:main']},
     )

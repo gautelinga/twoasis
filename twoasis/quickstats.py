@@ -2,7 +2,6 @@
 
 import sys, os
 import numpy as np
-import matplotlib.pyplot as plt
 
 def main():
     assert len(sys.argv) > 1
@@ -52,12 +51,15 @@ def main():
     string = "\n".join([a + " = {" + a + "}" for a in numbers.keys()])
     print(string.format(**numbers))
 
-    fig, ax = plt.subplots(1, 1)
-    ax.plot(t / t_adv, uy_mean*np.ones_like(t))
-    ax.plot(t / t_adv, uy)
-    ax.set_xlabel("$t / t_{adv}$")
-    ax.set_ylabel("$<u_y>$")
-    plt.show()
+    if "plot=true" in sys.argv:
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(1, 1)
+        ax.plot(t / t_adv, uy_mean*np.ones_like(t))
+        ax.plot(t / t_adv, uy)
+        ax.set_xlabel("$t / t_{adv}$")
+        ax.set_ylabel("$<u_y>$")
+        plt.show()
     
 
 if __name__ == "__main__":

@@ -9,14 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 from os import makedirs
 
-class Walls(SubDomain):
-    def __init__(self, H):
-        self.H = H
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_bnd):
-        return on_bnd and (x[2] > self.H + DOLFIN_EPS_LARGE or x[2] < self.H - DOLFIN_EPS_LARGE)
-
 class Bead(SubDomain):
     def __init__(self, R):
         self.R = R
@@ -33,24 +25,41 @@ class EpsCyl(SubDomain):
 
     def inside(self, x, on_bnd):
         s = np.linalg.norm([x[0], x[1]])
-        return on_bnd and s < self.reps + DOLFIN_EPS
+        return on_bnd and s < self.reps + DOLFIN_EPS_LARGE
 
-class SlipWall(SubDomain):
-    def __init__(self, ind)...
+class WallsX(SubDomain):
+    def __init__(self, Lx):
+        self.Lx = Lx
+        SubDomain.__init__(self)
 
-def inlet(x, on_bnd):
-    return on_bnd and near(x[0], 0)
+    def inside(self, x, on_bnd):
+        return on_bnd and x[0] < DOLFIN_EPS_LARGE or x[0] > self.Lx/2 - DOLFIN_EPS_LARGE
 
-def get_fname(Lx, Ly, rad, R, N, res, ext):
-    meshparams = dict(Lx=Lx, Ly=Ly, rad=rad, R=R, N=N, res=res, ext=ext)
-    fname = "meshes/periodic_porous_Lx{Lx}_Ly{Ly}_r{rad}_R{R}_N{N}_dx{res}.{ext}".format(**meshparams)    
+class WallsY(SubDomain):
+    def __init__(self, Ly):
+        self.Ly = Ly
+        SubDomain.__init__(self)
+
+    def inside(self, x, on_bnd):
+        return on_bnd and x[1] < DOLFIN_EPS_LARGE or x[1] > self.Ly/2 - DOLFIN_EPS_LARGE
+
+class WallsZ(SubDomain):
+    def __init__(self, H):
+        self.H = H
+        SubDomain.__init__(self)
+
+    def inside(self, x, on_bnd):
+        return on_bnd and (x[2] > self.H/2 - DOLFIN_EPS_LARGE or x[2] < - self.H/2 + DOLFIN_EPS_LARGE)
+
+def get_fname(Lx, Ly, H, R, res, ext):
+    meshparams = dict(Lx=Lx, Ly=Ly, H=H, R=R, res=res, ext=ext)
+    fname = "meshes/bead_contact_Lx{Lx}_Ly{Ly}_H{H}_R{R}_dx{res}.{ext}".format(**meshparams)    
     return fname
 
 # Create a mesh
-def mesh(Lx, Ly, rad, R, N, res, **params):
+def mesh(Lx, Ly, H, R, res, **params):
     mesh = Mesh()
-    #fname = "meshes/periodic_porous_Lx20_Ly10_rad0.25_N300_dx0.05.h5"
-    fname = get_fname(Lx, Ly, rad, R, N, res, "h5")
+    fname = get_fname(Lx, Ly, H, R, res, "h5")
     with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
         h5f.read(mesh, "mesh", False)
     return mesh
@@ -59,12 +68,11 @@ def mesh(Lx, Ly, rad, R, N, res, **params):
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
         T=100.0,
-        Lx=4,
-        Ly=8,
-        rad=0.5,
-        N=19,
+        Lx=1.5,
+        Ly=2.0,
+        H=1.0,
+        R=0.5,
         res=0.05,
-        R=0.55,
         dt=0.05,
         rho=[1, 1],
         mu=[1, 1],
@@ -97,13 +105,17 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         constrained_domain=PBC(NS_parameters["Lx"], NS_parameters["Ly"])
     ))
 
-def mark_subdomains(subdomains, dim, Lx, Ly, rad, R, N, res, **NS_namespace):
-    fname = get_fname(Lx, Ly, rad, R, N, res, "dat")
-    obst = np.loadtxt(fname)
-    x = obst[:, :dim]
-    r = obst[:, dim]
-    wall = Walls(x, r)
-    wall.mark(subdomains, 1)
+def mark_subdomains(subdomains, Lx, Ly, H, R, reps, **NS_namespace):
+    epscyl = EpsCyl(reps)
+    bead = Bead(R)
+    wallx = WallsX(Lx)
+    wally = WallsY(Ly)
+    wallz = WallsZ(H)
+    bead.mark(subdomains, 1)
+    epscyl.mark(subdomains, 2)
+    wallz.mark(subdomains, 3)
+    wallx.mark(subdomains, 4)
+    wally.mark(subdomains, 5)
     return dict()
 
 def contact_angles(theta, **NS_namespace):
@@ -111,17 +123,23 @@ def contact_angles(theta, **NS_namespace):
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):
-    bc_ux_wall = DirichletBC(V, 0, subdomains, 1)
-    bc_uy_wall = DirichletBC(V, 0, subdomains, 1)
-    return dict(u0=[bc_ux_wall, bc_ux_wall],
-                u1=[bc_uy_wall, bc_uy_wall],
+    bc_ux_bead = DirichletBC(V, 0, subdomains, 1)
+    bc_uy_bead = DirichletBC(V, 0, subdomains, 1)
+    bc_ux_epscyl = DirichletBC(V, 0, subdomains, 2)
+    bc_uy_epscyl = DirichletBC(V, 0, subdomains, 2)
+    bc_ux_wallz = DirichletBC(V, 0, subdomains, 3)
+    bc_uy_wallz = DirichletBC(V, 0, subdomains, 3)
+    bc_ux_wallx = DirichletBC(V, 0, subdomains, 4)
+    bc_uy_wally = DirichletBC(V, 0, subdomains, 5)
+    return dict(u0=[bc_ux_bead, bc_ux_epscyl, bc_ux_wallz, bc_ux_wallx],
+                u1=[bc_uy_bead, bc_uy_epscyl, bc_uy_wallz, bc_uy_wally],
                 p=[],
                 phig=[])
 
 
-def average_pressure_gradient(F0, **NS_namespace):
+def average_pressure_gradient(**NS_namespace):
     # average pressure gradient
-    return Constant(tuple(F0))
+    return Constant((0., 0., 0.))
 
 
 def acceleration(g0, **NS_namespace):

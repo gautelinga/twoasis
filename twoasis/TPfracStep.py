@@ -102,8 +102,8 @@ ds = Measure("ds", domain=mesh, subdomain_data=subdomains)
 
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)
-#with XDMFFile(mesh.mpi_comm(), "subd.xdmf") as xdmff:
-#    xdmff.write(subd)
+with XDMFFile(mesh.mpi_comm(), "subdomains.xdmf") as xdmff:
+    xdmff.write(subdomains)
 
 u = TrialFunction(V)
 v = TestFunction(V)

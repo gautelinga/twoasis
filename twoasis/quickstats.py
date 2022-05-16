@@ -63,6 +63,12 @@ def main():
         ax.set_xlabel("$t / t_{adv}$")
         ax.set_ylabel("$<u_y>$")
         plt.show()
+
+    if "copyfriendly=true" in sys.argv:
+        header = "\t".join([a for a in numbers.keys()])
+        print(header)
+        string = "\t".join(["{" + a + "}" for a in numbers.keys()])
+        print(string.format(**numbers))
     
 
 if __name__ == "__main__":

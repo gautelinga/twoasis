@@ -40,6 +40,9 @@ def main():
     t_adv = d / uy_mean
     
     numbers = dict(
+        fy = fy,
+        uy_mean = uy_mean,
+        t_adv = t_adv,
         Ca = mu * uy_mean / sigma,
         Oh = mu / np.sqrt(rho * sigma * d),
         Re = uy_mean * d / nu,

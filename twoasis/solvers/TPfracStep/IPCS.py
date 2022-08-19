@@ -2,11 +2,12 @@ from dolfin import *
 from ..TPfracStep import *
 from ..TPfracStep import __all__
 import math
+import numpy as np
 
-__all__ += ["max_iter", "iters_on_first_timestep"]
+#__all__ += ["max_iter", "iters_on_first_timestep"]
 
-max_iter = 10                 # Number of inner pressure velocity iterations on timestep
-iters_on_first_timestep = 10
+#max_iter = 1 #0                 # Number of inner pressure velocity iterations on timestep
+#iters_on_first_timestep = 10
 
 def setup(u_components, u, v, p, q, bcs, dt,
           scalar_components, V, Q, x_, p_, u_, A_cache, q_,
@@ -161,16 +162,21 @@ def assemble_first_inner_iter(A, a_conv, dt, Mt, scalar_components,
     t0 = Timer("Assemble first inner iter")
 
     assign(c__, q_['phig'].sub(0))
-    cv = c__.vector()
+    cv = c__.vector()[:]
     cv += 1
     cv *= 0.5
-    cv[cv < 0] = 0
-    cv[cv > 1] = 1
-    rho_.vector().zero()
-    rho_.vector().axpy(1., rho[0]*cv + rho[1]*(1-cv))
+    cv[cv < 0.0] = 0.0
+    cv[cv > 1.0] = 1.0
+    #print("cv", np.min(cv))
+    #rho_.vector().zero()
+    #rho_.vector().axpy(1., rho[0]*cv + rho[1]*(1-cv))
+    # rho_.vector()[:] = rho[0]**cv[:] * rho[1]**(1-cv[:]) !not good
+    rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
+    #print("rho", np.min(rho_.vector()[:]))
     rho_inv_.vector()[:] = 1. / rho_.vector()[:]
     #chi = 0.5*(1 + np.sin(math.pi/2 * phi_bar))
-    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
+    # mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
+    mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
 
     # assemble mass for rhs and lhs
     assemble(Mt[1] * dx, tensor=Mt[0])

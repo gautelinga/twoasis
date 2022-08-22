@@ -9,7 +9,7 @@ import pickle
 import time
 import glob
 from dolfin import (MPI, Function, XDMFFile, HDF5File,
-    VectorFunctionSpace, FunctionAssigner)
+    VectorFunctionSpace, FunctionAssigner, assign)
 from twoasis.problems import info_red
 
 __all__ = ["create_initial_folders", "save_solution", "save_tstep_solution_h5",
@@ -109,14 +109,15 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
                 tstepfile.write(uv, float(t))
                 #tstepfile.write(u_, float(t))
             elif comp == "phi":
-                tstepfile.write(q_['phig'].sub(0), float(t))
+                phi__ = Function(q_['phig'].function_space().sub(0).collapse(), name="phi")
+                assign(phi__, q_['phig'].sub(0))
+                tstepfile.write(phi__, float(t))
             elif comp == "g":
-                tstepfile.write(q_['phig'].sub(1), float(t))
-                #g_out = AssignedFunction(g_)
-                #tstepfile.write(g_out, float(tstep))
+                g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
+                assign(g__, q_['phig'].sub(0))
+                tstepfile.write(g__, float(t))
             elif comp in q_:
                 tstepfile.write(q_[comp], float(t))
-
             else:
                 tstepfile.write(tstepfile.function, float(t))
 
@@ -125,8 +126,9 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
             tstepfile << (q_[comp], float(t))
 
     if MPI.rank(MPI.comm_world) == 0:
-        if not path.exists(path.join(timefolder, "params.dat")):
-            f = open(path.join(timefolder, 'params.dat'), 'wb')
+        paramsfilename = path.join(timefolder, "params.dat")
+        if not path.exists(paramsfilename):
+            f = open(paramsfilename, 'wb')
             pickle.dump(NS_parameters,  f)
 
 
@@ -202,7 +204,7 @@ def check_if_pause(folder, key='pausetwoasis'):
     collective = MPI.sum(MPI.comm_world, found)
     if collective > 0:
         if MPI.rank(MPI.comm_world) == 0:
-            info_red(key+' found! Simulations paused. Remove ' + path.join(folder, 'pauseoasis') + ' to resume simulations...')
+            info_red(key+' found! Simulations paused. Remove ' + path.join(folder, key) + ' to resume simulations...')
         return True
     else:
         return False

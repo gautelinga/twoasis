@@ -204,7 +204,7 @@ def assemble_first_inner_iter(A, a_conv, dt, Mt, scalar_components,
     A.axpy(1. / dt, Mt[0], True)
     assemble(Kt[1] * dx, tensor=Kt[0])
     A.axpy(1.0, Kt[0], True)
-    [bc.apply(A) for bc in bcs['u0']]
+    [bc.apply(A) for bc in bcs['u0']] # assumes only no-slip!
 
 def attach_pressure_nullspace(Apt, x_, Q):
     """Create null space basis object and attach to Krylov solver."""

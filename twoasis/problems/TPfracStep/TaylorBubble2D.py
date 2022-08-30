@@ -43,7 +43,7 @@ def mesh(Lx, Ly, res, **params):
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
-        T=10.0,
+        T=100.0,
         Lx=1,
         Ly=2,
         res=1./64,
@@ -100,20 +100,22 @@ def create_bcs(V, subdomains, u_wall, **NS_namespace):
 
 def average_pressure_gradient(F0, **NS_namespace):
     # average pressure gradient
-    return Constant(tuple(F0))
-
+    #return Constant(tuple(F0))
+    return Expression(("0", "forcing"), forcing=F0[1], degree=2)
 
 def acceleration(g0, **NS_namespace):
     # (gravitational) acceleration
     #return Constant(tuple(g0))
     return Expression(("0", "grav"), grav=g0[1], degree=2)
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, **NS_namespace):
+def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
     phig_init = interpolate(Expression(
         "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/4, 2))-R)/(sqrt(2)*epsilon))",
         epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
+    q_['u1'].vector()[:] = u_wall
+    q_1['u1'].vector()[:] = u_wall
     for ui in x_1:
         [bc.apply(x_1[ui]) for bc in bcs[ui]]
     for ui in x_2:
@@ -181,7 +183,7 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, g0, statsfolder, timestampsfolder,
                   plot_interval, stat_interval, timestamps_interval,
-                  uv, mesh, acc, dt,
+                  uv, mesh, acc, dt, gradp_avg, u_wall, Lx, Ly,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
@@ -196,6 +198,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         vol_c = assemble(ind_ * dx)
         y_cm = assemble(ind_ * X[1] * dx) / vol_c
         V_c = assemble(ind_ * q_['u1'] * dx) / vol_c
+        V_tot = assemble(q_['u1'] * dx) / (Lx*Ly)
 
         E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
         E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1]*X[1]) * dx) / volume
@@ -203,14 +206,20 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
 
+        # both are adaptive
         Kp = 1.0
+
         grav_prev = acc.grav
-        grav = grav_prev - Kp * V_c * stat_interval * dt
+        grav = grav_prev - Kp * V_c * stat_interval * dt 
         acc.grav = grav
+
+        forcing_prev = gradp_avg.forcing
+        forcing = forcing_prev + Kp * (u_wall - V_tot) * stat_interval * dt
+        gradp_avg.forcing = forcing
 
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
-                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, E_grav, vol_c, y_cm, V_c, grav]
+                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, E_grav, vol_c, y_cm, V_c, V_tot, grav, forcing]
                 tfile.write(
                     ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
                     tstep, t, *entries))

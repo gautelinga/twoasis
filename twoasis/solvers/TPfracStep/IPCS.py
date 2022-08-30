@@ -156,7 +156,7 @@ def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
                               Kt, u_adv, u_components,
                               b_tmp, bg0, b0, x_1, bcs, TPT, rho, mu,
-                              rho_, mu_, rho_inv_, c__, q_,
+                              rho_, mu_, rho_inv_, c__, q_, gradp_avg, bgp0,
                               **NS_namespace):
     """Called on first inner iteration of velocity/pressure system.
 
@@ -192,6 +192,9 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
         # start with (gravitational) acceleration
         assemble(rho_ * bg0[ui] * dx, tensor=b_tmp[ui])
         # add average pressure gradient
+        if isinstance(gradp_avg, Expression):
+            b0[ui].zero()
+            assemble(bgp0[ui] * dx, tensor=b0[ui])
         b_tmp[ui].axpy(1., b0[ui])
 
         # Add transient, convection and diffusion

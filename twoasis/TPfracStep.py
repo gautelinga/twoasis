@@ -195,7 +195,8 @@ u_sol, p_sol, pf_sol, c_sol = get_solvers(**vars())
 # Get constant body forces
 gradp_avg = average_pressure_gradient(**vars())
 assert(isinstance(gradp_avg, Coefficient))
-b0 = dict((ui, assemble(v * gradp_avg[i] * dx)) for i, ui in enumerate(u_components))
+bgp0 = dict((ui, v * gradp_avg[i]) for i, ui in enumerate(u_components))
+b0 = dict((ui, assemble(bgp0[ui] * dx)) for ui in u_components)
 
 acc = acceleration(**vars())
 assert(isinstance(acc, Coefficient))

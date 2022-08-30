@@ -49,8 +49,12 @@ def problem_parameters(NS_parameters, NS_expressions, scalar_components, Schmidt
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True)
-
+        use_krylov_solvers=True,
+        solver="IPCS",
+        max_iter=100,                 # Number of inner pressure velocity iterations on timestep
+        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+        iters_on_first_timestep=200,  # Number of iterations on first timestep)
+    )
     #scalar_components += ["alfa", "beta"]
     #Schmidt["alfa"] = 1.
     #Schmidt["beta"] = 10.

@@ -114,7 +114,7 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
                 tstepfile.write(phi__, float(t))
             elif comp == "g":
                 g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
-                assign(g__, q_['phig'].sub(0))
+                assign(g__, q_['phig'].sub(1))
                 tstepfile.write(g__, float(t))
             elif comp in q_:
                 tstepfile.write(q_[comp], float(t))

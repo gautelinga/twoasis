@@ -3,6 +3,7 @@ from ..TPfracStep import *
 from ..TPfracStep import __all__
 import math
 import numpy as np
+from twoasis.problems import info_blue
 
 #__all__ += ["max_iter", "iters_on_first_timestep"]
 
@@ -41,6 +42,10 @@ def setup(u_components, u, v, p, q, bcs, dt,
 
     # Allocate coefficient matrix (needs reassembling)
     A = Matrix(Md)
+    Ai = None
+    if not all([bcs['u0'] == bcs[ui] for ui in u_components[1:]]):
+        info_blue("Some velocity Dirichlet BCs are not no-slip.")
+        Ai = dict([(ui, Matrix(Md)) for ui in u_components])
 
     # Allocate Function for holding and computing the velocity divergence on Q
     divu = DivFunction(u_, Q, name='divu', method=velocity_update_solver)
@@ -87,7 +92,7 @@ def setup(u_components, u, v, p, q, bcs, dt,
              for i, ui in enumerate(u_components)}
 
     # Create dictionary to be returned into global NS namespace
-    d = dict(A=A, Apt=Apt, Mt=Mt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg, 
+    d = dict(A=A, Ai=Ai, Apt=Apt, Mt=Mt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg, 
              Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf)
 
     # Setup for solving convection
@@ -148,7 +153,7 @@ def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
     return sols
 
 
-def assemble_first_inner_iter(A, a_conv, dt, Mt, scalar_components,
+def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
                               Kt, u_adv, u_components,
                               b_tmp, bg0, b0, x_1, bcs, TPT, rho, mu,
                               rho_, mu_, rho_inv_, c__, q_,
@@ -204,7 +209,14 @@ def assemble_first_inner_iter(A, a_conv, dt, Mt, scalar_components,
     A.axpy(1. / dt, Mt[0], True)
     assemble(Kt[1] * dx, tensor=Kt[0])
     A.axpy(1.0, Kt[0], True)
-    [bc.apply(A) for bc in bcs['u0']] # assumes only no-slip!
+
+    if Ai:
+        for ui in u_components:
+            Ai[ui].zero()
+            Ai[ui].axpy(1.0, A, True)
+            [bc.apply(Ai[ui]) for bc in bcs[ui]]
+    else:
+        [bc.apply(A) for bc in bcs['u0']] # assumes only no-slip!
 
 def attach_pressure_nullspace(Apt, x_, Q):
     """Create null space basis object and attach to Krylov solver."""
@@ -226,7 +238,7 @@ def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, c__, **NS
     phigradg[ui].assemble_rhs()
     b[ui].axpy(-1., phigradg[ui].rhs)
 
-def velocity_tentative_solve(ui, A, bcs, x_, x_2, u_sol, b, udiff,
+def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
                              use_krylov_solvers, **NS_namespace):
     """Linear algebra solve of tentative velocity component."""
     #if use_krylov_solvers:
@@ -239,7 +251,10 @@ def velocity_tentative_solve(ui, A, bcs, x_, x_2, u_sol, b, udiff,
     x_2[ui].zero()
     x_2[ui].axpy(1., x_[ui])
     t1 = Timer("Tentative Linear Algebra Solve")
-    u_sol[0].solve(A, x_[ui], b[ui])
+    if Ai:
+        u_sol[0].solve(Ai[ui], x_[ui], b[ui])
+    else:
+        u_sol[0].solve(A, x_[ui], b[ui])
     t1.stop()
     udiff[0] += norm(x_2[ui] - x_[ui])
 

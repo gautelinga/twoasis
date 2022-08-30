@@ -32,8 +32,7 @@ import importlib
 
 from ufl import FiniteElement, MixedElement, TestFunctions, TrialFunctions
 from twoasis.common import *
-from twoasis.problems.TPfracStep.Porous2D import acceleration
-from twoasis.solvers import scalar_assemble
+#from twoasis.solvers import scalar_assemble
 
 commandline_kwargs = parse_command_line()
 
@@ -302,8 +301,8 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         tx.start()
 
     # AB projection for pressure on next timestep
-    if AB_projection_pressure and t < (T - tstep * DOLFIN_EPS) and not stop:
-        x_['p'].axpy(0.5, dp_.vector())
+    #if AB_projection_pressure and t < (T - tstep * DOLFIN_EPS) and not stop:
+    #    x_['p'].axpy(0.5, dp_.vector())
 
 total_timer.stop()
 list_timings(TimingClear.keep, [TimingType.wall])

@@ -195,7 +195,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
         if isinstance(gradp_avg, Expression):
             b0[ui].zero()
             assemble(bgp0[ui] * dx, tensor=b0[ui])
-        b_tmp[ui].axpy(1., b0[ui])
+        b_tmp[ui].axpy(-1., b0[ui])
 
         # Add transient, convection and diffusion
         b_tmp[ui].axpy(1. / dt, Mt[0] * x_1[ui])

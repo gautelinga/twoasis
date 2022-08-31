@@ -3,6 +3,7 @@ __date__ = "2013-06-25"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
+from copy import deepcopy
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
@@ -55,7 +56,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         epsilon=0.02,
         sigma=24.5,
         M=0.00002,
-        u_wall=-0.2,
+        u_wall=-0.0,
         F0=[0., 0.],
         g0=[0., -0.98],
         velocity_degree=1,
@@ -98,15 +99,24 @@ def create_bcs(V, subdomains, u_wall, **NS_namespace):
                 phig=[])
 
 
-def average_pressure_gradient(F0, **NS_namespace):
+def average_pressure_gradient(g0, F0, q_, rho, dx, mesh, **NS_namespace):
     # average pressure gradient
     #return Constant(tuple(F0))
-    return Expression(("0", "forcing"), forcing=F0[1], degree=2)
+    #return Expression(("0", "-forcing"), forcing=F0[1], degree=2)
+    # rho__, g___ = q_['phig'].split(deepcopy=True)
+    # cv = rho__.vector()[:]
+    # cv += 1
+    # cv *= 0.5
+    # cv[cv < 0.0] = 0.0
+    # cv[cv > 1.0] = 1.0
+    # rho__.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
+    # rho_avg = assemble(rho__ * dx)/assemble(Constant(1)*dx(domain=mesh))
+    return Constant((rho[0]*g0[0], rho[0]*g0[1]))
 
 def acceleration(g0, **NS_namespace):
     # (gravitational) acceleration
-    #return Constant(tuple(g0))
-    return Expression(("0", "grav"), grav=g0[1], degree=2)
+    return Constant(tuple(g0))
+    #return Expression(("0", "grav"), grav=g0[1], degree=2)
 
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
     phig_init = interpolate(Expression(
@@ -201,7 +211,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         V_tot = assemble(q_['u1'] * dx) / (Lx*Ly)
 
         E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
-        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1]*X[1]) * dx) / volume
+        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1]*X[1]) * dx(domain=mesh)) / volume
         E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
         E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
@@ -209,13 +219,16 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         # both are adaptive
         Kp = 1.0
 
-        grav_prev = acc.grav
-        grav = grav_prev - Kp * V_c * stat_interval * dt 
-        acc.grav = grav
+        #grav_prev = acc.grav
+        #grav = grav_prev - Kp * V_c * stat_interval * dt 
+        #acc.grav = grav
+        grav=0
 
-        forcing_prev = gradp_avg.forcing
-        forcing = forcing_prev + Kp * (u_wall - V_tot) * stat_interval * dt
-        gradp_avg.forcing = forcing
+        #forcing_prev = gradp_avg.forcing
+        #forcing = forcing_prev + Kp * (u_wall - V_tot) * stat_interval * dt
+        #forcing = forcing_prev - Kp * V_c * stat_interval * dt
+        forcing = 0
+        #gradp_avg.forcing = forcing
 
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
@@ -229,6 +242,8 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
     if tstep % timestamps_interval == 0 and False:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     """
+    return dict()
+
 
 def theend_hook(u_, p_, **NS_namespace):
     pass

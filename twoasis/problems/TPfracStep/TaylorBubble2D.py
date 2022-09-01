@@ -48,7 +48,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         Lx=1,
         Ly=2,
         res=1./64,
-        R=0.25,
+        R=0.4,
         dt=0.02,
         rho=[1000., 100.],
         mu=[10., 1.],
@@ -56,9 +56,10 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         epsilon=0.02,
         sigma=24.5,
         M=0.00002,
-        u_wall=-0.0,
+        u_wall=-0.5,
+        u_target=0.5,
         F0=[0., 0.],
-        g0=[0., -0.98],
+        g0=[0., -0*0.98],
         velocity_degree=1,
         folder="taylorbubble2d_results",
         plot_interval=10,
@@ -102,7 +103,7 @@ def create_bcs(V, subdomains, u_wall, **NS_namespace):
 def average_pressure_gradient(g0, F0, q_, rho, dx, mesh, **NS_namespace):
     # average pressure gradient
     #return Constant(tuple(F0))
-    #return Expression(("0", "-forcing"), forcing=F0[1], degree=2)
+    return Expression(("0", "-forcing"), forcing=F0[1], degree=2)
     # rho__, g___ = q_['phig'].split(deepcopy=True)
     # cv = rho__.vector()[:]
     # cv += 1
@@ -111,7 +112,7 @@ def average_pressure_gradient(g0, F0, q_, rho, dx, mesh, **NS_namespace):
     # cv[cv > 1.0] = 1.0
     # rho__.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
     # rho_avg = assemble(rho__ * dx)/assemble(Constant(1)*dx(domain=mesh))
-    return Constant((rho[0]*g0[0], rho[0]*g0[1]))
+    # return Constant((rho[0]*g0[0], rho[0]*g0[1]))
 
 def acceleration(g0, **NS_namespace):
     # (gravitational) acceleration
@@ -120,7 +121,7 @@ def acceleration(g0, **NS_namespace):
 
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
     phig_init = interpolate(Expression(
-        "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/4, 2))-R)/(sqrt(2)*epsilon))",
+        "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",
         epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
@@ -132,7 +133,8 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_name
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
+def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, 
+                   pressure_degree, AssignedVectorFunction, 
                    F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
@@ -169,7 +171,7 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     """
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, V_c_prev=0)
 
 """
 def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
@@ -193,8 +195,10 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, g0, statsfolder, timestampsfolder,
                   plot_interval, stat_interval, timestamps_interval,
-                  uv, mesh, acc, dt, gradp_avg, u_wall, Lx, Ly,
+                  uv, mesh, acc, dt, gradp_avg, u_wall, u_target, Lx, Ly, V_c_prev, rho, mu,
                   **NS_namespace):
+    returndict = dict()
+
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         u0m = assemble(q_['u0'] * dx) / volume
@@ -224,11 +228,16 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         #acc.grav = grav
         grav=0
 
-        #forcing_prev = gradp_avg.forcing
-        #forcing = forcing_prev + Kp * (u_wall - V_tot) * stat_interval * dt
+        k = 10.
+        tau = Lx**2 / (12 * mu[0] / rho[0])
+        alpha = rho[0] * 0.25 * (1+k)**2 / tau**2
+        beta = rho[0] * k / tau
+
+        forcing_prev = gradp_avg.forcing
+        forcing = forcing_prev + alpha * (u_target + u_wall - V_c) * stat_interval * dt - beta * (V_c - V_c_prev)
         #forcing = forcing_prev - Kp * V_c * stat_interval * dt
-        forcing = 0
-        #gradp_avg.forcing = forcing
+        #forcing = 0
+        gradp_avg.forcing = forcing
 
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
@@ -237,12 +246,13 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                     ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
                     tstep, t, *entries))
 
+        returndict.update(dict(V_c_prev=V_c))
 
     """
     if tstep % timestamps_interval == 0 and False:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     """
-    return dict()
+    return returndict
 
 
 def theend_hook(u_, p_, **NS_namespace):

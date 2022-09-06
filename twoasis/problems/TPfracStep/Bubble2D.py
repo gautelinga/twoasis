@@ -210,6 +210,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
     if tstep % timestamps_interval == 0 and False:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     """
+    return dict()
 
 def theend_hook(u_, p_, **NS_namespace):
     pass

@@ -10,7 +10,7 @@ from twoasis.problems import info_blue
 #max_iter = 1 #0                 # Number of inner pressure velocity iterations on timestep
 #iters_on_first_timestep = 10
 
-def setup(u_components, u, v, p, q, bcs, dt,
+def setup(u_components, u, v, p, q, bcs, #dt,
           scalar_components, V, Q, x_, p_, u_, A_cache, q_,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
           angles, ds,

@@ -7,3 +7,8 @@ TwOasis is a stripped-down fork of [Oasis](https://github.com/mikaem/Oasis) inte
 ```
 pip install .
 ```
+
+*Running*
+```
+twoasis TPfracStep problem=TaylorBubble2D
+```

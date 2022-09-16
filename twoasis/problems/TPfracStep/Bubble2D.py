@@ -106,12 +106,13 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, **NS_namespace):
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, **NS_namespace):
     phig_init = interpolate(Expression(
         "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/4, 2))-R)/(sqrt(2)*epsilon))",
         epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
+    q_2['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
         [bc.apply(x_1[ui]) for bc in bcs[ui]]
     for ui in x_2:

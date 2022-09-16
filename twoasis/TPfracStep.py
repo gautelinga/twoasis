@@ -227,6 +227,13 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
     start_timestep_hook(**vars())
 
+    # Solve for phase field
+    t0 = OasisTimer('Solving phase field', print_solve_info)
+    phase_field_assemble(**vars())
+    phase_field_hook(**vars())
+    phase_field_solve(**vars())
+    t0.stop()
+
     while udiff[0] > max_error and inner_iter < num_iter:
         #print("iteration:", inner_iter, udiff[0], max_error, num_iter)
         inner_iter += 1
@@ -257,13 +264,6 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     velocity_update(**vars())
     t0.stop()
 
-    # Solve for phase field
-    t0 = OasisTimer('Solving phase field', print_solve_info)
-    phase_field_assemble(**vars())
-    phase_field_hook(**vars())
-    phase_field_solve(**vars())
-    t0.stop()
-
     # Solve for scalars
     if len(scalar_components) > 0:
         scalar_assemble(**vars())
@@ -285,6 +285,8 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         x_1[ui].zero()
         x_1[ui].axpy(1.0, x_[ui])
 
+    x_2['phig'].zero()
+    x_2['phig'].axpy(1., x_1['phig'])
     x_1['phig'].zero()
     x_1['phig'].axpy(1., x_['phig'])
 

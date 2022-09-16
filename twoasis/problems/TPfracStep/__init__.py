@@ -17,7 +17,9 @@ NS_parameters.update(
     # Some discretization options
     # Use Adams Bashforth projection as first estimate for pressure on new timestep
     AB_projection_pressure=False,
-    solver="Naive",  # "IPCS_ABCN", "Chorin"
+    solver="Naive",  # "IPCS", "BDF"
+    bdf_order=2,
+    constant_poisson_coefficient=False,
 
     # Phase field parameters
     phase_field_degree=1,

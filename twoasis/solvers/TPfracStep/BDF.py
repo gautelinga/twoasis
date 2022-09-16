@@ -161,8 +161,8 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
     rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
     rho_inv_.vector()[:] = 1. / rho_.vector()[:]
 
-    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
-    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
+    # mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
+    mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
 
     for i, ui in enumerate(u_components):
         # zero out rhs

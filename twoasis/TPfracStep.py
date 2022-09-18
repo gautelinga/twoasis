@@ -125,7 +125,7 @@ VV['phig'] = W
 # Create dictionaries for the solutions at three timesteps
 q_  = dict((ui, Function(VV[ui], name=ui)) for ui in sys_comp)
 q_1 = dict((ui, Function(VV[ui], name=ui + "_1")) for ui in sys_comp)
-q_2 = dict((ui, Function(VV[ui], name=ui + "_2")) for ui in uphi_components)
+q_2 = dict((ui, Function(VV[ui], name=ui + "_2")) for ui in sys_comp)
 
 # Read in previous solution if restarting
 init_from_restart(**vars())
@@ -144,7 +144,7 @@ U_AB = 1.5 * u_1 - 0.5 * u_2
 # Create short forms for accessing the solution vectors
 x_ = dict((ui, q_[ui].vector()) for ui in sys_comp)        # Solution vectors t
 x_1 = dict((ui, q_1[ui].vector()) for ui in sys_comp)      # Solution vectors t - dt
-x_2 = dict((ui, q_2[ui].vector()) for ui in uphi_components)  # Solution vectors t - 2*dt
+x_2 = dict((ui, q_2[ui].vector()) for ui in sys_comp)  # Solution vectors t - 2*dt
 
 # Create vectors to hold rhs of equations
 b = dict((ui, Vector(x_[ui])) for ui in sys_comp)      # rhs vectors (final)
@@ -284,6 +284,11 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         x_2[ui].axpy(1.0, x_1[ui])
         x_1[ui].zero()
         x_1[ui].axpy(1.0, x_[ui])
+    
+    x_2['p'].zero()
+    x_2['p'].axpy(1., x_1['p'])
+    x_1['p'].zero()
+    x_1['p'].axpy(1., x_['p'])
 
     x_2['phig'].zero()
     x_2['phig'].axpy(1., x_1['phig'])
@@ -303,11 +308,6 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         list_timings(TimingClear.clear, [TimingType.wall])
         tx.start()
 
-    # AB projection for pressure on next timestep
-    #if AB_projection_pressure and t < (T - tstep * DOLFIN_EPS) and not stop:
-    #    x_['p'].axpy(0.5, dp_.vector())
-    # x_['p'].zero()
-    x_['p'].axpy(1.0, dp_.vector())
 
 total_timer.stop()
 list_timings(TimingClear.keep, [TimingType.wall])

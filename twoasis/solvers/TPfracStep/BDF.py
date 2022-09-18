@@ -26,7 +26,6 @@ def setup(u_components, u, v, p, q, bcs, #dt,
 
     # Mass matrix without density coefficient
     Md = assemble_matrix(inner(u, v) * dx)
-    #Mt = (Matrix(Md), rho_ * inner(u, v) )
 
     # Stiffness matrix that changes with time
     Kt = (Matrix(Md), mu_ * inner(grad(u), grad(v * rho_inv_)))
@@ -83,13 +82,15 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     initial_u2_norm = sum([x_2[ui].norm('l2') for ui in u_components])
 
     # In that case use Euler on first iteration
-    beta = Constant(2.0) if abs(initial_u1_norm -
-                                initial_u2_norm) > DOLFIN_EPS_LARGE else Constant(3.0)
-    info_blue(f"initial beta={beta(0)}")
+    initial_step_1st_order = np.array([abs(initial_u1_norm - initial_u2_norm) < DOLFIN_EPS_LARGE], dtype=bool)
+    info_blue(f"initial_step_1st_order={initial_step_1st_order[0]}")
+
+    alpha = np.zeros(3)
+    beta = np.zeros(2)
 
     # Create dictionary to be returned into global NS namespace
     d = dict(A=A, Md=Md, Ai=Ai, Apd=Apd, Apt=Apt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg, 
-             Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf, beta=beta)
+             Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf, alpha=alpha, beta=beta, initial_step_1st_order=initial_step_1st_order)
 
     TPT = TPsource(mu_, u_adv, V, name="N")
 
@@ -137,8 +138,8 @@ def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
 
 
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_order,
-                              Kt, u_adv, u_components, beta,
-                              b_tmp, bg0, b0, x_1, x_2, bcs, TPT, rho, mu,
+                              Kt, u_adv, u_components, alpha, beta, AB_projection_pressure,
+                              b_tmp, bg0, b0, x_, x_1, x_2, bcs, TPT, rho, mu,
                               rho_, mu_, rho_inv_, c__, q_, gradp_avg, bgp0,
                               **NS_namespace):
     """Called on first inner iteration of velocity/pressure system.
@@ -161,8 +162,8 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
     rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
     rho_inv_.vector()[:] = 1. / rho_.vector()[:]
 
-    # mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
-    mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
+    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
+    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
 
     for i, ui in enumerate(u_components):
         # zero out rhs
@@ -174,23 +175,16 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
         assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])
         
         b_tmp[ui].axpy(-1., b0[ui])
-
-        if bdf_order == 2:
-            b_tmp[ui].axpy(4.0 / (beta(0) * dt), Md * x_1[ui])
-            b_tmp[ui].axpy(-1. / (beta(0) * dt), Md * x_2[ui])
-        else: # bdf_order == 1:
-            b_tmp[ui].axpy(1. / dt, Md * x_1[ui])
+        b_tmp[ui].axpy(-alpha[1], Md * x_1[ui])
+        b_tmp[ui].axpy(-alpha[2], Md * x_2[ui])
 
         TPT.assemble_rhs(i)
         b_tmp[ui].axpy(1., TPT.vector() * rho_inv_.vector())
 
     # assemble semi-implicit convection, diffusion etc. for lhs
     assemble(a_conv, tensor=A)
-    if bdf_order == 2:
-        A.axpy(3. / (beta(0) * dt), Md, True)
-    else: # bdf_order == 1:
-        A.axpy(1. / dt, Md, True)
-    
+    A.axpy(alpha[0], Md, True)
+
     assemble(Kt[1] * dx, tensor=Kt[0])
     A.axpy(1.0, Kt[0], True)
 
@@ -201,6 +195,14 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
             [bc.apply(Ai[ui]) for bc in bcs[ui]]
     else:
         [bc.apply(A) for bc in bcs['u0']] # assumes only no-slip!
+
+    x_['p'].zero()
+    if AB_projection_pressure: # and t < (T - tstep * DOLFIN_EPS) and not stop:
+        #x_['p'].axpy(0.5, dp_.vector())
+        x_['p'].axpy(beta[0], x_1['p'])
+        x_['p'].axpy(beta[1], x_2['p'])
+    else:
+        x_['p'].axpy(1., x_1['p'])
 
 def attach_pressure_nullspace(Ap, x_, Q):
     """Create null space basis object and attach to Krylov solver."""
@@ -213,7 +215,7 @@ def attach_pressure_nullspace(Ap, x_, Q):
     Aa.null_space = null_space
     return null_space
 
-def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, rho_inv_, c__, **NS_namespace):
+def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, rho_inv_, **NS_namespace):
     """Add pressure gradient to rhs of tentative velocity system."""
     #info_blue(f"Assembling {ui}")
 
@@ -242,7 +244,7 @@ def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
     udiff[0] += norm(x_2[ui] - x_[ui])
 
 
-def pressure_assemble(b, x_, dx, dt, Apt, divu, bcs, beta, bdf_order, constant_poisson_coefficient, **NS_namespace):
+def pressure_assemble(b, x_, dx, dt, Apt, Apd, divu, bcs, alpha, constant_poisson_coefficient, **NS_namespace):
     """Assemble rhs of pressure equation."""
     #info_blue("Assembling P")
 
@@ -256,12 +258,11 @@ def pressure_assemble(b, x_, dx, dt, Apt, divu, bcs, beta, bdf_order, constant_p
 
     divu.assemble_rhs()  # Computes div(u_)*q*dx
     b['p'][:] = divu.rhs
-    if bdf_order == 2:
-        b['p'] *= (-3.0 / (beta(0) * dt))
-    else:  # bdf_order == 1:
-        b['p'] *= (-1. / dt)
-    b['p'].axpy(1., Apt[0] * x_['p'])
-
+    b['p'] *= -alpha[0]
+    if not constant_poisson_coefficient:
+        b['p'].axpy(1., Apt[0] * x_['p'])
+    else:
+        b['p'].axpy(1., Apd * x_['p'])
 
 def pressure_solve(dp_, x_, Apt, Apd, b, p_sol, bcs, constant_poisson_coefficient, **NS_namespace):
     """Solve pressure equation."""
@@ -292,14 +293,9 @@ def pressure_solve(dp_, x_, Apt, Apd, b, p_sol, bcs, constant_poisson_coefficien
     dpv *= -1.
 
 
-def velocity_update(u_components, bcs, gradp, dp_, dt, x_, rho_inv_, rho, beta, bdf_order, constant_poisson_coefficient, **NS_namespace):
+def velocity_update(u_components, bcs, gradp, dp_, dt, x_, rho_inv_, rho, alpha, constant_poisson_coefficient, **NS_namespace):
     """Update the velocity after regular pressure velocity iterations."""
-    if bdf_order == 2:
-        factor = beta(0) * dt / 3.0
-    else: # bdf_order == 1:
-        factor = dt
-    beta.assign(2.0)
-
+    factor = 1./alpha[0]
     for ui in u_components:
         gradp[ui](dp_)
         if not constant_poisson_coefficient:
@@ -319,18 +315,35 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve scalar equation."""
     pass
 
-def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, x_2, u_adv, u_components, beta, bdf_order, **NS_namespace):
+def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, x_2, u_adv, u_components, alpha,
+                         beta, bdf_order, initial_step_1st_order, **NS_namespace):
     """Assemble phase field equation."""
     #info_blue("Assembling PF")
+    if bdf_order == 2 and not initial_step_1st_order[0]:
+        w_n = 1. # dt / dt_1
+
+        alpha[0] = (1. + 2.*w_n)/(1. + w_n) / dt  # 3.0 / (2. * dt)
+        alpha[1] = -(1. + w_n) / dt               # - 4.0 / (2 * dt)
+        alpha[2] = w_n**2 / (1. + w_n) / dt       # 1. / (2 * dt)
+
+        beta[0] = 1.0 + w_n  # 2.0
+        beta[1] = -w_n       # -1.0
+    else: # bdf_order == 1:
+        alpha[0] = 1. / dt
+        alpha[1] = - 1. / dt
+        alpha[2] = 0.
+
+        beta[0] = 1.0
+        beta[1] = 0.0
+
+    initial_step_1st_order[0] = False
+    #info_blue(f"{alpha}, {beta}")
 
     # Update u_adv used as convecting velocity
     for i, ui in enumerate(u_components):
         u_adv[i].vector().zero()
-        if bdf_order == 2:
-            u_adv[i].vector().axpy(2.0, x_1[ui])
-            u_adv[i].vector().axpy(-1.0, x_2[ui])
-        else:  # bdf_order == 1:
-            u_adv[i].vector().axpy(1.0, x_1[ui])
+        u_adv[i].vector().axpy(beta[0], x_1[ui])
+        u_adv[i].vector().axpy(beta[1], x_2[ui])
 
     t1 = Timer("Phase field assemble")
     assemble(a_pf, tensor=Apf)
@@ -342,15 +355,11 @@ def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b
     Apf.axpy(-sigma_bar * epsilon, Kpf[1], True)
     Apf.axpy(1., Fpft[0], True)
 
-    if bdf_order == 2:
-        Apf.axpy(3./ (beta(0) * dt), Mpf[0], True)
-        # Add mass
-        b['phig'].axpy(4. / (beta(0) * dt), Mpf[0] * x_1['phig'])
-        b['phig'].axpy(-1. / (beta(0) * dt), Mpf[0] * x_2['phig'])
-    else:  # bdf_order == 1:
-        Apf.axpy(1. / dt, Mpf[0], True)
-        # Add mass
-        b['phig'].axpy(1. / dt, Mpf[0] * x_1['phig'])
+    Apf.axpy(alpha[0], Mpf[0], True)
+    # Add mass
+    b['phig'].axpy(-alpha[1], Mpf[0] * x_1['phig'])
+    b['phig'].axpy(-alpha[2], Mpf[0] * x_2['phig'])
+
     t1.stop()
 
 

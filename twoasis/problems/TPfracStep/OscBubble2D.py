@@ -176,10 +176,10 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
 def temporal_hook(q_, tstep, t, dt, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, g0, statsfolder, timestampsfolder,
                   plot_interval, stat_interval, timestamps_interval,
-                  uv, mesh, dump_this_step,
+                  uv, mesh,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
-    if tstep % stat_interval == 0 or dump_this_step:
+    if tstep % stat_interval == 0:
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume
         phim = assemble(phi_ * dx) / volume

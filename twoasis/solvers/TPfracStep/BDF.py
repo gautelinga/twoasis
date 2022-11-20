@@ -254,6 +254,8 @@ def pressure_assemble(b, x_, dx, dt, Apt, Apd, divu, bcs, alpha, constant_poisso
         if bcs['p'] == []:
             Aa = as_backend_type(Apt[0])
             Aa.set_nullspace(Apt[2])
+        else:
+            [bc.apply(Apt[0]) for bc in bcs['p']]
         t1.stop()
 
     divu.assemble_rhs()  # Computes div(u_)*q*dx

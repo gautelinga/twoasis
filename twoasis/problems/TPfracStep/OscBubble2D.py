@@ -43,7 +43,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         amplitude=0.1,
         mode_order=3,
         R=1.25,
-        dt=0.0004,
+        dt=0.0005,
         rho=[0.998, 0.0012], #
         mu=[0.101, 0.00182],
         theta=np.pi/2,
@@ -54,11 +54,11 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         g0=[0., 0.],
         velocity_degree=1,
         folder="oscbubble2d_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        save_intv=0.1,
+        # plot_interval=10,
+        stat_interval=0.002,
+        timestamps_interval=0.02,
+        #save_step=10,
+        save_interval=0.02,
         checkpoint=10,
         print_intermediate_info=10,
         use_krylov_solvers=True,
@@ -116,7 +116,9 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R,
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, 
+                   save_interval, stat_interval, timestamps_interval,
+                   **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -151,8 +153,12 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
         h5f.write(mesh, "mesh")
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     """
+    save_step = round(save_interval / dt)
+    stat_step = round(stat_interval / dt)
+    timestamps_step = round(timestamps_interval / dt)
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume,
+                save_step=save_step, stat_step=stat_step, timestamps_step=timestamps_step)
 
 """
 def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
@@ -175,11 +181,11 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
 
 def temporal_hook(q_, tstep, t, dt, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, g0, statsfolder, timestampsfolder,
-                  plot_interval, stat_interval, timestamps_interval,
+                  stat_step, timestamps_step,
                   uv, mesh,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
-    if tstep % stat_interval == 0:
+    if tstep % stat_step == 0:
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume
         phim = assemble(phi_ * dx) / volume

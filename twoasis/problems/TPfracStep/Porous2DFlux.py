@@ -141,7 +141,7 @@ def create_bcs(V, Q, u0, W, subdomains, **NS_namespace):
     return dict(u0=[bc_ux_wall, bc_ux_btm, bc_ux_btm],
                 u1=[bc_uy_wall, bc_uy_btm, bc_uy_top],
                 p=[],
-                phig=[bc_phig_btm])
+                phig=[bc_phig_btm, bc_phig_top])
 
 
 def average_pressure_gradient(F0, **NS_namespace):

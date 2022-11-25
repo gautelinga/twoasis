@@ -96,7 +96,7 @@ NS_parameters.update(
 
     pressure_krylov_solver=dict(
         solver_type='gmres',
-        preconditioner_type='hypre_amg'),
+        preconditioner_type='petsc_amg'),  # <-- seems faster than 'hypre_amg'),
 
     scalar_krylov_solver=dict(
         solver_type='bicgstab',

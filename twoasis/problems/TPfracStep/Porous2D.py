@@ -232,6 +232,8 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                     tstep, t, u0m, u1m, phim, E_kin, E_int, E_pot))
     if tstep % timestamps_interval == 0:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
+    return dict()
+
 
 def theend_hook(u_, p_, testing, **NS_namespace):
     u_norm = norm(u_[0].vector())

@@ -59,7 +59,6 @@ if __name__ == "__main__":
         code = gmsh_code_tube_header.format(L=args.L, R=args.R, res=args.res) + gmesh_code_tube_body
         ofile.write(code)
 
-
     os.system(f"gmsh {tmpname}.geo -3")
 
     mesh = meshio.read(f"{tmpname}.msh")

@@ -4,7 +4,6 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from ..TPfracStep import *
-import matplotlib.pyplot as plt
 import numpy as np
 from os import makedirs
 
@@ -106,7 +105,6 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         g0=[0., 0., 0.],
         velocity_degree=1,
         folder="porous3d_results",
-        plot_interval=10,
         stat_interval=10,
         timestamps_interval=10,
         save_step=10,
@@ -236,14 +234,6 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   uv, mesh,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
-    if tstep % plot_interval == 0 and False:
-        plot(u_, title='Velocity')
-        plt.show()
-        plot(phi_, title='Phase field')
-        plt.show()
-        #plot(p_, title='Pressure')
-        #plot(q_['alfa'], title='alfa')
-        #plot(q_['beta'], title='beta')
     if tstep % stat_interval == 0:
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume

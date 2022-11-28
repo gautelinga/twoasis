@@ -77,6 +77,24 @@ def get_fname(L, R, reps, res, ext):
     fname = "meshes/porous3d_rcp01.{ext}".format(**meshparams)    
     return fname
 
+def ccode_expr(checkerboard):
+    expr_fhat = "0.5*(tanh(({xhat}+0.25)/(sqrt(2)*{eps})) - tanh(({xhat}-0.25)/(sqrt(2)*{eps})))"
+    expr_xhat = "({N}*x[{d}]/L-({i}+0.5))"
+    ccode = ""
+    factors = []
+    for d in range(len(checkerboard)):
+        if checkerboard[d] > 0:
+            expr_xhat_d = []
+            expr_eps = "{N} / L * epsilon".format(N=checkerboard[d])
+            for i in range(checkerboard[d]):
+                expr_xhat_di = expr_xhat.format(N=checkerboard[d], d=d, i=i)
+                expr_xhat_d.append(expr_xhat_di)
+            factors.append("(2*(" + "+".join([expr_fhat.format(xhat=expr_xhat_di, eps=expr_eps) for expr_xhat_di in expr_xhat_d]) + ")-1.0)")
+        else:
+            factors.append("1")
+    ccode = "*".join(factors)
+    return ccode
+
 # Create a mesh
 def mesh(L, R, reps, res, **params):
     mesh = Mesh()
@@ -94,14 +112,15 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         R=0.1, # dummy
         reps=0.02,
         res=0.01, #dummy for now
-        dt=0.01,
+        dt=0.1,
         rho=[1, 1],
         mu=[1, 1],
-        theta=np.pi/2,
+        theta=np.pi/3,
         epsilon=0.01,
-        sigma=1.0,
+        sigma=0.1,
+        checkerboard=[4, 4, 4],
         M=0.00002,
-        F0=[0., 0., 1.],
+        F0=[0., 0., -10],
         g0=[0., 0., 0.],
         velocity_degree=1,
         folder="porous3d_results",
@@ -119,10 +138,6 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         iters_on_first_timestep=10,  # Number of iterations on first timestep
     )
 
-    #scalar_components += ["alfa", "beta"]
-    #Schmidt["alfa"] = 1.
-    #Schmidt["beta"] = 10.
-
     #NS_parameters['krylov_solvers'] = {'monitor_convergence': False,
     #                                   'report': False,
     #                                   'relative_tolerance': 1e-10,
@@ -131,7 +146,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         constrained_domain=PBC3([NS_parameters["L"], NS_parameters["L"], NS_parameters["L"]])
     ))
 
-def mark_subdomains(subdomains, dim, L, R, reps, res, **NS_namespace):
+def mark_subdomains(subdomains, L, R, reps, res, **NS_namespace):
     fname = get_fname(L, R, reps, res, "obst")
     xyzr_ = np.loadtxt(fname)
     wall = Walls(xyzr_)
@@ -161,10 +176,12 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, **NS_namespace):
+def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, checkerboard, **NS_namespace):
+    ccode = ccode_expr(checkerboard)
     phig_init = interpolate(Expression(
         #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-        "tanh((x[2]-0.75*L)/(sqrt(2)*epsilon))-tanh((x[2]-0.25*L)/(sqrt(2)*epsilon))+1",
+        #"tanh((x[2]-0.75*L)/(sqrt(2)*epsilon))-tanh((x[2]-0.25*L)/(sqrt(2)*epsilon))+1",
+        ccode,
         epsilon=epsilon, L=L, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
@@ -175,13 +192,16 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, **NS_namespace):
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, reps, res, dt, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, R, reps, res, dt, constrained_domain, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
+    keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "R", "reps", "res", "dt"]
 
     # Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
     uv = AssignedVectorFunction(u_, name="u")
+    #phi__ = Function(q_['phig'].function_space().sub(0).collapse(), name="phi")
+    phi__ = Function(FunctionSpace(mesh, "CG", velocity_degree, constrained_domain=constrained_domain), name="phi")
 
     if MPI.rank(MPI.comm_world) == 0 and not path.exists(statsfolder):
         makedirs(statsfolder)
@@ -189,9 +209,8 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
     if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
         makedirs(timestampsfolder)
 
-    if MPI.rank(MPI.comm_world) == 0 and False:
+    if MPI.rank(MPI.comm_world) == 0:
         with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
-            keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"]
             for key in keys:
                 ofile.write("{}={}\n".format(key, eval(key)))
         with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
@@ -204,20 +223,19 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
             ofile.write("periodic_y=true\n")
             ofile.write("periodic_z=true\n")
             ofile.write("rho=1.0\n")
-    #with HDF5File(mesh.mpi_comm(),
-    #              path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
-    #    h5f.write(mesh, "mesh")
-    #write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
+    with HDF5File(mesh.mpi_comm(),
+                  path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
+        h5f.write(mesh, "mesh")
+    write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder)
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, phi__=phi__)
 
-def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
+def write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder):
     uv()
 
     h5fname = "up_{}.h5".format(tstep)
 
-    phi__, g__ = q_['phig'].split(deepcopy=True)
-    phi__.rename("phi", "phi")
+    assign(phi__, q_['phig'].sub(0))
 
     with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
         h5f.write(uv, "u")
@@ -230,8 +248,8 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
 
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, statsfolder, timestampsfolder,
-                  plot_interval, stat_interval, timestamps_interval,
-                  uv, mesh,
+                  stat_interval, timestamps_interval,
+                  uv, mesh, phi__,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
@@ -247,11 +265,9 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
             with open(statsfolder + "/tdata.dat", "a") as tfile:
                 tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(
                     tstep, t, u0m, u1m, u2m, phim, E_kin, E_int, E_pot))
-    #if tstep % timestamps_interval == 0:
-        #write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
+    if tstep % timestamps_interval == 0:
+        write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder)
     return dict()
 
 def theend_hook(u_, p_, testing, **NS_namespace):
-    u_norm = norm(u_[0].vector())
-    if MPI.rank(MPI.comm_world) == 0 and testing:
-        print("Velocity norm = {0:2.6e}".format(u_norm))
+    pass

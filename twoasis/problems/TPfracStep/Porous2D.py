@@ -93,6 +93,11 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         use_krylov_solvers=True,
         solver="IPCS")
 
+    # Need to override these here for PBC compliance
+    for key in ["Lx", "Ly"]:
+        if key in commandline_kwargs:
+            NS_parameters[key] = commandline_kwargs[key]
+
     #scalar_components += ["alfa", "beta"]
     #Schmidt["alfa"] = 1.
     #Schmidt["beta"] = 10.

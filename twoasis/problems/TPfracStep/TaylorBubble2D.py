@@ -149,7 +149,6 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree,
     """
     if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
         makedirs(timestampsfolder)
-
     if MPI.rank(MPI.comm_world) == 0:
         with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
             keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "res", "dt"]

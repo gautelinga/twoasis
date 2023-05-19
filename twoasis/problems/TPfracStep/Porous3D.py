@@ -253,13 +253,14 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
+        sigma_bar = sigma * 3./(2*np.sqrt(2))
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume
         u2m = assemble(q_['u2'] * dx) / volume
         phim = assemble(phi_ * dx) / volume
         E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dx) / volume
-        E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2 + phi_.dx(2)**2) * dx) / volume
-        E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2 + phi_.dx(2)**2) * dx) / volume
+        E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:

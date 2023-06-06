@@ -1,6 +1,6 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2023-06-5"
+__copyright__ = "Copyright (C) 2023 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from ..TPfracStep import *

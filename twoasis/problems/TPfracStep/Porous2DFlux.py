@@ -93,6 +93,8 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         max_iter=20,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=100,  # Number of iterations on first timestep
+        initial_state=None,
+        injected_phase=-1,
     )
     # Need to force this for proper PBCs
     if "Lx" in commandline_kwargs:
@@ -127,18 +129,18 @@ def contact_angles(theta, **NS_namespace):
     return [(theta, 1)]
 
 # Specify boundary conditions
-def create_bcs(V, Q, u0, W, subdomains, **NS_namespace):
+def create_bcs(V, Q, u0, W, subdomains, injected_phase, **NS_namespace):
     bc_ux_wall = DirichletBC(V, 0, subdomains, 1)
     bc_uy_wall = DirichletBC(V, 0, subdomains, 1)
     bc_ux_top = DirichletBC(V, 0, subdomains, 2)
     bc_uy_top = DirichletBC(V, u0, subdomains, 2)
     bc_ux_btm = DirichletBC(V, 0, subdomains, 3)
     bc_uy_btm = DirichletBC(V, u0, subdomains, 3)
-    #bc_p_top = DirichletBC(Q, 0, subdomains, 2)
+    bc_p_top = DirichletBC(Q, 0, subdomains, 2)
     #bc_p_btm = DirichletBC(Q, 0, subdomains, 3)
-    bc_phig_top = DirichletBC(W.sub(0), 1, subdomains, 2)
-    bc_phig_btm = DirichletBC(W.sub(0), -1, subdomains, 3)
-    return dict(u0=[bc_ux_wall, bc_ux_btm, bc_ux_btm],
+    bc_phig_top = DirichletBC(W.sub(0), -1 * injected_phase, subdomains, 2)
+    bc_phig_btm = DirichletBC(W.sub(0), 1 * injected_phase, subdomains, 3)
+    return dict(u0=[bc_ux_wall, bc_ux_btm, bc_ux_top],
                 u1=[bc_uy_wall, bc_uy_btm, bc_uy_top],
                 p=[],
                 phig=[bc_phig_btm, bc_phig_top])
@@ -154,13 +156,19 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, **NS_namespace):
-    phig_init = interpolate(Expression(
-        #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-        #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-        "tanh((x[1]-y0)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, mesh, **NS_namespace):
+    if initial_state is None:
+        phi_init = interpolate(Expression(
+            #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+            #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+            "tanh((x[1]-y0)/(sqrt(2)*epsilon))",
+            epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
+        assign(q_['phig'].sub(0), phi_init)
+    else:
+        info_blue("initializing from: " + initial_state)
+        phi_init = read_phase_distribition(initial_state, mesh, q_)
+        assign(q_['phig'].sub(0), phi_init)
+
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
@@ -170,7 +178,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, **NS_namespace)
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, rad, res, dt, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, rad, res, dt, Lx, Ly, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -186,7 +194,7 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
 
     if MPI.rank(MPI.comm_world) == 0:
         with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
-            keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"]
+            keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt", "Lx", "Ly"]
             for key in keys:
                 ofile.write("{}={}\n".format(key, eval(key)))
         with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
@@ -222,6 +230,13 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     if MPI.rank(MPI.comm_world) == 0:
         with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
             ofile.write("{:.6f} {}\n".format(t, h5fname))
+
+def read_phase_distribition(fname, mesh, q_):
+    phi__, g__ = q_['phig'].split(deepcopy=True)
+    with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
+        h5f.read(phi__, "phi")
+    return phi__
+
 
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, statsfolder, timestampsfolder,

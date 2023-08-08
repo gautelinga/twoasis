@@ -6,7 +6,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from ..TPfracStep import *
 import numpy as np
 from os import makedirs
-from ufl import max_value, min_value
+from ufl_legacy import max_value, min_value
 
 class LeftRight(SubDomain):
     def __init__(self, Lx):

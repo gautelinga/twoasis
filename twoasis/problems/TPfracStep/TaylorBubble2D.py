@@ -8,7 +8,7 @@ from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
 from os import makedirs
-from ufl import max_value, min_value
+from ufl_legacy import max_value, min_value
 
 class LeftRight(SubDomain):
     def __init__(self, Lx):

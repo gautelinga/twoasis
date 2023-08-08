@@ -9,8 +9,9 @@ from dolfin import (assemble, KrylovSolver, LUSolver,  Function,
     as_backend_type, VectorFunctionSpace, FunctionAssigner, PETScKrylovSolver,
     PETScPreconditioner, DirichletBC, split)
 
-from ufl.tensors import ListTensor
-from ufl import Coefficient
+#from ufl.tensors import ListTensor
+from ufl_legacy.tensors import ListTensor
+from ufl_legacy import Coefficient
 
 # Create some dictionaries to hold work matrices
 class Mat_cache_dict(dict):

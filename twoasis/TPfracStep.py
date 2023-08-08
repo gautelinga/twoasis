@@ -98,6 +98,7 @@ subdomains = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
 subdomains.set_all(0)
 mark_subdomains(**vars())
 ds = Measure("ds", domain=mesh, subdomain_data=subdomains)
+normal = FacetNormal(mesh)
 
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)

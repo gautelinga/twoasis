@@ -3,15 +3,15 @@
 from setuptools import setup
 
 # Version number
-major = 2018
+major = 2023
 minor = 1
 
 setup(name = "twoasis",
       version = "%d.%d" % (major, minor),
-      description = "Twoasis - Two-phase Navier-Stokes solvers in FEniCS",
-      author = "Mikael Mortensen",
-      author_email = "mikaem@math.uio.no",
-      url = 'https://github.com/mikaem/Oasis.git',
+      description = "Twoasis - Two-phase flow solvers in FEniCS",
+      author = "Gaute Linga",
+      author_email = "gaute.linga@mn.uio.no",
+      url = 'https://github.com/gautelinga/twoasis.git',
       classifiers = [
           'Intended Audience :: Developers',
           'Intended Audience :: Science/Research',

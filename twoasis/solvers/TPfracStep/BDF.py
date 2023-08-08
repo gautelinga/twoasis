@@ -13,7 +13,7 @@ from twoasis.problems import info_blue
 def setup(u_components, u, v, p, q, bcs, #dt,
           scalar_components, V, Q, x_, x_1, x_2, p_, u_, A_cache, q_,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
-          angles, ds, bdf_order, constant_poisson_coefficient,
+          angles, ds, bdf_order, constant_poisson_coefficient, normal,
           velocity_update_solver, assemble_matrix, homogenize,
           GradFunction, PhiGradFunction, DivFunction, TPsource, **NS_namespace):
     """Preassemble matrices."""
@@ -61,7 +61,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     apft, Lpft = lhs(Fpft), rhs(Fpft)
 
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
-    a_pf = -inner(dot(grad(xi), u_adv), phi) * dx
+    a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
     Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx), assemble_matrix(inner(grad(phi), grad(eta)) * dx))
     Fpft = (Matrix(Mpf[0]), apft, Lpft)
     Apf = Matrix(Mpf[0])

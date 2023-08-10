@@ -3,9 +3,6 @@ __date__ = "2013-06-25"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from copy import deepcopy
-from ntpath import join
-from re import sub
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np

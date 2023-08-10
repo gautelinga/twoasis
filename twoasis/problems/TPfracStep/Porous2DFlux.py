@@ -136,14 +136,14 @@ def create_bcs(V, Q, u0, W, subdomains, injected_phase, **NS_namespace):
     bc_uy_top = DirichletBC(V, u0, subdomains, 2)
     bc_ux_btm = DirichletBC(V, 0, subdomains, 3)
     bc_uy_btm = DirichletBC(V, u0, subdomains, 3)
-    bc_p_top = DirichletBC(Q, 0, subdomains, 2)
+    #bc_p_top = DirichletBC(Q, 0, subdomains, 2)
     #bc_p_btm = DirichletBC(Q, 0, subdomains, 3)
-    bc_phig_top = DirichletBC(W.sub(0), -1 * injected_phase, subdomains, 2)
+    #bc_phig_top = DirichletBC(W.sub(0), -1 * injected_phase, subdomains, 2)
     bc_phig_btm = DirichletBC(W.sub(0), 1 * injected_phase, subdomains, 3)
     return dict(u0=[bc_ux_wall, bc_ux_btm, bc_ux_top],
                 u1=[bc_uy_wall, bc_uy_btm, bc_uy_top],
                 p=[],
-                phig=[bc_phig_btm, bc_phig_top])
+                phig=[bc_phig_btm])
 
 
 def average_pressure_gradient(F0, **NS_namespace):

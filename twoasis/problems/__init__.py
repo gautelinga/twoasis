@@ -169,6 +169,10 @@ def create_bcs(sys_comp, **NS_namespace):
     return dict((ui, []) for ui in sys_comp)
 
 
+def phase_field_source(**NS_namespace):
+    """Phase field sources (tuple) -- mainly for testing purposes."""
+    return None
+
 def scalar_hook(**NS_namespace):
     """Called prior to scalar solve."""
     pass

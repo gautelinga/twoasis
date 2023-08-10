@@ -24,6 +24,9 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     mu_ = Function(V)
     c__ = Function(V)
 
+    # If things need to be precomputed
+    set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu)
+
     # Mass matrix without density coefficient
     Md = assemble_matrix(inner(u, v) * dx)
 
@@ -136,6 +139,20 @@ def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
 
     return sols
 
+def set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu):
+    assign(c__, q_['phig'].sub(0))
+    cv = c__.vector()[:]
+    cv += 1
+    cv *= 0.5
+    cv[cv < 0.0] = 0.0
+    cv[cv > 1.0] = 1.0
+
+    rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
+    rho_inv_.vector()[:] = 1. / rho_.vector()[:]
+
+    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
+    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
+
 
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_order,
                               Kt, u_adv, u_components, alpha, beta, AB_projection_pressure,
@@ -152,27 +169,16 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
 
     t0 = Timer("Assemble first inner iter")
 
-    assign(c__, q_['phig'].sub(0))
-    cv = c__.vector()[:]
-    cv += 1
-    cv *= 0.5
-    cv[cv < 0.0] = 0.0
-    cv[cv > 1.0] = 1.0
-
-    rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
-    rho_inv_.vector()[:] = 1. / rho_.vector()[:]
-
-    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
-    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
+    set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu)
 
     for i, ui in enumerate(u_components):
         # zero out rhs
         b_tmp[ui].zero()
         # start with (gravitational) acceleration
-        assemble(bg0[ui] * dx, tensor=b_tmp[ui])
+        assemble(bg0[ui] * dx, tensor=b_tmp[ui]) # check if it can be precomputed (Constant vs. Expression)
         # add average pressure gradient
         b0[ui].zero()
-        assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])
+        assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])  # add check for this!
         
         b_tmp[ui].axpy(-1., b0[ui])
         b_tmp[ui].axpy(-alpha[1], Md * x_1[ui])
@@ -317,8 +323,8 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve scalar equation."""
     pass
 
-def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, x_2, u_adv, u_components, alpha,
-                         beta, bdf_order, initial_step_1st_order, **NS_namespace):
+def phase_field_assemble(t, dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, x_2, u_adv, u_components, alpha,
+                         beta, bdf_order, initial_step_1st_order, fpf, bpf, **NS_namespace):
     """Assemble phase field equation."""
     #info_blue("Assembling PF")
     if bdf_order == 2 and not initial_step_1st_order[0]:
@@ -350,12 +356,19 @@ def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b
     t1 = Timer("Phase field assemble")
     assemble(a_pf, tensor=Apf)
     assemble(Fpft[1], tensor=Fpft[0])
+    
+    b['phig'].zero()
     assemble(Fpft[2], tensor=b['phig'])
 
     Apf.axpy(M, Kpf[0], True)
     Apf.axpy(1., Mpf[1], True)
     Apf.axpy(-sigma_bar * epsilon, Kpf[1], True)
     Apf.axpy(1., Fpft[0], True)
+    if bpf:
+        if "t" in fpf._user_parameters:
+            fpf.t = t
+        assemble(bpf[0] * dx, tensor=bpf[1])
+        b['phig'].axpy(1.0, bpf[1])
 
     Apf.axpy(alpha[0], Mpf[0], True)
     # Add mass

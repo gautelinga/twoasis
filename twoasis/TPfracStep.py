@@ -59,7 +59,7 @@ problem_parameters(**vars())
 # Update current namespace with NS_parameters and commandline_kwargs ++
 vars().update(post_import_problem(**vars()))
 
-# Use t and tstep from stored paramteres if restarting
+# Use t and tstep from stored parameters if restarting
 if restart_folder is not None:
     f = open(path.join(path.abspath(restart_folder), 'params.dat'), 'rb')
     params = pickle.load(f)
@@ -188,12 +188,14 @@ vars().update(nn_setup(**vars()))
 """
 
 # Initialize solution
-initialize(**vars())
+_vars = initialize(**vars())
+if isinstance(_vars, dict):
+    vars().update(_vars)
 
 #  Fetch linear algebra solvers
 u_sol, p_sol, pf_sol, c_sol = get_solvers(**vars())
 
-# Get constant body forces
+# Get body forces
 gradp_avg = average_pressure_gradient(**vars())
 assert(isinstance(gradp_avg, Coefficient))
 bgp0 = dict((ui, v * gradp_avg[i]) for i, ui in enumerate(u_components))
@@ -202,6 +204,10 @@ b0 = dict((ui, assemble(bgp0[ui] * dx)) for ui in u_components)
 acc = acceleration(**vars())
 assert(isinstance(acc, Coefficient))
 bg0 = dict((ui, v * acc[i]) for i, ui in enumerate(u_components))
+
+# Get phase field sources (for testing)
+fpf = phase_field_source(**vars())
+bpf = (xi * fpf, assemble(xi * fpf * dx)) if isinstance(fpf, Coefficient) else None
 
 # Get scalar sources
 fs = scalar_source(**vars())

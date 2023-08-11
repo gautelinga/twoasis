@@ -10,7 +10,7 @@ def make_ccode(spexpr):
         code = code.replace(key, val)
     lines = []
     for line in code.split("\n"):
-        if line[:2] != "//":
+        if line[:2] not in ["//", "/*"]:
             lines.append(line)
     code = "\n".join(lines)
     return code
@@ -19,25 +19,33 @@ if __name__ == "__main__":
     # x, y = sp.symbols("x y")
     R = CoordSys3D("R")
     t = sp.symbols("t")
-    mu, rho, sigma, M, epsilon, beta, phi0, u0 = sp.symbols("mu rho sigma M epsilon beta phi0 u0", positive=True)
+    mu, rho, sigma, M, epsilon, beta, phi0, u0, L = sp.symbols("mu rho sigma M epsilon beta phi0 u0 L", positive=True)
     beta_min = sp.sqrt(256*epsilon**4 - 184*epsilon**2 + 79)/4 
     alpha = M * sigma / epsilon * beta #_min # beta
-    U = u0 * sp.exp(-2*mu/rho * t) # update
-    Phi = phi0 * sp.exp(-alpha*t) # sp.symbols("Phi") #sp.exp(-t)
+    U = u0 * sp.exp(-2*(2*sp.pi/L)**2*mu/rho * t) # update
+    Phi = phi0 * sp.exp(-alpha*(2*sp.pi/L)**2*t) # sp.symbols("Phi") #sp.exp(-t)
 
-    u = (U * ( sp.cos(R.x) * sp.sin(R.y) * R.i - sp.sin(R.x) * sp.cos(R.y) * R.j )).doit()
-    p_u = -1/4 * rho * U**2 * (sp.cos(2*R.x) + sp.cos(2*R.y)) 
+    u = (U * ( sp.cos(2*sp.pi/L*R.x) * sp.sin(2*sp.pi/L*R.y) * R.i - sp.sin(2*sp.pi/L*R.x) * sp.cos(2*sp.pi/L*R.y) * R.j )).doit()
+    p_u = -1/4 * rho * U**2 * (sp.cos(2*2*sp.pi/L*R.x) + sp.cos(2*2*sp.pi/L*R.y)) 
 
-    phi = Phi * sp.cos(R.x) * sp.cos(R.y)
+    phi = Phi * sp.cos(2*sp.pi/L*R.x) * sp.cos(2*sp.pi/L*R.y)
     eta = (sigma * ( (- phi + phi**3)/epsilon - epsilon * laplacian(phi))).doit()
 
-    p_phi = sigma * (1 - 2*epsilon**2)/(2*epsilon) * phi**2 - 3*sigma/(4*epsilon) * phi**4
-    p = p_u + p_phi
+    phi2_mean = sp.integrate(sp.integrate(phi**2/L**2, (R.x, 0, L)).simplify(), (R.y, 0, L)).simplify()
+    phi4_mean = sp.integrate(sp.integrate(phi**4/L**2, (R.x, 0, L)).simplify(), (R.y, 0, L)).simplify()
+    # print(phi2_mean, phi4_mean)
 
-    ugradu = u.dot(gradient(u.dot(R.i)))*R.i + u.dot(gradient(u.dot(R.j)))*R.j + u.dot(gradient(u.dot(R.k)))*R.k
-    gradp_u = gradient(p_u)
-    gradp_phi = gradient(p_phi)
-    gradp = gradient(p)
+    p_phi = (sigma * ((1 - 2*(2*sp.pi/L)**2*epsilon**2)/(2*epsilon) * (phi**2 - phi2_mean) - 3/(4*epsilon) * (phi**4-phi4_mean))).simplify()
+    p = p_u + p_phi
+    
+    p_mean = sp.integrate(sp.integrate(p/L**2, (R.x, 0, L)).simplify(), (R.y, 0, L)).simplify()
+    # print(p_mean)
+    assert(p_mean == 0)
+
+    ugradu = (u.dot(gradient(u.dot(R.i)))*R.i + u.dot(gradient(u.dot(R.j)))*R.j + u.dot(gradient(u.dot(R.k)))*R.k).simplify()
+    gradp_u = gradient(p_u).simplify()
+    gradp_phi = gradient(p_phi).simplify()
+    gradp = gradient(p).simplify()
 
     dtu = u.diff(t)
     laplu = laplacian(u)
@@ -53,6 +61,10 @@ if __name__ == "__main__":
     res_phi = gradp_phi + phigradeta
 
     res_NS = rho * (dtu + ugradu) - mu*laplu + gradp + phigradeta
+
+    print(res_visc, res_adv.simplify(), res_phi.simplify(), res_NS.simplify())
+    # assert(all([a == 0 for a in [res_visc, res_adv.simplify(), res_phi.simplify(), res_NS.simplify()]]))
+
     q = dtphi + ugradphi - M * lapleta
 
     q_ccode = make_ccode(q.simplify())

@@ -9,15 +9,51 @@ import numpy as np
 from os import makedirs
 
 ccode = dict(
-    u0 = "u0*exp(-2*mu*t/rho)*sin(x[1])*cos(x[0])",
-    u1 = "-u0*exp(-2*mu*t/rho)*sin(x[0])*cos(x[1])",
-    p = ("-0.25*rho*pow(u0, 2)*exp(-4*mu*t/rho)*(cos(2*x[0]) + cos(2*x[1]))"
-         "-epsilon*pow(phi0, 2)*sigma*exp(-2*M*beta*sigma*t/epsilon)*pow(cos(x[0]), 2)*pow(cos(x[1]), 2)"
-         "+(1.0/2.0)*pow(phi0, 2)*sigma*exp(-2*M*beta*sigma*t/epsilon)*pow(cos(x[0]), 2)*pow(cos(x[1]), 2)/epsilon"
-         "-3.0/4.0*pow(phi0, 4)*sigma*exp(-4*M*beta*sigma*t/epsilon)*pow(cos(x[0]), 4)*pow(cos(x[1]), 4)/epsilon"),
-    phi = "phi0*exp(-M*beta*sigma*t/epsilon)*cos(x[0])*cos(x[1])",
-    q = "M*phi0*sigma*(-beta*exp(2*M*beta*sigma*t/epsilon) + 4*pow(epsilon, 2)*exp(2*M*beta*sigma*t/epsilon) - 6*pow(phi0, 2)*pow(sin(x[0]), 2)*pow(cos(x[1]), 2) - 6*pow(phi0, 2)*pow(sin(x[1]), 2)*pow(cos(x[0]), 2) + 6*pow(phi0, 2)*pow(cos(x[0]), 2)*pow(cos(x[1]), 2) - 2*exp(2*M*beta*sigma*t/epsilon))*exp(-3*M*beta*sigma*t/epsilon)*cos(x[0])*cos(x[1])/epsilon",
+    u0 = "u0*exp(-8*pow(M_PI, 2)*mu*t/(pow(L, 2)*rho))*sin(2*x[1]*M_PI/L)*cos(2*x[0]*M_PI/L)",
+    u1 = "-u0*exp(-8*pow(M_PI, 2)*mu*t/(pow(L, 2)*rho))*sin(2*x[0]*M_PI/L)*cos(2*x[1]*M_PI/L)",
+    p = "-(0.25*pow(L, 2)*epsilon*rho*pow(u0, 2)*(cos(4*x[0]*M_PI/L) + cos(4*x[1]*M_PI/L))*exp(16*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)) + (1.0/256.0)*pow(phi0, 2)*sigma*(pow(L, 2)*pow(phi0, 2)*(192*pow(cos(2*x[0]*M_PI/L), 4)*pow(cos(2*x[1]*M_PI/L), 4) - 27) - 32*(pow(L, 2) - 8*pow(M_PI, 2)*pow(epsilon, 2))*(4*pow(cos(2*x[0]*M_PI/L), 2)*pow(cos(2*x[1]*M_PI/L), 2) - 1)*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)))*exp(16*pow(M_PI, 2)*mu*t/(pow(L, 2)*rho)))*exp(-16*pow(M_PI, 2)*t*(M*beta*rho*sigma + epsilon*mu)/(pow(L, 2)*epsilon*rho))/(pow(L, 2)*epsilon)",
+    phi = "phi0*exp(-4*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon))*cos(2*x[0]*M_PI/L)*cos(2*x[1]*M_PI/L)",
+    q = "4*pow(M_PI, 2)*M*phi0*sigma*(-pow(L, 2)*beta*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)) - 6*pow(L, 2)*pow(phi0, 2)*pow(sin(2*x[0]*M_PI/L), 2)*pow(cos(2*x[1]*M_PI/L), 2) - 6*pow(L, 2)*pow(phi0, 2)*pow(sin(2*x[1]*M_PI/L), 2)*pow(cos(2*x[0]*M_PI/L), 2) + 6*pow(L, 2)*pow(phi0, 2)*pow(cos(2*x[0]*M_PI/L), 2)*pow(cos(2*x[1]*M_PI/L), 2) - 2*pow(L, 2)*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)) + 16*pow(M_PI, 2)*pow(epsilon, 2)*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)))*exp(-12*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon))*cos(2*x[0]*M_PI/L)*cos(2*x[1]*M_PI/L)/(pow(L, 4)*epsilon)",
 )
+
+def error_norm(expr, u, norm_type='l2'):
+    S = u.function_space()
+    is_subspace = len(S.component())
+    ue_ = interpolate(expr, S.collapse() if is_subspace else S)
+    if is_subspace:
+        u_ = Function(S.collapse())
+        assign(u_, u)
+        ue_.vector()[:] -= u_.vector()
+    else:
+        ue_.vector()[:] -= u.vector()
+    return norm(ue_, norm_type=norm_type)
+
+def compute_errors(t, exprs, q_):
+    for expr in exprs.values():
+        expr.t = t
+    errs = dict()
+    for key in ['u0', 'u1', 'p']:
+        #ue_ = interpolate(exprs[key], q_[key].function_space())
+        errs[key] = errornorm(exprs[key], q_[key])
+        #errs[key] = errornorm(ue_, q_[key])
+    #ue_ = interpolate(exprs['phi'], q_['phig'].sub(0).function_space().collapse())
+    errs['phi'] = errornorm(exprs['phi'], q_['phig'].sub(0))
+    #errs['phi'] = errornorm(ue_, q_['phig'].sub(0))
+    return errs
+
+def dump_stats(sigma_bar, epsilon, rho_, u_, phi_, statsfolder, tstep, t, q_, exprs, **namespace):
+    E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx)
+    E_int = sigma_bar * (
+        0.5 * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) 
+        + 0.25 / epsilon * assemble((1-phi_**2)**2 * dx))
+    
+    errs = compute_errors(t, exprs, q_)
+
+    if MPI.rank(MPI.comm_world) == 0:
+        #print("{0:2.6e}".format(E_kin))
+        items = [tstep, t, E_kin, E_int, errs["u0"], errs["u1"], errs["p"], errs["phi"]]
+        with open(statsfolder + "/tdata.dat", "a") as tfile:
+            tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(*items))
 
 class PBC(SubDomain):
     def __init__(self, Lx, Ly):
@@ -52,17 +88,17 @@ def mesh(L, N, **params):
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
         T=1.0,
-        L=2*np.pi,
-        N=100,
-        dt=0.01,
-        rho=[1, 1],
-        mu=[1, 1],
+        L=2.0,
+        N=80,
+        dt=0.001,
+        rho=[1.0, 1.0],
+        mu=[0.01, 0.01],
         u0=1.0,
         phi0=0.0,
         epsilon=0.2,
         sigma=1.0,
         M=0.1,
-        beta=2.0,
+        beta0=2.0,
         F0=[0., 0.],
         g0=[0., 0.],
         velocity_degree=1,
@@ -74,7 +110,11 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         checkpoint=10,
         print_intermediate_info=10,
         use_krylov_solvers=True,
-        solver="BDF")
+        solver="BDF",
+        max_iter=10,
+        max_error=1e-6,
+        iters_on_first_timestep=20,
+        AB_projection_pressure=False,)
 
     NS_expressions.update(dict(
         constrained_domain=PBC(NS_parameters["L"], NS_parameters["L"])
@@ -98,15 +138,15 @@ def acceleration(g0, **NS_namespace):
     # (gravitational) acceleration
     return Constant(tuple(g0))
 
-def phase_field_source(t, u0, phi0, rho, mu, sigma, M, epsilon, beta, exprs, **NS_namespace):
+def phase_field_source(exprs, **NS_namespace):
     return exprs["q"]
 
-def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, beta, **NS_namespace):
+def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, beta0, L, **NS_namespace):
     rho0 = np.mean(rho)
     mu0 = np.mean(mu)
     sigma_bar = sigma * 3./(2*np.sqrt(2)) # subtlety!
 
-    exprs = dict([(key, Expression(code, u0=u0, phi0=phi0, rho=rho0, mu=mu0, sigma=sigma_bar, M=M, epsilon=epsilon, beta=beta, t=0, degree=6)) for key, code in ccode.items()]) 
+    exprs = dict([(key, Expression(code, u0=u0, phi0=phi0, rho=rho0, mu=mu0, sigma=sigma_bar, M=M, epsilon=epsilon, beta=beta0, L=L, t=0, degree=6)) for key, code in ccode.items()]) 
     function_spaces = dict(
         u0=VV['u0'],
         u1=VV['u0'],
@@ -114,9 +154,6 @@ def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, be
         phi=VV['phig'].sub(0).collapse())
     
     # Initialize time derivatives for 2nd order accuracy
-    for expr in exprs.values():
-        expr.t = t-2*dt
-    q_init_2 = dict([(key, interpolate(exprs[key], space)) for key, space in function_spaces.items()])
     for expr in exprs.values():
         expr.t = t-dt
     q_init_1 = dict([(key, interpolate(exprs[key], space)) for key, space in function_spaces.items()])
@@ -135,16 +172,16 @@ def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, be
     
     for key in ['u0', 'u1', 'p']:
         q_[key].vector()[:] = q_init_[key].vector()
-        q_1[key].vector()[:] = q_init_1[key].vector()
-        q_2[key].vector()[:] = q_init_2[key].vector()
+        q_1[key].vector()[:] = q_init_[key].vector()
+        q_2[key].vector()[:] = q_init_1[key].vector()
     assign(q_['phig'].sub(0), q_init_['phi'])
-    assign(q_1['phig'].sub(0), q_init_1['phi'])
-    assign(q_2['phig'].sub(0), q_init_2['phi'])
+    assign(q_1['phig'].sub(0), q_init_['phi'])
+    assign(q_2['phig'].sub(0), q_init_1['phi'])
     
     return dict(exprs=exprs)
     
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, rho_, phi_, sigma_bar, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, u0, phi0, mu, rho, sigma, M, epsilon, beta, dt, **NS_namespace):
+                   F0, g0, u0, phi0, mu, rho, sigma, M, epsilon, exprs, **NS_namespace):
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
 
@@ -157,15 +194,7 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, rho_, phi_, sigma_bar,
     if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
         makedirs(timestampsfolder)
 
-    E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx)
-    E_int = sigma_bar * (
-        0.5 * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) 
-        + 0.25 / epsilon * assemble((1-phi_**2)**2 * dx))
-    if MPI.rank(MPI.comm_world) == 0:
-        print("{0:2.6e}".format(E_kin))
-        with open(statsfolder + "/tdata.dat", "a") as tfile:
-            tfile.write("{:d} {:.8f} {:.8f} {:.8f}\n".format(
-                tstep, t, E_kin, E_int))
+    dump_stats(**vars())
 
     with HDF5File(mesh.mpi_comm(),
                   path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
@@ -182,15 +211,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
     info_red("tstep = {}".format(tstep))
 
     if tstep % stat_interval == 0:
-        E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx)
-        E_int = sigma_bar * (
-            0.5 * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) 
-            + 0.25 / epsilon * assemble((1-phi_**2)**2 * dx))
-        if MPI.rank(MPI.comm_world) == 0:
-            print("{0:2.6e}".format(E_kin))
-            with open(statsfolder + "/tdata.dat", "a") as tfile:
-                tfile.write("{:d} {:.8f} {:.8f} {:.8f}\n".format(
-                    tstep, t, E_kin, E_int))
+        dump_stats(**vars())
         pass
 
     if tstep % timestamps_interval == 0:
@@ -199,19 +220,8 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
     
     return dict()
 
-
 def theend_hook(t, q_, u_, p_, testing, exprs, **NS_namespace):
-    norm_type = dict()
-
-    for key, expr in exprs.items():
-        expr.t = t
-        norm_type[key] = "L2"
-    norm_type['p'] = "H10"
-
-    errs = dict()
-    for key in ['u0', 'u1', 'p']:
-        errs[key] = errornorm(exprs[key], q_[key], norm_type=norm_type[key])
-    errs['phi'] = errornorm(exprs['phi'], q_['phig'].sub(0), norm_type="L2")
+    errs = compute_errors(t, exprs, q_)
 
     if MPI.rank(MPI.comm_world) == 0: # and testing:
         #print("Velocity norm = {0:2.6e}".format(u_norm))

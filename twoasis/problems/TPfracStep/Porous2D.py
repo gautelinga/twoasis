@@ -7,6 +7,7 @@ from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
 from os import makedirs
+# from .Porous3D import ccode_expr
 
 class PBC(SubDomain):
     def __init__(self, Lx, Ly):
@@ -51,6 +52,24 @@ def get_fname(Lx, Ly, rad, R, N, res, ext):
     fname = "meshes/periodic_porous_Lx{Lx}_Ly{Ly}_r{rad}_R{R}_N{N}_dx{res}.{ext}".format(**meshparams)    
     return fname
 
+def ccode_expr(checkerboard, L):
+    expr_fhat = "0.5*(tanh(({xhat}+0.25)/(sqrt(2)*{eps})) - tanh(({xhat}-0.25)/(sqrt(2)*{eps})))"
+    expr_xhat = "({N}*x[{d}]/{L}-({i}+0.5-{N}/2))"
+    ccode = ""
+    factors = []
+    for d in range(len(checkerboard)):
+        if checkerboard[d] > 0:
+            expr_xhat_d = []
+            expr_eps = "{N} / {L} * epsilon".format(N=checkerboard[d], L=L[d])
+            for i in range(checkerboard[d]):
+                expr_xhat_di = expr_xhat.format(N=checkerboard[d], d=d, i=i, L=L[d])
+                expr_xhat_d.append(expr_xhat_di)
+            factors.append("(2*(" + "+".join([expr_fhat.format(xhat=expr_xhat_di, eps=expr_eps) for expr_xhat_di in expr_xhat_d]) + ")-1.0)")
+        else:
+            factors.append("1")
+    ccode = "*".join(factors)
+    return ccode
+
 # Create a mesh
 def mesh(Lx, Ly, rad, R, N, res, **params):
     mesh = Mesh()
@@ -79,6 +98,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         M=0.0001,
         F0=[0., 10.],
         g0=[0., 0.],
+        checkerboard=[12, 18],
         velocity_degree=1,
         folder="porous2d_results",
         plot_interval=10,
@@ -139,11 +159,15 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Ly, **NS_namespace):
-    phig_init = interpolate(Expression(
-        #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-        "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-        epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, checkerboard, **NS_namespace):
+    if checkerboard is None:
+        phig_init = interpolate(Expression(
+            #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+            "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+            epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+    else:
+        ccode = ccode_expr(checkerboard, [Lx, Ly])
+        phig_init = interpolate(Expression(ccode, epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
@@ -221,12 +245,13 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         #plot(q_['alfa'], title='alfa')
         #plot(q_['beta'], title='beta')
     if tstep % stat_interval == 0:
+        sigma_bar = sigma * 3./(2*np.sqrt(2))
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume
         phim = assemble(phi_ * dx) / volume
         E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
-        E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
-        E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
+        E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:

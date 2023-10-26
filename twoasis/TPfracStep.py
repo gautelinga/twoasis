@@ -86,9 +86,9 @@ newfolder, tstepfiles = create_initial_folders(**vars())
 V = Q = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 #V = VectorFunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 #S = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
-#if velocity_degree != pressure_degree:
-Q = FunctionSpace(mesh, 'CG', pressure_degree,
-                  constrained_domain=constrained_domain)
+if velocity_degree != pressure_degree:
+    Q = FunctionSpace(mesh, 'CG', pressure_degree,
+                      constrained_domain=constrained_domain)
 phi_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
 g_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
 W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),

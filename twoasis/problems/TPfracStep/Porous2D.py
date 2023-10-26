@@ -6,7 +6,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
-from os import makedirs
+from os import makedirs, path
 # from .Porous3D import ccode_expr
 
 class PBC(SubDomain):
@@ -98,6 +98,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         M=0.0001,
         F0=[0., 10.],
         g0=[0., 0.],
+        init_state="",
         checkerboard=[12, 18],
         velocity_degree=1,
         folder="porous2d_results",
@@ -159,17 +160,36 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, checkerboard, **NS_namespace):
-    if checkerboard is None:
-        phig_init = interpolate(Expression(
-            #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-            "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-            epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q, **NS_namespace):
+    if init_state == "":
+        if checkerboard is None:
+            phi_init = interpolate(Expression(
+                #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+                "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+                epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+        else:
+            ccode = ccode_expr(checkerboard, [Lx, Ly])
+            phi_init = interpolate(Expression(ccode, epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
+        assign(q_['phig'].sub(0), phi_init)
+        q_1['phig'].vector()[:] = q_['phig'].vector()
     else:
-        ccode = ccode_expr(checkerboard, [Lx, Ly])
-        phig_init = interpolate(Expression(ccode, epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
-    q_1['phig'].vector()[:] = q_['phig'].vector()
+        if not path.exists(init_state):
+            info_red(f"ERROR: Initial state {init_state} does not exist.")
+        phi_init = Function(VV['phig'].sub(0).collapse())
+        Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
+                                 constrained_domain=V.dofmap().constrained_domain)
+        u_init = Function(Vv)
+        with HDF5File(mesh.mpi_comm(), init_state, "r") as h5f:
+            h5f.read(phi_init, "phi")
+            h5f.read(u_init, "u")
+            h5f.read(q_['p'], "p")
+        assign(q_['phig'].sub(0), phi_init)
+        assign(q_['u0'], u_init.sub(0))
+        assign(q_['u1'], u_init.sub(1))
+        for ui in q_:
+            q_1[ui].vector()[:] = q_[ui].vector()[:]
+            q_2[ui].vector()[:] = q_[ui].vector()[:]
+
     for ui in x_1:
         [bc.apply(x_1[ui]) for bc in bcs[ui]]
     for ui in x_2:

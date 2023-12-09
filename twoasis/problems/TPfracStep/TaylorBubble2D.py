@@ -5,10 +5,11 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from copy import deepcopy
 from ..TPfracStep import *
+from twoasis.common.utilities import compute_ind
 import matplotlib.pyplot as plt
 import numpy as np
 from os import makedirs
-from ufl_legacy import max_value, min_value
+# from ufl_legacy import max_value, min_value
 
 class LeftRight(SubDomain):
     def __init__(self, Lx):
@@ -205,8 +206,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         phim = assemble(phi_ * dx) / volume
         X = SpatialCoordinate(mesh)
 
-        phi_2 = max_value(min_value((-phi_ + 1)/2, 1.), 0.)
-        ind_ = 3*phi_2**2 - 2*phi_2**3
+        ind_ = compute_ind(q_)
 
         vol_c = assemble(ind_ * dx)
         y_cm = assemble(ind_ * X[1] * dx) / vol_c

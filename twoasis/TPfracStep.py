@@ -30,14 +30,14 @@ problems/NSfracStep/__init__.py for all possible parameters.
 """
 import importlib
 
-from ufl import FiniteElement, MixedElement, TestFunctions, TrialFunctions
+from dolfin import FiniteElement, MixedElement, TestFunctions, TrialFunctions
 from twoasis.common import *
 #from twoasis.solvers import scalar_assemble
 
 commandline_kwargs = parse_command_line()
 
 # Find the problem module
-default_problem = 'CylArr2D'
+default_problem = "TaylorBubble2D"  # 'CylArr2D'
 problemname = commandline_kwargs.get('problem', default_problem)
 problemspec = importlib.util.find_spec('.'.join(('twoasis.problems.TPfracStep', problemname)))
 if problemspec is None:

@@ -6,7 +6,10 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from dolfin import *
 from twoasis.solvers import *
 import math
-import ufl
+import ufl_legacy as ufl
+if not isinstance(Constant, ufl.Coefficient):
+    import ufl
+
 
 """Define all functions required by fractional step solver."""
 __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",

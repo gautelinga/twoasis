@@ -5,14 +5,16 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from dolfin import (assemble, KrylovSolver, LUSolver, Function, Constant,
     TrialFunction,TestFunction, dx, Vector, Matrix,
-    FunctionSpace, Timer, div, Form, inner, grad,
+    FunctionSpace, Timer, div, Form, inner, grad, assign,
     as_backend_type, VectorFunctionSpace, FunctionAssigner, PETScKrylovSolver,
     PETScPreconditioner, DirichletBC, split)
 
-#from ufl_legacy.tensors import ListTensor
-#from ufl_legacy import Coefficient
-from ufl.tensors import ListTensor
-from ufl import Coefficient
+# Import ufl (fix across installations)
+from ufl_legacy import Coefficient
+from ufl_legacy.tensors import ListTensor
+if not isinstance(Constant, Coefficient):
+    from ufl import Coefficient
+    from ufl.tensors import ListTensor
 
 # Create some dictionaries to hold work matrices
 class Mat_cache_dict(dict):
@@ -471,3 +473,13 @@ def homogenize(bcs):
         b0.homogenize()
         b.append(b0)
     return b
+
+
+def compute_ind(q_):
+    ind_ = Function(q_["phig"].sub(0).function_space().collapse())
+    assign(ind_, q_["phig"].sub(0))
+    c_ = 0.5*(1 - ind_.vector()[:])
+    c_[c_ < 0] = 0
+    c_[c_ > 1] = 1
+    ind_.vector()[:] = 3*c_**2 - 2*c_**3
+    return ind_

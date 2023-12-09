@@ -12,7 +12,6 @@ the implementations of the more complex optimized solvers.
 from dolfin import *
 from . import *
 from . import __all__
-import ufl
 import math
 
 __all__ += ["max_iter", "iters_on_first_timestep"]

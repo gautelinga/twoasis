@@ -12,7 +12,7 @@ from dolfin import (assemble, KrylovSolver, LUSolver, Function, Constant,
 # Import ufl (fix across installations)
 from ufl_legacy import Coefficient
 from ufl_legacy.tensors import ListTensor
-if not isinstance(Constant, Coefficient):
+if not isinstance(Constant(0.), Coefficient):
     from ufl import Coefficient
     from ufl.tensors import ListTensor
 

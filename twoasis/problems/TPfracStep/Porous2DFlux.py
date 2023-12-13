@@ -67,12 +67,12 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         N=260,
         res=0.1,
         R=0.6,
-        dt=0.01,
+        dt=0.1,
         rho=[1, 1],
-        mu=[1, 10],
-        u0=0.1,
+        mu=[10, 1],
+        u0=0.001,
         y0=-14,
-        theta=np.pi/2,
+        theta=np.pi/3,
         epsilon=0.05,
         sigma=5.0,
         M=0.0001,
@@ -83,16 +83,16 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         plot_interval=10,
         stat_interval=10,
         timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
+        save_step=100,
+        checkpoint=10000,
         print_intermediate_info=10,
         use_krylov_solvers=True,
         solver="BDF",
         bdf_order=1,
         AB_projection_pressure=False,
-        max_iter=20,                 # Number of inner pressure velocity iterations on timestep
+        max_iter=10,                  # Number of inner pressure velocity iterations on timestep
         max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
-        iters_on_first_timestep=100,  # Number of iterations on first timestep
+        iters_on_first_timestep=20,  # Number of iterations on first timestep
         initial_state=None,
         injected_phase=-1,
     )
@@ -240,25 +240,18 @@ def read_phase_distribition(fname, mesh, q_):
 
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, statsfolder, timestampsfolder,
-                  plot_interval, stat_interval, timestamps_interval,
+                  stat_interval, timestamps_interval,
                   uv, mesh,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
-    if tstep % plot_interval == 0 and False:
-        plot(u_, title='Velocity')
-        plt.show()
-        plot(phi_, title='Phase field')
-        plt.show()
-        #plot(p_, title='Pressure')
-        #plot(q_['alfa'], title='alfa')
-        #plot(q_['beta'], title='beta')
     if tstep % stat_interval == 0:
+        sigma_bar = sigma * 3./(2*np.sqrt(2))
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume
         phim = assemble(phi_ * dx) / volume
         E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
-        E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
-        E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
+        E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:

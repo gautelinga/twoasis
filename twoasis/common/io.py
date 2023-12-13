@@ -55,7 +55,8 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
     tstepfiles = {}
     comps = sys_comp
     if output_timeseries_as_vector:
-        comps = ['p', 'u'] + ['phi', 'g'] + scalar_components
+        pf_comps = ["phi"]  # ['phi', 'g']
+        comps = ['p', 'u'] + pf_comps + scalar_components
 
     for ui in comps:
         tstepfiles[ui] = XDMFFile(MPI.comm_world, path.join(
@@ -113,9 +114,11 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
                 assign(phi__, q_['phig'].sub(0))
                 tstepfile.write(phi__, float(t))
             elif comp == "g":
-                g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
-                assign(g__, q_['phig'].sub(1))
-                tstepfile.write(g__, float(t))
+                pass
+                # chemical potential has not really been needed
+                #g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
+                #assign(g__, q_['phig'].sub(1))
+                #tstepfile.write(g__, float(t))
             elif comp in q_:
                 tstepfile.write(q_[comp], float(t))
             else:
@@ -197,7 +200,7 @@ def check_if_kill(folder, killtime, total_timer, key='killtwoasis'):
 
 
 def check_if_pause(folder, key='pausetwoasis'):
-    """Check if user has put a file named pauseoasis in folder."""
+    """Check if user has put a file named pausetwoasis in folder."""
     found = 0
     if key in listdir(folder):
         found = 1

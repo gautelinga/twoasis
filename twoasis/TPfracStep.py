@@ -32,6 +32,7 @@ import importlib
 
 from dolfin import FiniteElement, MixedElement, TestFunctions, TrialFunctions
 from twoasis.common import *
+from os import path
 #from twoasis.solvers import scalar_assemble
 
 commandline_kwargs = parse_command_line()
@@ -62,6 +63,7 @@ vars().update(post_import_problem(**vars()))
 # Use t and tstep from stored parameters if restarting
 if restart_folder is not None:
     f = open(path.join(path.abspath(restart_folder), 'params.dat'), 'rb')
+    import pickle
     params = pickle.load(f)
     f.close()
     t = params["t"]
@@ -102,7 +104,7 @@ normal = FacetNormal(mesh)
 
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)
-with XDMFFile(mesh.mpi_comm(), "subdomains.xdmf") as xdmff:
+with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "subdomains.xdmf")) as xdmff:
     xdmff.write(subdomains)
 
 u = TrialFunction(V)

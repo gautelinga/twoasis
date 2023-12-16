@@ -237,30 +237,32 @@ def init_from_restart(restart_folder, sys_comp, uc_comp, u_components,
 
         for ui in sys_comp:
             filename = path.join(restart_folder, ui + '.h5')
-            hdf5_file = HDF5File(MPI.comm_world, filename, "r")
-            hdf5_file.read(q_[ui].vector(), "/current", False)
-            q_[ui].vector().apply('insert')
-            # Check for the solution at a previous timestep as well
-            if ui in uc_comp:
-                q_1[ui].vector().zero()
-                q_1[ui].vector().axpy(1., q_[ui].vector())
-                q_1[ui].vector().apply('insert')
-                if ui in u_components:
-                    hdf5_file.read(q_2[ui].vector(), "/previous", False)
-                    q_2[ui].vector().apply('insert')
+            with HDF5File(MPI.comm_world, filename, "r") as hdf5_file:
+                hdf5_file.read(q_[ui].vector(), "/current", False)
+                q_[ui].vector().apply('insert')
+                # Check for the solution at a previous timestep as well
+                if ui in sys_comp:
+                    q_1[ui].vector().zero()
+                    q_1[ui].vector().axpy(1., q_[ui].vector())
+                    q_1[ui].vector().apply('insert')
+                    if ui in u_components:
+                        hdf5_file.read(q_2[ui].vector(), "/previous", False)
+                        q_2[ui].vector().apply('insert')
 
 
 def merge_visualization_files(newfolder, **namespace):
-    timefolder = path.join(newfolder, 'Timeseries')
-    # Gather files
-    xdmf_files = list(glob.glob(path.join(timefolder, "*.xdmf")))
-    xdmf_velocity = [f for f in xdmf_files if "u_from_tstep" in f.__str__()]
-    xdmf_pressure = [f for f in xdmf_files if "p_from_tstep" in f.__str__()]
+    if MPI.rank(MPI.comm_world) == 0:
+        timefolder = path.join(newfolder, 'Timeseries')
+        # Gather files
+        xdmf_files = list(glob.glob(path.join(timefolder, "*.xdmf")))
+        xdmf_velocity = [f for f in xdmf_files if "u_from_tstep" in f.__str__()]
+        xdmf_pressure = [f for f in xdmf_files if "p_from_tstep" in f.__str__()]
+        xdmf_phi = [f for f in xdmf_files if "phi_from_tstep" in f.__str__()]
 
-    # Merge files
-    for files in [xdmf_velocity, xdmf_pressure]:
-        if len(files) > 1:
-            merge_xml_files(files)
+        # Merge files
+        for files in [xdmf_velocity, xdmf_pressure, xdmf_phi]:
+            if len(files) > 1:
+                merge_xml_files(files)
 
 
 def merge_xml_files(files):
@@ -279,14 +281,14 @@ def merge_xml_files(files):
     # Get last timestep of first tree
     base_tree = trees[indexes[0]]
     last_node = base_tree.getroot()[0][0][-1]
-    ind = 1 if len(last_node.getchildren()) == 3 else 2
+    ind = 1 if len(list(last_node)) == 3 else 2
     last_timestep = float(last_node[ind].attrib["Value"])
 
     # Append
     for index in indexes[1:]:
         tree = trees[index]
-        for node in tree.getroot()[0][0].getchildren():
-            ind = 1 if len(node.getchildren()) == 3 else 2
+        for node in list(tree.getroot()[0][0]):
+            ind = 1 if len(list(node)) == 3 else 2
             if last_timestep < float(node[ind].attrib["Value"]):
                 base_tree.getroot()[0][0].append(node)
                 last_timestep = float(node[ind].attrib["Value"])

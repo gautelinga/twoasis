@@ -137,8 +137,7 @@ RUN git clone https://github.com/FEniCS/fiat.git && \
     git clone --branch 2022.1.0 https://github.com/FEniCS/ufl.git && \
     git clone https://github.com/FEniCS/ufl-legacy.git && \
     git clone https://bitbucket.org/fenics-project/dolfin.git && \
-    git clone https://bitbucket.org/fenics-project/dijitso.git && \ 
-    git clone https://github.com/gautelinga/twoasis.git
+    git clone https://bitbucket.org/fenics-project/dijitso.git
 
 # The dolfin-onbuild container expects to have folders fiat/ ufl/ ffc/ and
 # dolfin/ mounted/shared at /src.
@@ -168,7 +167,8 @@ WORKDIR /src
 RUN apt-get -qq update && \
     apt-get -y install pkg-config && \
 	pip3 install pkgconfig
-
+    
+RUN git clone https://github.com/gautelinga/twoasis.git
 RUN cd twoasis && pip3 install --no-cache-dir .
 
 WORKDIR /root

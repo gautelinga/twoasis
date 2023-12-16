@@ -6,8 +6,10 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
-from os import makedirs
+from os import makedirs, getcwd
 from .Porous2D import Walls
+import pickle
+
 
 class PBC2(SubDomain):
     def __init__(self, Lx):
@@ -58,47 +60,54 @@ def mesh(Lx, Ly, rad, R, N, res, **params):
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
-
-    NS_parameters.update(
-        T=100.0,
-        Lx=20,
-        Ly=30,
-        rad=0.5,
-        N=260,
-        res=0.1,
-        R=0.6,
-        dt=0.1,
-        rho=[1, 1],
-        mu=[10, 1],
-        u0=0.001,
-        y0=-14,
-        theta=np.pi/3,
-        epsilon=0.05,
-        sigma=5.0,
-        M=0.0001,
-        F0=[0., 0.],
-        g0=[0., 0.],
-        velocity_degree=1,
-        folder="porous2d_flux_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=100,
-        checkpoint=10000,
-        print_intermediate_info=10,
-        use_krylov_solvers=True,
-        solver="BDF",
-        bdf_order=1,
-        AB_projection_pressure=False,
-        max_iter=10,                  # Number of inner pressure velocity iterations on timestep
-        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
-        iters_on_first_timestep=20,  # Number of iterations on first timestep
-        initial_state=None,
-        injected_phase=-1,
-    )
-    # Need to force this for proper PBCs
-    if "Lx" in commandline_kwargs:
-        NS_parameters["Lx"] = commandline_kwargs["Lx"]
+    if "restart_folder" in commandline_kwargs.keys():
+         restart_folder = commandline_kwargs["restart_folder"]
+         restart_folder = path.join(getcwd(), restart_folder)
+         f = open(path.join(path.dirname(path.abspath(__file__)), restart_folder, 'params.dat'), 'rb')
+         NS_parameters.update(pickle.load(f))
+         NS_parameters['restart_folder'] = restart_folder
+         globals().update(NS_parameters)
+    else:
+        NS_parameters.update(
+            T=100.0,
+            Lx=20,
+            Ly=30,
+            rad=0.5,
+            N=260,
+            res=0.1,
+            R=0.6,
+            dt=0.1,
+            rho=[1, 1],
+            mu=[10, 1],
+            u0=0.001,
+            y0=-14,
+            theta=np.pi/3,
+            epsilon=0.05,
+            sigma=5.0,
+            M=0.0001,
+            F0=[0., 0.],
+            g0=[0., 0.],
+            velocity_degree=1,
+            folder="porous2d_flux_results",
+            plot_interval=10,
+            stat_interval=10,
+            timestamps_interval=10,
+            save_step=100,
+            checkpoint=10000,
+            print_intermediate_info=10,
+            use_krylov_solvers=True,
+            solver="BDF",
+            bdf_order=1,
+            AB_projection_pressure=False,
+            max_iter=10,                  # Number of inner pressure velocity iterations on timestep
+            max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+            iters_on_first_timestep=20,  # Number of iterations on first timestep
+            initial_state=None,
+            injected_phase=-1,
+        )
+        # Need to force this for proper PBCs
+        if "Lx" in commandline_kwargs:
+            NS_parameters["Lx"] = commandline_kwargs["Lx"]
 
     #scalar_components += ["alfa", "beta"]
     #Schmidt["alfa"] = 1.
@@ -156,25 +165,26 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, mesh, **NS_namespace):
-    if initial_state is None:
-        phi_init = interpolate(Expression(
-            #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-            #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-            "tanh((x[1]-y0)/(sqrt(2)*epsilon))",
-            epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phi_init)
-    else:
-        info_blue("initializing from: " + initial_state)
-        phi_init = read_phase_distribition(initial_state, mesh, q_)
-        assign(q_['phig'].sub(0), phi_init)
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, restart_folder, mesh, **NS_namespace):
+    if restart_folder is None:
+        if initial_state is None:
+            phi_init = interpolate(Expression(
+                #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+                #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+                "tanh((x[1]-y0)/(sqrt(2)*epsilon))",
+                epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
+            assign(q_['phig'].sub(0), phi_init)
+        else:
+            info_blue("initializing from: " + initial_state)
+            phi_init = read_phase_distribition(initial_state, mesh, q_)
+            assign(q_['phig'].sub(0), phi_init)
 
-    q_1['phig'].vector()[:] = q_['phig'].vector()
-    q_2['phig'].vector()[:] = q_['phig'].vector()
-    for ui in x_1:
-        [bc.apply(x_1[ui]) for bc in bcs[ui]]
-    for ui in x_2:
-        [bc.apply(x_2[ui]) for bc in bcs[ui]]
+        q_1['phig'].vector()[:] = q_['phig'].vector()
+        q_2['phig'].vector()[:] = q_['phig'].vector()
+        for ui in x_1:
+            [bc.apply(x_1[ui]) for bc in bcs[ui]]
+        for ui in x_2:
+            [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 

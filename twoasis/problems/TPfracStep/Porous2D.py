@@ -6,7 +6,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
-from os import makedirs, path
+from os import makedirs, path, getcwd
 # from .Porous3D import ccode_expr
 
 class PBC(SubDomain):
@@ -81,40 +81,48 @@ def mesh(Lx, Ly, rad, R, N, res, **params):
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
-    NS_parameters.update(
-        T=100.0,
-        Lx=4,
-        Ly=8,
-        rad=0.5,
-        N=19,
-        res=0.05,
-        R=0.55,
-        dt=0.05,
-        rho=[1, 1],
-        mu=[1, 1],
-        theta=np.pi/3,
-        epsilon=0.05,
-        sigma=5.0,
-        M=0.0001,
-        F0=[0., 10.],
-        g0=[0., 0.],
-        init_state="",
-        checkerboard=[12, 18],
-        velocity_degree=1,
-        folder="porous2d_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
-        print_intermediate_info=10,
-        use_krylov_solvers=True,
-        solver="IPCS")
+    if "restart_folder" in commandline_kwargs.keys():
+         restart_folder = commandline_kwargs["restart_folder"]
+         restart_folder = path.join(getcwd(), restart_folder)
+         f = open(path.join(path.dirname(path.abspath(__file__)), restart_folder, 'params.dat'), 'rb')
+         NS_parameters.update(pickle.load(f))
+         NS_parameters['restart_folder'] = restart_folder
+         globals().update(NS_parameters)
+    else:
+        NS_parameters.update(
+            T=100.0,
+            Lx=4,
+            Ly=8,
+            rad=0.5,
+            N=19,
+            res=0.05,
+            R=0.55,
+            dt=0.05,
+            rho=[1, 1],
+            mu=[1, 1],
+            theta=np.pi/3,
+            epsilon=0.05,
+            sigma=5.0,
+            M=0.0001,
+            F0=[0., 10.],
+            g0=[0., 0.],
+            init_state="",
+            checkerboard=[12, 18],
+            velocity_degree=1,
+            folder="porous2d_results",
+            plot_interval=10,
+            stat_interval=10,
+            timestamps_interval=10,
+            save_step=10,
+            checkpoint=10,
+            print_intermediate_info=10,
+            use_krylov_solvers=True,
+            solver="IPCS")
 
-    # Need to override these here for PBC compliance
-    for key in ["Lx", "Ly"]:
-        if key in commandline_kwargs:
-            NS_parameters[key] = commandline_kwargs[key]
+        # Need to override these here for PBC compliance
+        for key in ["Lx", "Ly"]:
+            if key in commandline_kwargs:
+                NS_parameters[key] = commandline_kwargs[key]
 
     #scalar_components += ["alfa", "beta"]
     #Schmidt["alfa"] = 1.
@@ -160,40 +168,41 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q, **NS_namespace):
-    if init_state == "":
-        if checkerboard is None:
-            phi_init = interpolate(Expression(
-                #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-                "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-                epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q, restart_folder, **NS_namespace):
+    if restart_folder is None:
+        if init_state == "":
+            if checkerboard is None:
+                phi_init = interpolate(Expression(
+                    #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+                    "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+                    epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+            else:
+                ccode = ccode_expr(checkerboard, [Lx, Ly])
+                phi_init = interpolate(Expression(ccode, epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
+            assign(q_['phig'].sub(0), phi_init)
+            q_1['phig'].vector()[:] = q_['phig'].vector()
         else:
-            ccode = ccode_expr(checkerboard, [Lx, Ly])
-            phi_init = interpolate(Expression(ccode, epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phi_init)
-        q_1['phig'].vector()[:] = q_['phig'].vector()
-    else:
-        if not path.exists(init_state):
-            info_red(f"ERROR: Initial state {init_state} does not exist.")
-        phi_init = Function(VV['phig'].sub(0).collapse())
-        Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
-                                 constrained_domain=V.dofmap().constrained_domain)
-        u_init = Function(Vv)
-        with HDF5File(mesh.mpi_comm(), init_state, "r") as h5f:
-            h5f.read(phi_init, "phi")
-            h5f.read(u_init, "u")
-            h5f.read(q_['p'], "p")
-        assign(q_['phig'].sub(0), phi_init)
-        assign(q_['u0'], u_init.sub(0))
-        assign(q_['u1'], u_init.sub(1))
-        for ui in q_:
-            q_1[ui].vector()[:] = q_[ui].vector()[:]
-            q_2[ui].vector()[:] = q_[ui].vector()[:]
+            if not path.exists(init_state):
+                info_red(f"ERROR: Initial state {init_state} does not exist.")
+            phi_init = Function(VV['phig'].sub(0).collapse())
+            Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
+                                    constrained_domain=V.dofmap().constrained_domain)
+            u_init = Function(Vv)
+            with HDF5File(mesh.mpi_comm(), init_state, "r") as h5f:
+                h5f.read(phi_init, "phi")
+                h5f.read(u_init, "u")
+                h5f.read(q_['p'], "p")
+            assign(q_['phig'].sub(0), phi_init)
+            assign(q_['u0'], u_init.sub(0))
+            assign(q_['u1'], u_init.sub(1))
+            for ui in q_:
+                q_1[ui].vector()[:] = q_[ui].vector()[:]
+                q_2[ui].vector()[:] = q_[ui].vector()[:]
 
-    for ui in x_1:
-        [bc.apply(x_1[ui]) for bc in bcs[ui]]
-    for ui in x_2:
-        [bc.apply(x_2[ui]) for bc in bcs[ui]]
+        for ui in x_1:
+            [bc.apply(x_1[ui]) for bc in bcs[ui]]
+        for ui in x_2:
+            [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 

@@ -7,6 +7,7 @@ from ..TPfracStep import *
 import matplotlib.pyplot as plt
 import numpy as np
 from os import makedirs, path, getcwd
+import pickle
 # from .Porous3D import ccode_expr
 
 class PBC(SubDomain):

@@ -71,6 +71,38 @@ def ccode_expr(checkerboard, L):
     ccode = "*".join(factors)
     return ccode
 
+def initialize_checkerboard_sat(phi_init, phi_target, checkerboard, L, epsilon, tol=1e-8):
+    if abs(phi_target) > 1 - tol:
+        phi_init.vector()[:] = np.sign(phi_target)
+        return
+    
+    L = np.array(L)
+    x0 = -L/2 # np.array([-Lx/2, -Ly/2])
+    dims = range(len(L))
+    Dx = L / np.array(checkerboard) / 2
+
+    x_ = [interpolate(Expression(f"x[{dim}]", degree=1), phi_init.function_space()).vector()[:] for dim in dims]
+    i_ = [np.floor((x_[dim]-x0[dim])/Dx[dim]) for dim in dims]
+    xi_ = [x0[dim] + (i_[dim] + 0.5) * Dx[dim] for dim in dims]
+    dxi_ = [abs(x_[dim] - xi_[dim]) for dim in dims]
+    ir_ = sum([np.round((x_[dim]-x0[dim])/Dx[dim]) for dim in dims])
+    psi_ = np.minimum.reduce(dxi_) * (-1)**ir_
+
+    c = 0.
+    vol = assemble(Constant(1.) * dx(domain=phi_init.function_space().mesh()))
+    phi_mean = 0.
+    it = 0
+    # Newton iterations
+    while abs(phi_mean - phi_target) > tol:
+        info_blue(f"it={it}, c={c}, psi_mean={phi_mean}")
+        phi_init.vector()[:] = np.tanh( (psi_ + c ) / (np.sqrt(2) * epsilon))
+        phi_mean = assemble(phi_init * dx) / vol
+        phi2_mean = assemble(phi_init**2 * dx) / vol
+        c += np.sqrt(2) * epsilon * (phi_target - phi_mean) / (1 - phi2_mean)
+        it += 1
+
+    phi_init.vector()[:] = np.tanh((psi_ + c)/(np.sqrt(2) * epsilon))
+
 # Create a mesh
 def mesh(Lx, Ly, rad, R, N, res, **params):
     mesh = Mesh()
@@ -109,6 +141,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
             g0=[0., 0.],
             init_state="",
             checkerboard=[12, 18],
+            phi_target=0.0,
             velocity_degree=1,
             folder="porous2d_results",
             plot_interval=10,
@@ -169,7 +202,8 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q, restart_folder, **NS_namespace):
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q, restart_folder,
+               phi_target, **NS_namespace):
     if restart_folder is None:
         if init_state == "":
             if checkerboard is None:
@@ -177,9 +211,12 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, che
                     #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
                     "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
                     epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
-            else:
+            elif False:
                 ccode = ccode_expr(checkerboard, [Lx, Ly])
                 phi_init = interpolate(Expression(ccode, epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
+            else:
+                phi_init = Function(VV['phig'].sub(0).collapse(), name="phi")
+                initialize_checkerboard_sat(phi_init, phi_target, checkerboard, [Lx, Ly], epsilon)
             assign(q_['phig'].sub(0), phi_init)
             q_1['phig'].vector()[:] = q_['phig'].vector()
         else:

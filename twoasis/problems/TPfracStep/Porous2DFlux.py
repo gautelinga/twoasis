@@ -70,11 +70,11 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
     else:
         NS_parameters.update(
             T=100.0,
-            Lx=20,
-            Ly=30,
+            Lx=10,
+            Ly=20,
             rad=0.5,
-            N=260,
-            res=0.1,
+            N=88,
+            res=0.05,
             R=0.6,
             dt=0.1,
             rho=[1, 1],

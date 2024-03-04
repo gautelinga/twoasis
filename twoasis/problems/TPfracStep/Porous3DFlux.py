@@ -5,31 +5,51 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from ..TPfracStep import *
 import numpy as np
-from os import makedirs
+from os import makedirs, getcwd
+import pickle
+import h5py
+
+comm = MPI.comm_world
+rank = comm.Get_rank()
+size = comm.Get_size()
 
 
-class PBC2xy(SubDomain):
-    def __init__(self, L):
-        self.L = L
+def get_mesh_extrema(meshfile):
+    if rank == 0:
+        with h5py.File(meshfile, "r") as h5f:
+            x = h5f["mesh/coordinates"][:]
+        x_min = x.min(axis=0)
+        x_max = x.max(axis=0)
+    else:
+        x_min = np.zeros(3)
+        x_max = np.zeros(3)
+    comm.Bcast(x_min, root=0)
+    comm.Bcast(x_max, root=0)
+    return x_min, x_max
+
+class GenSubDomain(SubDomain):
+    def __init__(self, x_min, x_max):
+        self.x_min = x_min
+        self.x_max = x_max
         SubDomain.__init__(self)
 
+class PBC2xy(GenSubDomain):
     def inside(self, x, on_boundary):
-        L = self.L
-        return bool( (near(x[0], 0) or near(x[1], 0))
-            and not (near(x[0], L[0]) or near(x[1], L[1]))
+        return bool( (near(x[0], self.x_min[0]) or near(x[1], self.x_min[1]))
+            and not (near(x[0], self.x_max[0]) or near(x[1], self.x_max[1]))
             and on_boundary)
 
     def map(self, x, y):
-        L = self.L
-        if near(x[0], L[0]) and near(x[1], L[1]):
+        L = self.x_max - self.x_min
+        if near(x[0], self.x_max[0]) and near(x[1], self.x_max[1]):
             y[0] = x[0] - L[0]
             y[1] = x[1] - L[1]
             y[2] = x[2]
-        elif near(x[0], L[0]):
+        elif near(x[0], self.x_max[0]):
             y[0] = x[0] - L[0]
             y[1] = x[1]
             y[2] = x[2]
-        elif near(x[1], L[1]):
+        elif near(x[1], self.x_max[1]):
             y[0] = x[0]
             y[1] = x[1] - L[1]
             y[2] = x[2]
@@ -37,7 +57,6 @@ class PBC2xy(SubDomain):
             y[0] = -1000
             y[1] = -1000
             y[2] = -1000
-
 
 class Walls(SubDomain):
     def __init__(self, xyzr_):
@@ -49,15 +68,36 @@ class Walls(SubDomain):
         if on_bnd:
             x_ = np.outer(x, np.ones(len(self.pos_))).T
             dr_ = np.linalg.norm(x_ - self.pos_, axis=1)
-            return any(dr_ < self.r_ + DOLFIN_EPS_LARGE)
+            return any(dr_ < self.r_ * (1 + 1e-1) ) #+ DOLFIN_EPS_LARGE)
         return False
+    
+class Boun(SubDomain):
+    def inside(self, x, on_bnd):
+        return on_bnd
+    
+class SideWalls(GenSubDomain):
+    def inside(self, x, on_bnd):
+        return on_bnd and (x[0] < self.x_min[0] + DOLFIN_EPS_LARGE or
+                           x[1] < self.x_min[1] + DOLFIN_EPS_LARGE or
+                           x[2] < self.x_min[2] + DOLFIN_EPS_LARGE or
+                           x[0] > self.x_max[0] - DOLFIN_EPS_LARGE or
+                           x[1] > self.x_max[1] - DOLFIN_EPS_LARGE or
+                           x[2] > self.x_max[2] - DOLFIN_EPS_LARGE)
+
+class Bottom(GenSubDomain):
+    def inside(self, x, on_boundary):
+        return on_boundary and near(x[2], self.x_min[2])
+    
+class Top(GenSubDomain):
+    def inside(self, x, on_boundary):
+        return on_boundary and near(x[2], self.x_max[2])
 
 def inlet(x, on_bnd):
     return on_bnd and near(x[0], 0)
 
 def get_fname(L, R, reps, res, ext):
     meshparams = dict(L=L, R=R, reps=reps, res=res, ext=ext)
-    fname = "meshes/porous3d_rcp01.{ext}".format(**meshparams)    
+    fname = "meshes/porous3d_rcp01.{ext}".format(**meshparams)
     return fname
 
 def ccode_expr(checkerboard):
@@ -79,74 +119,110 @@ def ccode_expr(checkerboard):
     return ccode
 
 # Create a mesh
-def mesh(L, R, reps, res, **params):
+def mesh(meshfile, **params):
     mesh = Mesh()
-    #fname = "meshes/periodic_porous_Lx20_Ly10_rad0.25_N300_dx0.05.h5"
-    fname = get_fname(L, R, reps, res, "h5")
-    with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
+    with HDF5File(mesh.mpi_comm(), meshfile, "r") as h5f:
         h5f.read(mesh, "mesh", False)
     return mesh
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
-    NS_parameters.update(
-        T=100.0,
-        L=1.0,
-        R=0.1, # dummy
-        reps=0.02,
-        res=0.01, #dummy for now
-        dt=0.1,
-        rho=[1, 1],
-        mu=[1, 1],
-        theta=np.pi/3,
-        epsilon=0.01,
-        sigma=0.1,
-        checkerboard=[4, 4, 4],
-        M=0.00002,
-        F0=[0., 0., -10],
-        g0=[0., 0., 0.],
-        velocity_degree=1,
-        folder="porous3d_results",
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
-        print_intermediate_info=10,
-        use_krylov_solvers=True,
-        solver="BDF",  # solver="IPCS",
-        bdf_order=1,
-        AB_projection_pressure=False,
-        max_iter=5,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
-        iters_on_first_timestep=10,  # Number of iterations on first timestep
-    )
+    if "restart_folder" in commandline_kwargs.keys():
+         restart_folder = commandline_kwargs["restart_folder"]
+         restart_folder = path.join(getcwd(), restart_folder)
+         f = open(path.join(path.dirname(path.abspath(__file__)), restart_folder, 'params.dat'), 'rb')
+         NS_parameters.update(pickle.load(f))
+         NS_parameters['restart_folder'] = restart_folder
+         globals().update(NS_parameters)
+    else:
+        NS_parameters.update(
+            T=100.0,
+            L=1.0,
+            meshfile="meshes/test_4x4x8_out.h5",
+            R=0.5, # dummy
+            reps=0.0, # dummy
+            res=0.01, #dummy for now
+            dt=0.1,
+            rho=[1, 1],
+            mu=[1, 1],
+            theta=np.pi/3,
+            epsilon=0.05,
+            sigma=1.0,
+            M=0.0001,
+            u0=0.01,
+            injected_phase=-1,
+            F0=[0., 0., 0],
+            g0=[0., 0., 0.],
+            velocity_degree=1,
+            folder="porous3dflux_results",
+            stat_interval=10,
+            timestamps_interval=10,
+            save_step=10,
+            checkpoint=10,
+            print_intermediate_info=10,
+            use_krylov_solvers=True,
+            solver="BDF",  # solver="IPCS",
+            bdf_order=1,
+            AB_projection_pressure=False,
+            max_iter=5,                 # Number of inner pressure velocity iterations on timestep
+            max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+            iters_on_first_timestep=10,  # Number of iterations on first timestep
+        )
 
-    #NS_parameters['krylov_solvers'] = {'monitor_convergence': False,
-    #                                   'report': False,
-    #                                   'relative_tolerance': 1e-10,
-    #                                   'absolute_tolerance': 1e-10}
+        #NS_parameters['krylov_solvers'] = {'monitor_convergence': False,
+        #                                   'report': False,
+        #                                   'relative_tolerance': 1e-10,
+        #                                   'absolute_tolerance': 1e-10}
+
+        if "meshfile" in commandline_kwargs:
+            NS_parameters["meshfile"] = commandline_kwargs["meshfile"]
+
+    x_min, x_max = get_mesh_extrema(NS_parameters["meshfile"])
+
+    #print(rank, x_min, x_max)
+
     NS_expressions.update(dict(
-        constrained_domain=PBC3([NS_parameters["L"], NS_parameters["L"], NS_parameters["L"]])
+        constrained_domain=PBC2xy(x_min, x_max),
+        x_min=x_min,
+        x_max=x_max
     ))
 
-def mark_subdomains(subdomains, L, R, reps, res, **NS_namespace):
-    fname = get_fname(L, R, reps, res, "obst")
-    xyzr_ = np.loadtxt(fname)
-    wall = Walls(xyzr_)
-    wall.mark(subdomains, 1)
+def mark_subdomains(subdomains, meshfile, x_min, x_max, L, R, reps, res, **NS_namespace):
+    xyzr_ = np.loadtxt(meshfile[:-2] + "obst")
+
+    #wall = Walls(xyzr_)
+    #wall.mark(subdomains, 1)
+    boun = Boun()
+    boun.mark(subdomains, 1)
+
+    swalls = SideWalls(x_min, x_max)
+    swalls.mark(subdomains, 0)
+
+    btm = Bottom(x_min, x_max)
+    btm.mark(subdomains, 2)
+
+    top = Top(x_min, x_max)
+    top.mark(subdomains, 3)
+
     return dict()
 
 def contact_angles(theta, **NS_namespace):
     return [(theta, 1)]
 
 # Specify boundary conditions
-def create_bcs(V, subdomains, **NS_namespace):
+def create_bcs(V, W, subdomains, u0, injected_phase, **NS_namespace):
     bc_u_wall = DirichletBC(V, 0, subdomains, 1)
-    return dict(u0=[bc_u_wall],
-                u1=[bc_u_wall],
-                u2=[bc_u_wall],
+    bc_u_btm = DirichletBC(V, 0, subdomains, 2)
+    bc_uz_btm = DirichletBC(V, u0, subdomains, 2)
+    bc_u_top = DirichletBC(V, 0, subdomains, 3)
+    bc_uz_top = DirichletBC(V, u0, subdomains, 3)
+    bc_phig_btm = DirichletBC(W.sub(0), 1 * injected_phase, subdomains, 2)
+
+    return dict(u0=[bc_u_wall, bc_u_btm, bc_u_top],
+                u1=[bc_u_wall, bc_u_btm, bc_u_top],
+                u2=[bc_u_wall, bc_uz_btm, bc_uz_top],
                 p=[],
-                phig=[])
+                phig=[bc_phig_btm])
 
 
 def average_pressure_gradient(F0, **NS_namespace):
@@ -159,13 +235,12 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, checkerboard, **NS_namespace):
-    ccode = ccode_expr(checkerboard)
+def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, **NS_namespace):
+    frac = 0.1
+    z0 = frac*x_max[2]+(1-frac)*x_min[2]
     phig_init = interpolate(Expression(
-        #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-        #"tanh((x[2]-0.75*L)/(sqrt(2)*epsilon))-tanh((x[2]-0.25*L)/(sqrt(2)*epsilon))+1",
-        ccode,
-        epsilon=epsilon, L=L, degree=2), VV['phig'].sub(0).collapse())
+        "injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
+        epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
@@ -241,9 +316,10 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         u1m = assemble(q_['u1'] * dx) / volume
         u2m = assemble(q_['u2'] * dx) / volume
         phim = assemble(phi_ * dx) / volume
-        E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dx) / volume
+        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dx) / volume
         E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2 + phi_.dx(2)**2) * dx) / volume
         E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:

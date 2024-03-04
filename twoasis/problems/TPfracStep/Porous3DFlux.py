@@ -216,7 +216,7 @@ def create_bcs(V, W, subdomains, u0, injected_phase, **NS_namespace):
     bc_uz_btm = DirichletBC(V, u0, subdomains, 2)
     bc_u_top = DirichletBC(V, 0, subdomains, 3)
     bc_uz_top = DirichletBC(V, u0, subdomains, 3)
-    bc_phig_btm = DirichletBC(W.sub(0), 1 * injected_phase, subdomains, 2)
+    bc_phig_btm = DirichletBC(W.sub(0), injected_phase, subdomains, 2)
 
     return dict(u0=[bc_u_wall, bc_u_btm, bc_u_top],
                 u1=[bc_u_wall, bc_u_btm, bc_u_top],
@@ -239,7 +239,7 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase
     frac = 0.1
     z0 = frac*x_max[2]+(1-frac)*x_min[2]
     phig_init = interpolate(Expression(
-        "injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
+        "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
         epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
@@ -319,7 +319,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dx) / volume
         E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2 + phi_.dx(2)**2) * dx) / volume
         E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
-        
+
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:

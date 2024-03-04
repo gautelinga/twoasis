@@ -188,10 +188,10 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
     ))
 
 def mark_subdomains(subdomains, meshfile, x_min, x_max, L, R, reps, res, **NS_namespace):
-    xyzr_ = np.loadtxt(meshfile[:-2] + "obst")
-
+    #xyzr_ = np.loadtxt(meshfile[:-2] + "obst")
     #wall = Walls(xyzr_)
     #wall.mark(subdomains, 1)
+
     boun = Boun()
     boun.mark(subdomains, 1)
 
@@ -235,18 +235,20 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, **NS_namespace):
-    frac = 0.1
-    z0 = frac*x_max[2]+(1-frac)*x_min[2]
-    phig_init = interpolate(Expression(
-        "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
-    q_1['phig'].vector()[:] = q_['phig'].vector()
-    for ui in x_1:
-        [bc.apply(x_1[ui]) for bc in bcs[ui]]
-    for ui in x_2:
-        [bc.apply(x_2[ui]) for bc in bcs[ui]]
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, restart_folder, **NS_namespace):
+    if restart_folder is None:
+        frac = 0.1
+        z0 = frac*x_max[2]+(1-frac)*x_min[2]
+        phig_init = interpolate(Expression(
+            "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
+            epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
+        assign(q_['phig'].sub(0), phig_init)
+        q_1['phig'].vector()[:] = q_['phig'].vector()
+        q_2['phig'].vector()[:] = q_['phig'].vector()
+        for ui in x_1:
+            [bc.apply(x_1[ui]) for bc in bcs[ui]]
+        for ui in x_2:
+            [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 

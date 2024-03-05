@@ -21,10 +21,11 @@ def get_mesh_extrema(meshfile):
         x_min = x.min(axis=0)
         x_max = x.max(axis=0)
     else:
-        x_min = np.zeros(3)
-        x_max = np.zeros(3)
-    comm.Bcast(x_min, root=0)
-    comm.Bcast(x_max, root=0)
+        x_min = None # np.zeros(3)
+        x_max = None # np.zeros(3)
+    x_min = comm.bcast(x_min, root=0)
+    x_max = comm.bcast(x_max, root=0)
+    # print(rank, x_min, x_max)
     return x_min, x_max
 
 class GenSubDomain(SubDomain):
@@ -242,12 +243,12 @@ def create_bcs(V, W, subdomains, u0, injected_phase, **NS_namespace):
     bc_u_top = DirichletBC(V, 0, subdomains, 3)
     bc_uz_top = DirichletBC(V, u0, subdomains, 3)
     bc_phig_btm = DirichletBC(W.sub(0), injected_phase, subdomains, 2)
-
+    bc_phig_top = DirichletBC(W.sub(0), -injected_phase, subdomains, 3)
     return dict(u0=[bc_u_wall, bc_u_btm, bc_u_top],
                 u1=[bc_u_wall, bc_u_btm, bc_u_top],
                 u2=[bc_u_wall, bc_uz_btm, bc_uz_top],
                 p=[],
-                phig=[bc_phig_btm])
+                phig=[bc_phig_btm, bc_phig_top])
 
 
 def average_pressure_gradient(F0, **NS_namespace):

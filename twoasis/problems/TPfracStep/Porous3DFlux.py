@@ -206,8 +206,33 @@ def mark_subdomains(subdomains, meshfile, x_min, x_max, L, R, reps, res, **NS_na
 
     return dict()
 
-def contact_angles(theta, **NS_namespace):
-    return [(theta, 1)]
+def contact_angles(theta, V, meshfile, sigma, **NS_namespace):
+    obst = np.loadtxt(meshfile[:-2] + "obst")
+    s = Function(V, name="costheta")
+    xx = np.vstack([interpolate(Expression(f"x[{d}]", degree=0), V).vector()[:] for d in range(3)]).T
+
+    frac = 0.15
+    cutoff = 0.99
+    factor = 1.3
+
+    s_ = np.zeros_like(s.vector()[:])
+    for i, xr in enumerate(obst):
+        print(i)
+        x, r = xr[:3], xr[3]
+        reps = np.linalg.norm(xx - np.outer(np.ones(len(xx)), x), axis=1)/r - cutoff
+        ds = 1-reps/frac
+        s_[ds > 0] += ds[ds > 0]
+
+    s_[:] -= 1.0
+    s_[s_ < 0] = 0.0
+    s_[:] *= factor
+    s_[s_ > 1] = 1.0
+
+    s.vector()[:] = 1-s_
+    s.vector()[:] *= np.cos(theta)
+
+    #return [(theta, 1)]
+    return [(s, 1)]
 
 # Specify boundary conditions
 def create_bcs(V, W, subdomains, u0, injected_phase, **NS_namespace):

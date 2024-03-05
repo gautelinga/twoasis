@@ -60,7 +60,11 @@ def setup(u_components, u, v, p, q, bcs, #dt,
 
     Fpft = -sigma_bar / epsilon * fprime * eta * dx
     for theta, mark in angles:
-        Fpft += sigma * math.cos(theta) * fwprime * eta * ds(mark)
+        if isinstance(theta, Function):
+            # theta is actually cos(theta)!
+            Fpft += sigma * theta * fwprime * eta * ds(mark)
+        else:
+            Fpft += sigma * math.cos(theta) * fwprime * eta * ds(mark)
     apft, Lpft = lhs(Fpft), rhs(Fpft)
 
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))

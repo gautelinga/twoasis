@@ -80,7 +80,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
             rho=[1, 1],
             mu=[10, 1],
             u0=0.001,
-            y0=-14,
+            y0=-8,
             theta=np.pi/3,
             epsilon=0.05,
             sigma=5.0,

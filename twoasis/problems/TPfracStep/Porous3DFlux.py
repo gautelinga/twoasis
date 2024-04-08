@@ -207,7 +207,7 @@ def mark_subdomains(subdomains, meshfile, x_min, x_max, L, R, reps, res, **NS_na
 
     return dict()
 
-def contact_angles(theta, V, meshfile, sigma, **NS_namespace):
+def contact_angles(theta, V, meshfile, sigma, x_min, x_max, **NS_namespace):
     obst = np.loadtxt(meshfile[:-2] + "obst")
     s = Function(V, name="costheta")
     xx = np.vstack([interpolate(Expression(f"x[{d}]", degree=0), V).vector()[:] for d in range(3)]).T
@@ -218,11 +218,23 @@ def contact_angles(theta, V, meshfile, sigma, **NS_namespace):
 
     s_ = np.zeros_like(s.vector()[:])
     for i, xr in enumerate(obst):
-        print(i)
+        #print(i)
         x, r = xr[:3], xr[3]
         reps = np.linalg.norm(xx - np.outer(np.ones(len(xx)), x), axis=1)/r - cutoff
         ds = 1-reps/frac
         s_[ds > 0] += ds[ds > 0]
+
+    rmean = obst[:, 3].mean()
+
+    # top
+    reps = (x_max[2] - xx[:, 2])/rmean + 1-cutoff
+    ds = 1-reps/frac
+    s_[ds > 0] += ds[ds > 0]
+
+    # bottom
+    reps = (xx[:, 2] - x_min[2])/rmean + 1-cutoff
+    ds = 1-reps/frac
+    s_[ds > 0] += ds[ds > 0]
 
     s_[:] -= 1.0
     s_[s_ < 0] = 0.0
@@ -278,8 +290,9 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, R, reps, res, dt, constrained_domain, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, R, reps, res, dt, constrained_domain, ds, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
+    area = assemble(Constant(1.) * ds(2))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
     keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "R", "reps", "res", "dt"]
@@ -307,14 +320,14 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
             ofile.write("mesh=mesh.h5\n")
             ofile.write("periodic_x=true\n")
             ofile.write("periodic_y=true\n")
-            ofile.write("periodic_z=true\n")
+            ofile.write("periodic_z=false\n")
             ofile.write("rho=1.0\n")
     with HDF5File(mesh.mpi_comm(),
                   path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
         h5f.write(mesh, "mesh")
     write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder)
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, phi__=phi__)
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, area=area, phi__=phi__)
 
 def write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder):
     uv()
@@ -333,8 +346,8 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder):
             ofile.write("{:.6f} {}\n".format(t, h5fname))
 
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
-                  sigma, epsilon, volume, statsfolder, timestampsfolder,
-                  stat_interval, timestamps_interval,
+                  sigma, epsilon, volume, area, statsfolder, timestampsfolder,
+                  stat_interval, timestamps_interval, ds, angles,
                   uv, mesh, phi__,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
@@ -347,12 +360,15 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dx) / volume
         E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2 + phi_.dx(2)**2) * dx) / volume
         E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
+        
+        costheta = angles[0][0]
+        E_surf = 0.25 * sigma * assemble(costheta * ( - phi_**3 + 3 * phi_ + 2 ) * ds(angles[0][1])) 
 
+        dp = (assemble(p_ * ds(2)) - assemble(p_ * ds(3))) / area
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
-                tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(
-                    tstep, t, u0m, u1m, u2m, phim, E_kin, E_int, E_pot))
+                tfile.write(f"{tstep:d} {t:.8f} {u0m:.8f} {u1m:.8f} {u2m:.8f} {phim:.8f} {E_kin:.8f} {E_int:.8f} {E_pot:.8f} {E_surf:.8f} {dp:.8f}\n")
     #if tstep % timestamps_interval == 0:
     #    write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder)
     return dict()

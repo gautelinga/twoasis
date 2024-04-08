@@ -174,6 +174,10 @@ bcs = create_bcs(**vars())
 
 angles = contact_angles(**vars())
 
+if len(angles) > 0 and isinstance(angles[0][0], Function):
+    with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "angles.xdmf")) as xdmff:
+        xdmff.write(angles[0][0])
+
 """
 # LES setup
 lesmodel = importlib.import_module('.'.join(('twoasis.solvers.TPfracStep.LES', les_model)))

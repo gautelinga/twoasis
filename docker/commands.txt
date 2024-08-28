@@ -1,0 +1,4 @@
+docker build -t quay.io/gautelinga/twoasis:v0.2 .
+docker push quay.io/gautelinga/twoasis:v0.2
+
+singularity pull docker://quay.io/gautelinga/twoasis:v0.2

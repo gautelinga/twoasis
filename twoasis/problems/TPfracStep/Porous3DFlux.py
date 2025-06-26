@@ -96,29 +96,6 @@ class Top(GenSubDomain):
 def inlet(x, on_bnd):
     return on_bnd and near(x[0], 0)
 
-def get_fname(L, R, reps, res, ext):
-    meshparams = dict(L=L, R=R, reps=reps, res=res, ext=ext)
-    fname = "meshes/porous3d_rcp01.{ext}".format(**meshparams)
-    return fname
-
-def ccode_expr(checkerboard):
-    expr_fhat = "0.5*(tanh(({xhat}+0.25)/(sqrt(2)*{eps})) - tanh(({xhat}-0.25)/(sqrt(2)*{eps})))"
-    expr_xhat = "({N}*x[{d}]/L-({i}+0.5))"
-    ccode = ""
-    factors = []
-    for d in range(len(checkerboard)):
-        if checkerboard[d] > 0:
-            expr_xhat_d = []
-            expr_eps = "{N} / L * epsilon".format(N=checkerboard[d])
-            for i in range(checkerboard[d]):
-                expr_xhat_di = expr_xhat.format(N=checkerboard[d], d=d, i=i)
-                expr_xhat_d.append(expr_xhat_di)
-            factors.append("(2*(" + "+".join([expr_fhat.format(xhat=expr_xhat_di, eps=expr_eps) for expr_xhat_di in expr_xhat_d]) + ")-1.0)")
-        else:
-            factors.append("1")
-    ccode = "*".join(factors)
-    return ccode
-
 # Create a mesh
 def mesh(meshfile, **params):
     mesh = Mesh()

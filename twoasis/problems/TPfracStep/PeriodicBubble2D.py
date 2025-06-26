@@ -5,8 +5,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from ..TPfracStep import *
 import numpy as np
-from os import makedirs
+from os import makedirs, getcwd
 from twoasis.common.utilities import compute_ind
+import pickle
 
 class LeftRight(SubDomain):
     def __init__(self, Lx):
@@ -41,35 +42,44 @@ def mesh(Lx, Ly, res, **params):
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
-    NS_parameters.update(
-        T=3.0,
-        Lx=2,
-        Ly=1,
-        res=1./64,
-        R=0.25,
-        dt=0.002,
-        rho=[1000., 1.],
-        mu=[100., 1.],
-        theta=np.pi/2,
-        epsilon=0.02,
-        sigma=24.5,
-        M=0.00002,
-        F0=[0., 0.],
-        g0=[0., 0],
-        velocity_degree=2,
-        folder="periodicbubble2d_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
-        print_intermediate_info=10,
-        use_krylov_solvers=True,
-        solver="BDF",
-        max_iter=10,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
-        iters_on_first_timestep=20  # Number of iterations on first timestep
-    )
+    if "restart_folder" in commandline_kwargs.keys():
+         restart_folder = commandline_kwargs["restart_folder"]
+         restart_folder = path.join(getcwd(), restart_folder)
+         f = open(path.join(path.dirname(path.abspath(__file__)), restart_folder, 'params.dat'), 'rb')
+         NS_parameters.update(pickle.load(f))
+         NS_parameters['restart_folder'] = restart_folder
+         globals().update(NS_parameters)
+    else:
+        NS_parameters.update(
+            T=3.0,
+            Lx=2,
+            Ly=1,
+            res=1./64,
+            R=0.4,
+            dt=0.002,
+            rho=[1., 1.],
+            mu=[1., 1.],
+            theta=np.pi/2,
+            epsilon=0.02,
+            sigma=10.0,
+            M=0.00002,
+            u0=0.0,
+            F0=[0., 0.],
+            g0=[1.0, 0],
+            velocity_degree=2,
+            folder="periodicbubble2d_results",
+            plot_interval=10,
+            stat_interval=10,
+            timestamps_interval=10,
+            save_step=10,
+            checkpoint=10,
+            print_intermediate_info=10,
+            use_krylov_solvers=True,
+            solver="BDF",
+            max_iter=100,                 # Number of inner pressure velocity iterations on timestep
+            max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
+            iters_on_first_timestep=200  # Number of iterations on first timestep
+        )
 
     NS_expressions.update(dict(
         constrained_domain=LeftRight(NS_parameters["Lx"])
@@ -83,7 +93,7 @@ def mark_subdomains(subdomains, Lx, Ly, **NS_namespace):
     return dict()
 
 def contact_angles(theta, **NS_namespace):
-    return [(theta, 1)]
+    return [(theta, 2)]
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, u0, **NS_namespace):
@@ -105,17 +115,22 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, **NS_namespace):
-    phig_init = interpolate(Expression(
-        "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/4, 2))-R)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
-    q_1['phig'].vector()[:] = q_['phig'].vector()
-    q_2['phig'].vector()[:] = q_['phig'].vector()
-    for ui in x_1:
-        [bc.apply(x_1[ui]) for bc in bcs[ui]]
-    for ui in x_2:
-        [bc.apply(x_2[ui]) for bc in bcs[ui]]
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, u0, VV, Lx, Ly, R, restart_folder, **NS_namespace):
+    if restart_folder is None:
+        # Uniform flow
+        q_['u0'].vector()[:] = u0
+        q_['u1'].vector()[:] = 0.
+        # Centered
+        phig_init = interpolate(Expression(
+            "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",
+            epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
+        assign(q_['phig'].sub(0), phig_init)
+        q_1['phig'].vector()[:] = q_['phig'].vector()
+        q_2['phig'].vector()[:] = q_['phig'].vector()
+        for ui in x_1:
+            [bc.apply(x_1[ui]) for bc in bcs[ui]]
+        for ui in x_2:
+            [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
@@ -176,13 +191,13 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         V_c = assemble(ind_ * q_['u1'] * dx) / vol_c
 
         E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
-        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1]*X[1]) * dx) / volume
+        #E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1]*X[1]) * dx) / volume
         E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
         E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
-                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, E_grav, vol_c, y_cm, V_c]
+                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, vol_c, y_cm, V_c]
                 tfile.write(
                     ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
                     tstep, t, *entries))

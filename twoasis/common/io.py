@@ -55,7 +55,8 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
     tstepfiles = {}
     comps = sys_comp
     if output_timeseries_as_vector:
-        pf_comps = ["phi"]  # ['phi', 'g']
+        #pf_comps = ["phi"]  
+        pf_comps = ['phi', 'g']
         comps = ['p', 'u'] + pf_comps + scalar_components
 
     for ui in comps:
@@ -114,11 +115,11 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
                 assign(phi__, q_['phig'].sub(0))
                 tstepfile.write(phi__, float(t))
             elif comp == "g":
-                pass
+                # pass
                 # chemical potential has not really been needed
-                #g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
-                #assign(g__, q_['phig'].sub(1))
-                #tstepfile.write(g__, float(t))
+                g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
+                assign(g__, q_['phig'].sub(1))
+                tstepfile.write(g__, float(t))
             elif comp in q_:
                 tstepfile.write(q_[comp], float(t))
             else:

@@ -184,10 +184,9 @@ def contact_angles(theta, **NS_namespace):
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):
-    bc_ux_wall = DirichletBC(V, 0, subdomains, 1)
-    bc_uy_wall = DirichletBC(V, 0, subdomains, 1)
-    return dict(u0=[bc_ux_wall, bc_ux_wall],
-                u1=[bc_uy_wall, bc_uy_wall],
+    bc_u_wall = DirichletBC(V, 0, subdomains, 1)
+    return dict(u0=[bc_u_wall],
+                u1=[bc_u_wall],
                 p=[],
                 phig=[])
 

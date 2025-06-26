@@ -60,7 +60,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         M=0.00002,
         F0=[0., 0.],
         g0=[0., -0.98],
-        velocity_degree=1,
+        velocity_degree=2,
         folder="bubble2d_results",
         plot_interval=10,
         stat_interval=10,
@@ -69,7 +69,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         checkpoint=10,
         print_intermediate_info=10,
         use_krylov_solvers=True,
-        solver="IPCS",
+        solver="BDF",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=200,  # Number of iterations on first timestep
@@ -87,7 +87,7 @@ def mark_subdomains(subdomains, Lx, Ly, **NS_namespace):
     return dict()
 
 def contact_angles(theta, **NS_namespace):
-    return [(theta, 1)]
+    return [(theta, 2)]
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):

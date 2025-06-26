@@ -152,6 +152,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
             M=0.0001,
             u0=0.01,
             injected_phase=-1,
+            zfrac=0.1,
             F0=[0., 0., 0],
             g0=[0., 0., 0.],
             velocity_degree=1,
@@ -248,14 +249,15 @@ def contact_angles(theta, V, meshfile, sigma, x_min, x_max, **NS_namespace):
     return [(s, 1)]
 
 # Specify boundary conditions
-def create_bcs(V, W, subdomains, u0, injected_phase, **NS_namespace):
+def create_bcs(V, W, subdomains, u0, injected_phase, zfrac, **NS_namespace):
     bc_u_wall = DirichletBC(V, 0, subdomains, 1)
     bc_u_btm = DirichletBC(V, 0, subdomains, 2)
     bc_uz_btm = DirichletBC(V, u0, subdomains, 2)
     bc_u_top = DirichletBC(V, 0, subdomains, 3)
     bc_uz_top = DirichletBC(V, u0, subdomains, 3)
-    bc_phig_btm = DirichletBC(W.sub(0), injected_phase, subdomains, 2)
-    bc_phig_top = DirichletBC(W.sub(0), -injected_phase, subdomains, 3)
+    bc_phig_btm = DirichletBC(W.sub(0), injected_phase, subdomains, 2)    
+    ejected_phase = -injected_phase if zfrac > 0.0 and zfrac < 1.0 else injected_phase
+    bc_phig_top = DirichletBC(W.sub(0), ejected_phase, subdomains, 3)    
     return dict(u0=[bc_u_wall, bc_u_btm, bc_u_top],
                 u1=[bc_u_wall, bc_u_btm, bc_u_top],
                 u2=[bc_u_wall, bc_uz_btm, bc_uz_top],
@@ -273,10 +275,10 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, restart_folder, **NS_namespace):
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, restart_folder, zfrac, **NS_namespace):
     if restart_folder is None:
-        frac = 0.1
-        z0 = frac*x_max[2]+(1-frac)*x_min[2]
+        #zfrac = 0.1
+        z0 = zfrac*x_max[2]+(1-zfrac)*x_min[2]
         phig_init = interpolate(Expression(
             "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
             epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())

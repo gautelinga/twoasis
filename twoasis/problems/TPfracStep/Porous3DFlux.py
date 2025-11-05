@@ -123,7 +123,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
             dt=0.1,
             rho=[1, 1],
             mu=[1, 1],
-            theta=np.pi/3,
+            theta=np.pi/2,
             epsilon=0.05,
             sigma=1.0,
             M=0.0001,

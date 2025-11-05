@@ -9,7 +9,174 @@ import numpy as np
 from os import makedirs, getcwd
 from .Porous2D import Walls
 import pickle
+import h5py
+from xml.etree import cElementTree as ET
 
+#from addictif.common.utils import helpers
+
+helper_code = """
+#include <pybind11/pybind11.h>
+#include <pybind11/eigen.h>
+namespace py = pybind11;
+
+#include <dolfin/function/Expression.h>
+#include <dolfin/mesh/Mesh.h>
+#include <dolfin/mesh/Cell.h>
+#include <dolfin/function/Function.h>
+#include <dolfin/function/FunctionSpace.h>
+#include <dolfin/mesh/Vertex.h>
+
+class Triangle {
+public:
+  Triangle(const dolfin::Cell cell){
+    for (dolfin::VertexIterator v(cell); !v.end(); ++v)
+    {
+        const std::size_t pos = v.pos();
+        xx_[pos] = v->x(0);
+        yy_[pos] = v->x(1);
+    }
+
+    double j11 = xx_[1]-xx_[0];
+    double j12 = yy_[1]-yy_[0];
+    
+    double j21 = xx_[2]-xx_[0];
+    double j22 = yy_[2]-yy_[0];
+    
+    double det = j11*j22-j12*j21;
+    double d = 1.0/det;
+
+    g2x_ = j22*d;   g3x_ = -j12*d;
+    g2y_ = -j21*d;  g3y_ = j11*d;
+    g1x_ = -g2x_-g3x_;  g1y_ = -g2y_-g3y_;
+  }
+  void linearbasis(double r,
+                   double s,
+                   double t,
+                   std::vector<double> &N) const
+  {
+    N[0] = r;
+    N[1] = s;
+    N[2] = t;
+  }
+  
+  void linearderiv(std::vector<double> &Nx,
+                   std::vector<double> &Ny) const {
+    Nx[0] = g1x_;
+    Nx[1] = g2x_;
+    Nx[2] = g3x_;
+
+    Ny[0] = g1y_;
+    Ny[1] = g2y_;
+    Ny[2] = g3y_;
+  }
+private:
+  std::array<double, 4> xx_, yy_;
+  double g1x_, g1y_;
+  double g2x_, g2y_;
+  double g3x_, g3y_;
+};
+
+class AbsGrad : public dolfin::Expression
+{
+public:
+
+  // Create expression with 1 component
+  AbsGrad() : dolfin::Expression() {}
+
+  // Function for evaluating expression on each cell
+  void eval(Eigen::Ref<Eigen::VectorXd> values, Eigen::Ref<const Eigen::VectorXd> x, const ufc::cell& ufc_cell) const override
+  {
+    const uint cell_index = ufc_cell.index;
+    const dolfin::Cell dolfin_cell(*a->function_space()->mesh(), cell_index);
+    //dolfin_cell.get_cell_data(ufc_cell);
+    const dolfin::FiniteElement element = *a->function_space()->element();
+
+    std::vector<double> coordinate_dofs;
+    dolfin_cell.get_coordinate_dofs(coordinate_dofs);
+    // const size_t dim = 3; // a->function_space()->mesh()->geometry().dim();
+    const size_t ncoeff = 3;
+ 
+    std::vector<double> coefficients_(ncoeff);
+
+    a->restrict(coefficients_.data(), element, dolfin_cell,
+                coordinate_dofs.data(), ufc_cell);
+
+    std::vector<double> Nx_(ncoeff);
+    std::vector<double> Ny_(ncoeff);
+
+    Triangle tri(dolfin_cell);
+    tri.linearderiv(Nx_, Ny_);
+
+    double dadx = std::inner_product(Nx_.begin(), Nx_.end(), coefficients_.begin(), 0.0);
+    double dady = std::inner_product(Ny_.begin(), Ny_.end(), coefficients_.begin(), 0.0);
+
+    values[0] = sqrt(dadx * dadx + dady * dady);
+  }
+  std::shared_ptr<dolfin::Function> a;
+};
+
+PYBIND11_MODULE(SIGNATURE, m)
+{
+  py::class_<AbsGrad, std::shared_ptr<AbsGrad>, dolfin::Expression>
+    (m, "AbsGrad")
+    .def(py::init<>())
+    .def_readwrite("a", &AbsGrad::a);
+}
+"""
+
+helpers = compile_cpp_code(helper_code)
+
+def parse_xdmf(xml_file, get_mesh_address=False):
+    tree = ET.parse(xml_file)
+    root = tree.getroot()
+
+    basedir = path.dirname(xml_file)
+
+    dsets = []
+    timestamps = []
+
+    geometry_found = not get_mesh_address
+    topology_found = not get_mesh_address
+
+    for i, step in enumerate(root[0][0]):
+        if step.tag == "Time":
+            # Support for earlier dolfin formats
+            timestamps = [float(time) for time in
+                          step[0].text.strip().split(" ")]
+        elif step.tag == "Grid":
+            timestamp = None
+            dset_address = None
+            for prop in step:
+                if prop.tag == "Time":
+                    timestamp = float(prop.attrib["Value"])
+                elif prop.tag == "Attribute":
+                    dset_address = prop[0].text.split(":") # [1]
+                    dset_address[0] = path.join(basedir, dset_address[0])
+                elif not topology_found and prop.tag == "Topology":
+                    topology_address = prop[0].text.split(":")
+                    topology_address[0] = path.join(basedir, topology_address[0])
+                    topology_found = True
+                elif not geometry_found and prop.tag == "Geometry":
+                    geometry_address = prop[0].text.split(":")
+                    geometry_address[0] = path.join(basedir, geometry_address[0])
+                    geometry_found = True
+            if timestamp is None:
+                timestamp = timestamps[i-1]
+            dsets.append((timestamp, dset_address))
+    if get_mesh_address and topology_found and geometry_found:
+        return (dsets, topology_address, geometry_address)
+    return dsets
+
+def prep(x_list):
+    """ Prepare a tuple representing coordinates to be used as key in a dict. """
+    return tuple(x_list)
+
+def load_scalar(phi_next, dset_phi, glob2loc, index=0):
+    with h5py.File(dset_phi[0], "r") as h5f:
+        phi_next.vector()[:] = h5f[dset_phi[1]][:, index][glob2loc]
+
+def mpi_max(a):
+    return MPI.max(MPI.comm_world, np.max(a))
 
 class PBC2(SubDomain):
     def __init__(self, Lx):
@@ -165,7 +332,7 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, restart_folder, mesh, **NS_namespace):
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, restart_folder, mesh, V, **NS_namespace):
     if restart_folder is None:
         if initial_state is None:
             phi_init = interpolate(Expression(
@@ -174,6 +341,45 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
                 "tanh((x[1]-y0)/(sqrt(2)*epsilon))",
                 epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
             assign(q_['phig'].sub(0), phi_init)
+        elif initial_state.replace("/", "").endswith("Timeseries"):
+            info_blue("initializing from: " + initial_state)
+            u_file = path.join(initial_state, "u_from_tstep_0.xdmf")
+            p_file = path.join(initial_state, "p_from_tstep_0.xdmf")
+            phi_file = path.join(initial_state, "phi_from_tstep_0.xdmf")
+            g_file = path.join(initial_state, "g_from_tstep_0.xdmf")
+
+            dsets_u, topology_address, geometry_address = parse_xdmf(u_file, get_mesh_address=True)
+            dsets_u = dict(dsets_u)
+            dsets_p = dict(parse_xdmf(p_file, get_mesh_address=False))
+            dsets_phi = dict(parse_xdmf(phi_file, get_mesh_address=False))
+            dsets_g = dict(parse_xdmf(g_file, get_mesh_address=False))
+
+            with h5py.File(geometry_address[0], "r") as h5f:
+                nodes = h5f[geometry_address[1]][:]
+
+            if MPI.rank(MPI.comm_world) == 0:
+                xdict = dict([(prep(xloc), i) for i, xloc in enumerate(nodes)])
+            else:
+                xdict = None
+            xdict = MPI.comm_world.bcast(xdict, root=0)
+            glob2loc = [xdict[prep(xloc)] for xloc in V.tabulate_dof_coordinates()]
+
+            t_ = sorted(dsets_u.keys())
+
+            tkey = t_[-1]
+
+            phi_init = Function(V)
+            g_init = Function(V)
+            load_scalar(phi_init, dsets_phi[tkey], glob2loc)
+            load_scalar(g_init, dsets_g[tkey], glob2loc)
+            assign(q_['phig'].sub(0), phi_init)
+            assign(q_['phig'].sub(1), g_init)
+            load_scalar(q_['u0'], dsets_u[tkey], glob2loc, index=0)
+            load_scalar(q_['u1'], dsets_u[tkey], glob2loc, index=1)
+            load_scalar(q_['p'], dsets_p[tkey], glob2loc)
+            for key in q_.keys():
+                q_1[key].vector()[:] = q_[key].vector()
+                q_2[key].vector()[:] = q_[key].vector()
         else:
             info_blue("initializing from: " + initial_state)
             phi_init = read_phase_distribition(initial_state, mesh, q_)
@@ -188,7 +394,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, rad, res, dt, Lx, Ly, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, rad, res, dt, Lx, Ly, S_DG0, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -222,7 +428,10 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
         h5f.write(mesh, "mesh")
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+    phi__, g__ = q_['phig'].split(deepcopy=True)
+    absgrad_g_ = Function(S_DG0, name="absgrad_g")
+
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, absgrad_g_=absgrad_g_, g__=g__)
 
 def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     uv()
@@ -248,10 +457,10 @@ def read_phase_distribition(fname, mesh, q_):
     return phi__
 
 
-def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
+def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_, g__, absgrad_g_,
                   sigma, epsilon, volume, statsfolder, timestampsfolder,
-                  stat_interval, timestamps_interval,
-                  uv, mesh,
+                  stat_interval, timestamps_interval, M, res,
+                  uv, mesh, dt,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
@@ -270,7 +479,21 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
     if tstep % timestamps_interval == 0:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
 
-    return dict()
+    if False:
+        with Timer("Computing time step"):
+            assign(g__, q_["phig"].sub(1))
+            absgrad_g_.interpolate(CompiledExpression(helpers.AbsGrad(), a=g__, degree=0))
+            absgrad_g_max = mpi_max(absgrad_g_.vector()[:])
+            umax = np.sqrt(mpi_max(q_['u0'].vector()[:]**2 + q_['u1'].vector()[:]**2))
+
+            dt = 0.5 * res / (umax + M*absgrad_g_max) 
+
+            info_blue(f"dt={dt}")
+
+    #with XDMFFile(mesh.mpi_comm(), "absgrad_0.xdmf") as xdmff:
+    #    xdmff.write(absgrad_g_, 0.)
+
+    return dict(dt = dt)
 
 def theend_hook(u_, p_, testing, **NS_namespace):
     u_norm = norm(u_[0].vector())

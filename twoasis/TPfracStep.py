@@ -95,6 +95,7 @@ phi_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
 g_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
 W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),
                   constrained_domain=constrained_domain)
+S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)
 
 subdomains = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
 subdomains.set_all(0)

@@ -168,7 +168,10 @@ RUN apt-get -qq update && \
     apt-get -y install pkg-config && \
 	pip3 install pkgconfig
     
-RUN git  clone https://github.com/gautelinga/twoasis.git
+RUN git clone https://github.com/gautelinga/addictif.git
+RUN cd addictif && pip3 install --no-cache-dir . && cd ..
+
+RUN git clone https://github.com/gautelinga/twoasis.git
 RUN cd twoasis && pip3 install --no-cache-dir .
 
 WORKDIR /root

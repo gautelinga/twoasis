@@ -180,8 +180,9 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
     #print("rho", np.min(rho_.vector()[:]))
     rho_inv_.vector()[:] = 1. / rho_.vector()[:]
     #chi = 0.5*(1 + np.sin(math.pi/2 * phi_bar))
-    # mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
-    mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
+    # geometric mean (matches BDF.py; robust across large viscosity ratios)
+    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
+    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])  # harmonic
 
     # assemble mass for rhs and lhs
     assemble(Mt[1] * dx, tensor=Mt[0])

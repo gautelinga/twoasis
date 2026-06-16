@@ -294,7 +294,7 @@ def merge_xml_files(files):
                 base_tree.getroot()[0][0].append(node)
                 last_timestep = float(node[ind].attrib["Value"])
 
-    # Seperate xdmf files
+    # Separate xdmf files
     new_file = [f for f in files if "_0" in f]
     old_files = [f for f in files if "_" in f and f not in new_file]
 

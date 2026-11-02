@@ -9,14 +9,14 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 import math
 
 from dolfin import (
-    as_backend_type, as_vector, assemble, assign, dot, dx, Expression, Function, grad,
+    as_backend_type, as_vector, assemble, dot, dx, Expression, Function, grad,
     inner, lhs, Matrix, nabla_grad, normalize, rhs, Timer, Vector, VectorSpaceBasis)
 
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    add_contact_angles, krylov_get_solvers, potential_linear_derivative,
-    wall_potential_linear_derivative)
+    add_contact_angles, krylov_get_solvers, PhaseFieldOnVelocitySpace,
+    potential_linear_derivative, set_mixed_fields, wall_potential_linear_derivative)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -36,7 +36,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     rho_ = Function(V)
     rho_inv_ = Function(V)
     mu_ = Function(V)
-    c__ = Function(V)
+    phi_V = PhaseFieldOnVelocitySpace(q_['phig'].function_space(), V)
     #rho_.vector()[:] = rho[0]
     #mu_.vector()[:] = mu[0]
 
@@ -120,7 +120,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     if bcs['p'] == []:
         attach_pressure_nullspace(Apt, x_, Q)
 
-    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__, sigma_bar=sigma_bar)
+    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
     return d
 
 get_solvers = krylov_get_solvers
@@ -129,7 +129,7 @@ get_solvers = krylov_get_solvers
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
                               Kt, u_adv, u_components,
                               b_tmp, bg0, b0, x_1, bcs, TPT, rho, mu,
-                              rho_, mu_, rho_inv_, c__, q_, gradp_avg, bgp0,
+                              rho_, mu_, rho_inv_, phi_V, q_, gradp_avg, bgp0,
                               phigradg, Apt, **NS_namespace):
     """Called on the first inner iteration of each timestep.
 
@@ -139,23 +139,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
     """
     t0 = Timer("Assemble first inner iter")
 
-    assign(c__, q_['phig'].sub(0))
-    cv = c__.vector()[:]
-    cv += 1
-    cv *= 0.5
-    cv[cv < 0.0] = 0.0
-    cv[cv > 1.0] = 1.0
-    #print("cv", np.min(cv))
-    #rho_.vector().zero()
-    #rho_.vector().axpy(1., rho[0]*cv + rho[1]*(1-cv))
-    # rho_.vector()[:] = rho[0]**cv[:] * rho[1]**(1-cv[:]) !not good
-    rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
-    #print("rho", np.min(rho_.vector()[:]))
-    rho_inv_.vector()[:] = 1. / rho_.vector()[:]
-    #chi = 0.5*(1 + np.sin(math.pi/2 * phi_bar))
-    # geometric mean (matches BDF.py; robust across large viscosity ratios)
-    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
-    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])  # harmonic
+    set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     # assemble mass for rhs and lhs
     assemble(Mt[1] * dx, tensor=Mt[0])

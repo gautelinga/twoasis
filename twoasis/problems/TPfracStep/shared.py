@@ -132,7 +132,7 @@ def load_restart_parameters(NS_parameters, commandline_kwargs):
 
 
 def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, pressure_degree,
-                          constrained_domain):
+                          phase_field_degree, constrained_domain):
     """Describe the files that write_timestamp adds to timestampsfolder:
     params.dat lists the given parameters (a dict), dolfin_params.dat the
     function spaces and the periodic directions, and mesh.h5 holds the mesh."""
@@ -144,7 +144,7 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
         with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
             ofile.write("velocity_space=P{}\n".format(velocity_degree))
             ofile.write("pressure_space=P{}\n".format(pressure_degree))
-            ofile.write("phase_field_space=P{}\n".format(velocity_degree))
+            ofile.write("phase_field_space=P{}\n".format(phase_field_degree))
             ofile.write("timestamps=timestamps.dat\n")
             ofile.write("mesh=mesh.h5\n")
             for i, axis in enumerate("xyz"):

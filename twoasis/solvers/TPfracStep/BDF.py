@@ -10,15 +10,15 @@ import math
 
 import numpy as np
 from dolfin import (
-    as_backend_type, as_vector, assemble, assign, Constant, DOLFIN_EPS_LARGE, dot, dx,
+    as_backend_type, as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx,
     Function, grad, inner, lhs, Matrix, nabla_grad, normalize, rhs, Timer, Vector,
     VectorSpaceBasis)
 
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    add_contact_angles, krylov_get_solvers, potential_linear_derivative,
-    wall_potential_linear_derivative)
+    add_contact_angles, krylov_get_solvers, PhaseFieldOnVelocitySpace,
+    potential_linear_derivative, set_mixed_fields, wall_potential_linear_derivative)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -52,10 +52,10 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     rho_ = Function(V)
     rho_inv_ = Function(V)
     mu_ = Function(V)
-    c__ = Function(V)
+    phi_V = PhaseFieldOnVelocitySpace(q_['phig'].function_space(), V)
 
     # If things need to be precomputed
-    set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu)
+    set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     # Mass matrix without density coefficient
     Md = assemble_matrix(inner(u, v) * dx)
@@ -179,30 +179,15 @@ def setup(u_components, u, v, p, q, bcs, #dt,
         Apt[2] = attach_pressure_nullspace(Apt[0], x_, Q)
         attach_pressure_nullspace(Apd, x_, Q)
 
-    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__, sigma_bar=sigma_bar)
+    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
     return d
 
 get_solvers = krylov_get_solvers
 
-def set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu):
-    assign(c__, q_['phig'].sub(0))
-    cv = c__.vector()[:]
-    cv += 1
-    cv *= 0.5
-    cv[cv < 0.0] = 0.0
-    cv[cv > 1.0] = 1.0
-
-    rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
-    rho_inv_.vector()[:] = 1. / rho_.vector()[:]
-
-    mu_.vector()[:] = mu[0]**cv[:] * mu[1]**(1-cv[:])
-    # mu_.vector()[:] = 1 / (cv[:]/mu[0] + (1-cv[:]) / mu[1])
-
-
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_order,
                               Kt, u_adv, u_components, alpha, beta, AB_projection_pressure,
                               b_tmp, bg0, b0, x_, x_1, x_2, bcs, TPT, rho, mu,
-                              rho_, mu_, rho_inv_, c__, q_, acc, gradp_avg, bgp0,
+                              rho_, mu_, rho_inv_, phi_V, q_, acc, gradp_avg, bgp0,
                               Fv, matched_mu, matched_properties, phigradg,
                               Apt, constant_poisson_coefficient,
                               **NS_namespace):
@@ -218,7 +203,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
 
     # With matched properties the coefficient fields are uniform and were set in setup.
     if not matched_properties:
-        set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu)
+        set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     acc_is_uniform = isinstance(acc, Constant)
     gradp_is_uniform = isinstance(gradp_avg, Constant)

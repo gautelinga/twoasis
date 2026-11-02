@@ -27,7 +27,9 @@ NS_parameters.update(
     constant_poisson_coefficient=False,
     quadrature_degree=None,        # quadrature degree for all forms; None means 2*velocity_degree + 1
 
-    # Phase field parameters. phi and g use the velocity's element.
+    # Phase field parameters
+    phase_field_degree=None,         # degree of phi; None means velocity_degree
+    chemical_potential_degree=None,  # degree of g; None means phase_field_degree
     phase_field_fieldsplit=False,  # use a Schur fieldsplit preconditioner for the (phi, g) solve
 
     M=0.001,

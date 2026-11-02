@@ -8,14 +8,11 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from os import path
-from xml.etree import ElementTree as ET
 
-import h5py
 import numpy as np
-from dolfin import (
-    assemble, assign, Constant, DirichletBC, dx, Expression, Function, interpolate,
-    MPI)
+from dolfin import assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI
 
+from twoasis.common.io import load_timeseries
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep import Porous2D
 from twoasis.problems.TPfracStep.Porous2D import get_fname, Walls
@@ -25,57 +22,6 @@ from twoasis.problems.TPfracStep.shared import (
 
 # The mesh and its file name are those of Porous2D.
 mesh = Porous2D.mesh
-
-#from addictif.common.utils import helpers
-
-def parse_xdmf(xml_file, get_mesh_address=False):
-    tree = ET.parse(xml_file)
-    root = tree.getroot()
-
-    basedir = path.dirname(xml_file)
-
-    dsets = []
-    timestamps = []
-
-    geometry_found = not get_mesh_address
-    topology_found = not get_mesh_address
-
-    for i, step in enumerate(root[0][0]):
-        if step.tag == "Time":
-            # Support for earlier dolfin formats
-            timestamps = [float(time) for time in
-                          step[0].text.strip().split(" ")]
-        elif step.tag == "Grid":
-            timestamp = None
-            dset_address = None
-            for prop in step:
-                if prop.tag == "Time":
-                    timestamp = float(prop.attrib["Value"])
-                elif prop.tag == "Attribute":
-                    dset_address = prop[0].text.split(":") # [1]
-                    dset_address[0] = path.join(basedir, dset_address[0])
-                elif not topology_found and prop.tag == "Topology":
-                    topology_address = prop[0].text.split(":")
-                    topology_address[0] = path.join(basedir, topology_address[0])
-                    topology_found = True
-                elif not geometry_found and prop.tag == "Geometry":
-                    geometry_address = prop[0].text.split(":")
-                    geometry_address[0] = path.join(basedir, geometry_address[0])
-                    geometry_found = True
-            if timestamp is None:
-                timestamp = timestamps[i-1]
-            dsets.append((timestamp, dset_address))
-    if get_mesh_address and topology_found and geometry_found:
-        return (dsets, topology_address, geometry_address)
-    return dsets
-
-def prep(x_list):
-    """ Prepare a tuple representing coordinates to be used as key in a dict. """
-    return tuple(x_list)
-
-def load_scalar(phi_next, dset_phi, glob2loc, index=0):
-    with h5py.File(dset_phi[0], "r") as h5f:
-        phi_next.vector()[:] = h5f[dset_phi[1]][:, index][glob2loc]
 
 def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
     if not load_restart_parameters(NS_parameters, commandline_kwargs):
@@ -154,7 +100,8 @@ def create_bcs(V, Q, u0, W, subdomains, injected_phase, **NS_namespace):
                 phig=[bc_phig_btm])
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, restart_folder, mesh, V, **NS_namespace):
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, restart_folder, mesh,
+               constrained_domain, **NS_namespace):
     if restart_folder is None:
         if initial_state is None:
             phi_init = interpolate(Expression(
@@ -164,41 +111,9 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
                 epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
             assign(q_['phig'].sub(0), phi_init)
         elif initial_state.replace("/", "").endswith("Timeseries"):
+            # The last state in the Timeseries/ folder of an earlier run.
             info_blue("initializing from: " + initial_state)
-            u_file = path.join(initial_state, "u_from_tstep_0.xdmf")
-            p_file = path.join(initial_state, "p_from_tstep_0.xdmf")
-            phi_file = path.join(initial_state, "phi_from_tstep_0.xdmf")
-            g_file = path.join(initial_state, "g_from_tstep_0.xdmf")
-
-            dsets_u, topology_address, geometry_address = parse_xdmf(u_file, get_mesh_address=True)
-            dsets_u = dict(dsets_u)
-            dsets_p = dict(parse_xdmf(p_file, get_mesh_address=False))
-            dsets_phi = dict(parse_xdmf(phi_file, get_mesh_address=False))
-            dsets_g = dict(parse_xdmf(g_file, get_mesh_address=False))
-
-            with h5py.File(geometry_address[0], "r") as h5f:
-                nodes = h5f[geometry_address[1]][:]
-
-            if MPI.rank(MPI.comm_world) == 0:
-                xdict = dict([(prep(xloc), i) for i, xloc in enumerate(nodes)])
-            else:
-                xdict = None
-            xdict = MPI.comm_world.bcast(xdict, root=0)
-            glob2loc = [xdict[prep(xloc)] for xloc in V.tabulate_dof_coordinates()]
-
-            t_ = sorted(dsets_u.keys())
-
-            tkey = t_[-1]
-
-            phi_init = Function(V)
-            g_init = Function(V)
-            load_scalar(phi_init, dsets_phi[tkey], glob2loc)
-            load_scalar(g_init, dsets_g[tkey], glob2loc)
-            assign(q_['phig'].sub(0), phi_init)
-            assign(q_['phig'].sub(1), g_init)
-            load_scalar(q_['u0'], dsets_u[tkey], glob2loc, index=0)
-            load_scalar(q_['u1'], dsets_u[tkey], glob2loc, index=1)
-            load_scalar(q_['p'], dsets_p[tkey], glob2loc)
+            load_timeseries(initial_state, q_, VV, constrained_domain)
             for key in q_.keys():
                 q_1[key].vector()[:] = q_[key].vector()
                 q_2[key].vector()[:] = q_[key].vector()
@@ -216,7 +131,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
-                   AssignedVectorFunction, constrained_domain, **NS_namespace):
+                   phase_field_degree, AssignedVectorFunction, constrained_domain, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -225,7 +140,8 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
     write_timestamps_info(timestampsfolder, mesh,
                           {key: NS_namespace[key] for key in
                            ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt", "Lx", "Ly"]},
-                          velocity_degree, pressure_degree, constrained_domain)
+                          velocity_degree, pressure_degree, phase_field_degree,
+                          constrained_domain)
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
 

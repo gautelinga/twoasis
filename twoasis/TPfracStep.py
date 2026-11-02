@@ -125,8 +125,14 @@ V = Q = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constraine
 if velocity_degree != pressure_degree:
     Q = FunctionSpace(mesh, 'CG', pressure_degree,
                       constrained_domain=constrained_domain)
-phi_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
-g_el = FiniteElement('CG', mesh.ufl_cell(), velocity_degree)
+# The phase field and the chemical potential may use a lower degree than the
+# velocity (e.g. P1 with P2 velocity); by default they use the velocity's.
+if phase_field_degree is None:
+    phase_field_degree = velocity_degree
+if chemical_potential_degree is None:
+    chemical_potential_degree = phase_field_degree
+phi_el = FiniteElement('CG', mesh.ufl_cell(), phase_field_degree)
+g_el = FiniteElement('CG', mesh.ufl_cell(), chemical_potential_degree)
 W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),
                   constrained_domain=constrained_domain)
 S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)

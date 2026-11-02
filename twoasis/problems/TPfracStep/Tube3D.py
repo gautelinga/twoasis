@@ -105,7 +105,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, z0, z1, Lb, Rb, **NS_na
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
-                   AssignedVectorFunction, constrained_domain, **NS_namespace):
+                   phase_field_degree, AssignedVectorFunction, constrained_domain, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -114,7 +114,8 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
     write_timestamps_info(timestampsfolder, mesh,
                           {key: NS_namespace[key] for key in
                            ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"]},
-                          velocity_degree, pressure_degree, constrained_domain)
+                          velocity_degree, pressure_degree, phase_field_degree,
+                          constrained_domain)
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
 

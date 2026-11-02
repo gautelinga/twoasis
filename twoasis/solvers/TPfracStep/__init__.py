@@ -4,7 +4,9 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import Constant, Function, norm, PETScKrylovSolver, PETScOptions, PETScPreconditioner, Timer
+from dolfin import (
+    Constant, Function, FunctionAssigner, norm, PETScDMCollection, PETScKrylovSolver,
+    PETScOptions, PETScPreconditioner, Timer)
 from twoasis.problems import info_blue
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
@@ -184,6 +186,46 @@ def potential_linear_derivative(phi, phi0):
 
 def wall_potential_linear_derivative(phi, phi0):
     return 3.*(1. - phi0**2)/4. - 3.*phi0/2.* (phi - phi0)
+
+class PhaseFieldOnVelocitySpace:
+    """The phase field phi, taken from the mixed (phi, g) function, as a Function
+    c on the velocity space V: copied when phi has the velocity's degree,
+    interpolated when it is lower. The FunctionAssigner and the interpolation
+    (transfer) matrix are built once, so an update is a copy and a sparse
+    matrix-vector product."""
+
+    def __init__(self, W, V):
+        self.c = Function(V)
+        if W.sub(0).ufl_element().degree() == V.ufl_element().degree():
+            self.phi = None
+            self.assigner = FunctionAssigner(V, W.sub(0))
+        else:
+            self.phi = Function(W.sub(0).collapse())
+            self.assigner = FunctionAssigner(self.phi.function_space(), W.sub(0))
+            self.transfer = PETScDMCollection.create_transfer_matrix(
+                self.phi.function_space(), V)
+
+    def __call__(self, phig):
+        if self.phi is None:
+            self.assigner.assign(self.c, phig.sub(0))
+        else:
+            self.assigner.assign(self.phi, phig.sub(0))
+            self.transfer.mult(self.phi.vector(), self.c.vector())
+        return self.c
+
+def set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu):
+    """Set the density rho_, its inverse and the viscosity mu_ (Functions on the
+    velocity space) from the phase field, mapped there by phi_V (a
+    PhaseFieldOnVelocitySpace): c = (1 + phi)/2, clipped to [0, 1], weights rho
+    linearly and mu geometrically (robust for large viscosity ratios)."""
+    cv = phi_V(q_['phig']).vector()[:]
+    cv += 1
+    cv *= 0.5
+    cv[cv < 0.0] = 0.0
+    cv[cv > 1.0] = 1.0
+    rho_.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
+    rho_inv_.vector()[:] = 1. / rho_.vector()[:]
+    mu_.vector()[:] = mu[0]**cv * mu[1]**(1-cv)
 
 def add_contact_angles(F, angles, sigma, fwprime, eta, ds):
     """Add the wall terms sigma*cos(theta)*f_w'(phi) of the phase-field equation

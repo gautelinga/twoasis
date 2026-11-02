@@ -6,3 +6,4 @@ build/
 docker/*.sif
 subdomains.h5
 subdomains.xdmf
+.dijitso-cache/

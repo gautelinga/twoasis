@@ -16,7 +16,6 @@ import gmsh
 import meshio
 import numpy as np
 import dolfin as df
-from meshtools.io import numpy_to_dolfin
 
 
 def parse_args():
@@ -54,6 +53,22 @@ def make_mesh(Lx, Ly, rad, res, mshfile):
     gmsh.model.mesh.generate(2)
     gmsh.write(mshfile)
     gmsh.finalize()
+
+
+def numpy_to_dolfin(nodes, elems):
+    """Build a serial dolfin triangle mesh from node and element arrays."""
+    mesh = df.Mesh(df.MPI.comm_self)
+    editor = df.MeshEditor()
+    editor.open(mesh, "triangle", 2, 2)
+    editor.init_vertices(len(nodes))
+    editor.init_cells(len(elems))
+    for i, x in enumerate(nodes):
+        editor.add_vertex(i, x)
+    for i, cell in enumerate(elems):
+        editor.add_cell(i, np.array(cell, dtype=np.uintp))
+    editor.close()
+    mesh.order()
+    return mesh
 
 
 if __name__ == "__main__":

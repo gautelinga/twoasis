@@ -1,6 +1,9 @@
 """Temporal convergence of the BDF solver (slow; run with `pytest -m slow`).
 
-Three runs at dt, dt/2, dt/4 to the same physical time; the observed order
+Two studies: self-convergence of the periodic bubble, and errors against the
+exact Taylor-Green solution.
+
+Bubble: three runs at dt, dt/2, dt/4 to the same physical time; the observed order
 p = log2(|q(dt) - q(dt/2)| / |q(dt/2) - q(dt/4)|) must be ~2 for BDF2.
 Inner-loop and Krylov tolerances are tightened so temporal error dominates:
 with the defaults, solver noise (~1e-6) would drown the finest difference.
@@ -54,3 +57,42 @@ def test_bdf2_temporal_order(tmp_path):
     assert all(1.7 < p < 2.6 for p in orders.values()), \
         "observed temporal orders not ~2: {}".format(
             {k: round(v, 2) for k, v in orders.items()})
+
+
+# TaylorGreen2D has an analytic solution for the velocity, the pressure and the
+# phase field, and writes the L2 errors to tdata.dat. The parameters make the
+# solution decay fast enough (mu = 0.1, phi0 = 0.5) and the mesh fine enough
+# (P2 velocity, N = 64) that the temporal error dominates the spatial one down
+# to dt = 0.01. Calibration: velocity orders 1.94 and 1.91, phase-field orders
+# 2.05 and 2.02.
+TG_ERR_COLS = dict(u0=4, u1=5, p=6, phi=7)
+TAYLOR_GREEN = dict(problem="TaylorGreen2D", solver="BDF", mu=[0.1, 0.1], phi0=0.5, N=64,
+                    velocity_degree=2, plot_interval=1000000, timestamps_interval=1000000,
+                    save_step=1000000, checkpoint=1000000, folder="results")
+
+
+@pytest.mark.slow
+def test_bdf2_taylor_green_exact(tmp_path):
+    """BDF2 errors against the exact solution decrease as dt^2.
+
+    initialize() provides the exact solution at t - dt, so the run must also
+    take a second-order first step.
+    """
+    T = 0.2
+    errors = []
+    for dt in [0.04, 0.02, 0.01]:
+        wd = tmp_path / "dt_{}".format(dt)
+        wd.mkdir()
+        proc = run_twoasis(wd, T=T, dt=dt, stat_interval=round(T / dt), **TAYLOR_GREEN, **TIGHT)
+        assert "BDF1 on first timestep: False" in proc.stdout
+        row = load_tdata(wd)[-1]
+        assert abs(row[1] - T) < 1e-12
+        errors.append(row)
+
+    orders = {}
+    for name in ["u0", "phi"]:
+        e = [row[TG_ERR_COLS[name]] for row in errors]
+        orders[name] = [math.log2(e[i] / e[i + 1]) for i in range(len(e) - 1)]
+    assert all(1.8 < p < 2.3 for ps in orders.values() for p in ps), \
+        "observed orders against the exact solution not ~2: {}".format(
+            {k: [round(p, 2) for p in v] for k, v in orders.items()})

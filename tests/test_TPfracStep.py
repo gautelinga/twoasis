@@ -1,21 +1,21 @@
 """Regression tests for the TPfracStep two-phase solvers.
 
-Fast, coarse runs (see conftest.py for the case definition) checking:
+Fast, coarse runs of the periodic bubble (see conftest.py for the two
+variants) checking:
   * runs complete and produce finite statistics (BDF, IPCS, serial + MPI),
   * mass conservation: the xi=1 row of the phase-field system is exact, so
     int(phi) may drift only at the Krylov-tolerance level,
   * golden values: selected scalars after 10 steps match tests/golden.json
     (regenerate deliberately with `pytest --regen-golden`),
   * BDF and IPCS agree on the same case to discretization accuracy,
-  * checkpoint/restart reproduces an uninterrupted run.
+  * checkpoint/restart reproduces an uninterrupted run, also from a checkpoint
+    that lacks the previous time level.
 """
-import shutil
-
 import numpy as np
 import pytest
 
 from conftest import (BUBBLE, COLS, QUIET, assert_close, assert_mass_conserved,
-                      golden_compare, load_tdata, run_twoasis)
+                      golden_compare, load_tdata, mpirun_size, run_twoasis)
 
 # Scalars pinned by the golden tests.
 GOLDEN_COLS = ["u0m", "phim", "E_kin", "E_int", "vol_c"]
@@ -26,10 +26,10 @@ GOLDEN_COLS = ["u0m", "phim", "E_kin", "E_int", "vol_c"]
 MASS_TOL = 1e-6
 
 
-@pytest.fixture(params=["bubble_bdf", "bubble_ipcs"])
-def bubble_run(request, bubble_bdf, bubble_ipcs):
-    """(golden key, workdir, tdata) for each solver."""
-    wd, td = {"bubble_bdf": bubble_bdf, "bubble_ipcs": bubble_ipcs}[request.param]
+@pytest.fixture(params=["bubble_bdf", "bubble_ipcs", "bubble_p1_bdf", "bubble_p1_ipcs"])
+def bubble_run(request):
+    """(golden key, workdir, tdata) for each bubble variant and solver."""
+    wd, td = request.getfixturevalue(request.param)
     return request.param, wd, td
 
 
@@ -52,11 +52,18 @@ def test_golden(request, bubble_run):
     golden_compare(request, key, values)
 
 
-def test_bdf_ipcs_agree(bubble_bdf, bubble_ipcs):
-    """Same case, different time discretizations: agreement to O(dt)."""
-    _, td_b = bubble_bdf
-    _, td_i = bubble_ipcs
-    for name, rtol in [("u0m", 2e-2), ("phim", 1e-5), ("E_int", 1e-3)]:
+@pytest.mark.parametrize("variant, rtols", [
+    # BDF2 against IPCS (first order): they differ at O(dt).
+    ("bubble", [("u0m", 2e-2), ("phim", 1e-5), ("E_int", 1e-3)]),
+    # BDF1 against IPCS: both first order, but they scale the momentum equation
+    # by the density differently, so they differ where the density varies.
+    ("bubble_p1", [("u0m", 1e-3), ("phim", 1e-6), ("E_int", 1e-5)]),
+])
+def test_bdf_ipcs_agree(request, variant, rtols):
+    """Same case, different time discretizations."""
+    _, td_b = request.getfixturevalue(variant + "_bdf")
+    _, td_i = request.getfixturevalue(variant + "_ipcs")
+    for name, rtol in rtols:
         assert_close("IPCS " + name, td_i[-1, COLS[name]], td_b[-1, COLS[name]], rtol)
 
 
@@ -75,9 +82,28 @@ def test_restart_continuation(bubble_bdf_restarted, bubble_bdf_long):
                      1e-4, 1e-7)
 
 
-@pytest.mark.skipif(shutil.which("mpirun") is None, reason="mpirun not available")
+def test_restart_old_format(bubble_bdf_restarted_old_format, bubble_bdf_long):
+    """Restart from a checkpoint without the previous level of p and phi.
+
+    The run must notice the missing level, take a first-order step, and then
+    continue close to the uninterrupted run (which used BDF2 throughout).
+    """
+    _, td_r, stdout = bubble_bdf_restarted_old_format
+    _, td_l = bubble_bdf_long
+    assert "BDF1 on first timestep: True" in stdout
+    assert td_r.shape[0] == 20
+    assert np.isfinite(td_r).all()
+    assert_mass_conserved(td_r, MASS_TOL)
+    for name, rtol in [("u0m", 1e-2), ("phim", 1e-6), ("E_int", 1e-4)]:
+        assert_close("restarted " + name, td_r[-1, COLS[name]], td_l[-1, COLS[name]], rtol)
+
+
 def test_parallel(tmp_path, bubble_bdf):
     """Two-rank run: completes, conserves mass, agrees with serial."""
+    size = mpirun_size(2)
+    if size != 2:
+        pytest.skip("mpirun -np 2 does not start a two-rank job here (dolfin sees {} "
+                    "rank(s))".format(size))
     run_twoasis(tmp_path, nprocs=2, solver="BDF", T=0.02, **BUBBLE)
     td = load_tdata(tmp_path)
     assert np.isfinite(td).all()

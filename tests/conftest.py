@@ -2,17 +2,32 @@
 
 The workhorse case is PeriodicBubble2D on a 64x32 mesh (res=1/32) with the
 interface parameters scaled consistently (epsilon ~ 1.6*h, M ~ epsilon^2, small
-R so the periodic images do not overlap). It runs in ~10 s serial and exercises
-the matched-property fast paths (rho and mu are matched in this problem).
+R so the periodic images do not overlap). It runs in ~10 s serial.
+
+It comes in two variants:
+  * BUBBLE: the problem's own settings, i.e. equal densities and viscosities,
+    P2 velocity and BDF2. This exercises the matched-property shortcuts.
+  * BUBBLE_P1: unequal densities and viscosities, P1 velocity and BDF1, the
+    settings of most production problems. This exercises the general
+    variable-coefficient path and the lumped-mass velocity update.
+
+SimplePore2D (PORE) covers open boundaries with pressure and phase-field
+Dirichlet conditions; its mesh is generated with meshes/lattice_mesh.py.
 """
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+# Unit tests import twoasis in-process; make sure it is this checkout.
+sys.path.insert(0, str(REPO_ROOT))
 
 # Column layout of Stats/tdata.dat written by PeriodicBubble2D's temporal_hook.
 # (TaylorBubble2D writes more columns, but the shared ones come first.)
@@ -26,6 +41,11 @@ QUIET = dict(stat_interval=1, plot_interval=1000000, timestamps_interval=1000000
 
 BUBBLE = dict(QUIET, problem="PeriodicBubble2D", dt=0.002, res=0.03125, epsilon=0.05,
               R=0.25, M=0.000125, checkpoint=10)
+
+BUBBLE_P1 = dict(BUBBLE, rho=[1, 0.1], mu=[1, 0.1], velocity_degree=1, bdf_order=1)
+
+# Five steps of SimplePore2D on a coarse mesh (lattice_mesh.py -res 0.1).
+PORE = dict(QUIET, problem="SimplePore2D", res=0.1, dt=0.02, T=0.1)
 
 GOLDEN_FILE = Path(__file__).parent / "golden.json"
 
@@ -43,9 +63,8 @@ def run_twoasis(workdir, nprocs=1, timeout=900, **params):
         cmd = ["mpirun", "-np", str(nprocs)] + cmd
     # PYTHONPATH makes the runs exercise this checkout even when an installed
     # (non-editable) twoasis exists in site-packages.
-    repo_root = Path(__file__).resolve().parent.parent
     env = dict(os.environ, MPLBACKEND="Agg", OMP_NUM_THREADS="1",
-               PYTHONPATH=str(repo_root) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+               PYTHONPATH=str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     proc = subprocess.run(cmd, cwd=str(workdir), env=env,
                           capture_output=True, text=True, timeout=timeout)
     if proc.returncode != 0:
@@ -53,6 +72,23 @@ def run_twoasis(workdir, nprocs=1, timeout=900, **params):
             "twoasis exited with {} for {}\n--- stdout tail ---\n{}\n--- stderr tail ---\n{}".format(
                 proc.returncode, " ".join(cmd), proc.stdout[-3000:], proc.stderr[-3000:]))
     return proc
+
+
+def mpirun_size(nprocs=2):
+    """Number of ranks dolfin sees when started with `mpirun -np nprocs`, or 0
+    if mpirun is missing or fails. With a launcher that does not match the MPI
+    library (e.g. MPICH built for PMIx, started with its PMI-1 hydra mpirun),
+    each process runs on its own and this returns 1."""
+    if shutil.which("mpirun") is None:
+        return 0
+    script = "from dolfin import MPI; print(MPI.size(MPI.comm_world))"
+    # Pass os.environ explicitly: once dolfin has initialised MPI in this
+    # process (the unit tests import it), the inherited C-level environment
+    # holds MPI variables that make a nested mpirun fail. os.environ does not.
+    proc = subprocess.run(["mpirun", "-np", str(nprocs), sys.executable, "-c", script],
+                          capture_output=True, text=True, timeout=300, env=dict(os.environ))
+    sizes = proc.stdout.split()
+    return int(sizes[0]) if proc.returncode == 0 and sizes else 0
 
 
 def load_tdata(workdir, run=1):
@@ -77,6 +113,21 @@ def bubble_ipcs(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
+def bubble_p1_bdf(tmp_path_factory):
+    """10 BDF1 steps of the bubble with unequal properties and P1 velocity."""
+    wd = tmp_path_factory.mktemp("bubble_p1_bdf")
+    run_twoasis(wd, solver="BDF", T=0.02, **BUBBLE_P1)
+    return wd, load_tdata(wd)
+
+
+@pytest.fixture(scope="session")
+def bubble_p1_ipcs(tmp_path_factory):
+    wd = tmp_path_factory.mktemp("bubble_p1_ipcs")
+    run_twoasis(wd, solver="IPCS", T=0.02, **BUBBLE_P1)
+    return wd, load_tdata(wd)
+
+
+@pytest.fixture(scope="session")
 def bubble_bdf_long(tmp_path_factory):
     """20 uninterrupted BDF2 steps; reference for the restart test."""
     wd = tmp_path_factory.mktemp("bubble_bdf_long")
@@ -91,12 +142,67 @@ def bubble_bdf_restarted(tmp_path_factory, bubble_bdf):
     The restart machinery appends to the run folder named by the checkpoint
     path (data/1), so run on a copy to keep the bubble_bdf fixture pristine.
     """
-    src_wd, _ = bubble_bdf
-    wd = tmp_path_factory.mktemp("bubble_bdf_restarted")
-    shutil.copytree(str(Path(src_wd) / "results"), str(Path(wd) / "results"))
-    ckpt = Path(wd) / "results" / "data" / "1" / "Checkpoint"
+    wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted", bubble_bdf)
     run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
     return wd, load_tdata(wd)
+
+
+@pytest.fixture(scope="session")
+def bubble_bdf_restarted_old_format(tmp_path_factory, bubble_bdf):
+    """Like bubble_bdf_restarted, from a checkpoint that stores only the
+    current level for the pressure and the phase field (as older versions
+    wrote them). Returns (workdir, tdata, stdout)."""
+    if importlib.util.find_spec("h5py") is None:
+        pytest.skip("h5py not available")
+    wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted_old_format", bubble_bdf)
+    # Edit the files in a separate process: h5py may bundle its own HDF5
+    # library, which clashes with dolfin's if both are loaded in one process.
+    script = "import sys, h5py\nfor f in sys.argv[1:]:\n    with h5py.File(f, 'a') as h5f:\n        del h5f['previous']\n"
+    proc = subprocess.run([sys.executable, "-c", script, str(ckpt / "p.h5"), str(ckpt / "phig.h5")],
+                          capture_output=True, text=True, timeout=60, env=dict(os.environ))
+    assert proc.returncode == 0, "editing the checkpoint failed:\n" + proc.stderr[-3000:]
+    proc = run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
+    return wd, load_tdata(wd), proc.stdout
+
+
+def copy_run(tmp_path_factory, name, run):
+    """Copy a finished run into a new workdir, so that a restart (which appends
+    to the run folder named by the checkpoint path) leaves the original intact.
+    Returns (workdir, checkpoint folder)."""
+    src_wd, _ = run
+    wd = tmp_path_factory.mktemp(name)
+    shutil.copytree(str(Path(src_wd) / "results"), str(Path(wd) / "results"))
+    return wd, Path(wd) / "results" / "data" / "1" / "Checkpoint"
+
+
+@pytest.fixture(scope="session")
+def lattice_meshes(tmp_path_factory):
+    """Folder with the SimplePore2D mesh for PORE, made by meshes/lattice_mesh.py."""
+    pytest.importorskip("gmsh")
+    pytest.importorskip("meshio")
+    meshdir = tmp_path_factory.mktemp("lattice") / "meshes"
+    meshdir.mkdir()
+    subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "lattice_mesh.py"),
+                    "-res", str(PORE["res"])],
+                   cwd=str(meshdir), check=True, capture_output=True, timeout=300)
+    return meshdir
+
+
+def run_pore(tmp_path_factory, lattice_meshes, solver):
+    wd = tmp_path_factory.mktemp("pore_" + solver.lower())
+    shutil.copytree(str(lattice_meshes), str(Path(wd) / "meshes"))
+    run_twoasis(wd, solver=solver, **PORE)
+    return wd, load_tdata(wd)
+
+
+@pytest.fixture(scope="session")
+def pore_bdf(tmp_path_factory, lattice_meshes):
+    return run_pore(tmp_path_factory, lattice_meshes, "BDF")
+
+
+@pytest.fixture(scope="session")
+def pore_ipcs(tmp_path_factory, lattice_meshes):
+    return run_pore(tmp_path_factory, lattice_meshes, "IPCS")
 
 
 def golden_compare(request, key, values, rtol=1e-4, atol=1e-7):

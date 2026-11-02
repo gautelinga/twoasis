@@ -10,6 +10,21 @@ from twoasis.problems import info_blue
 #max_iter = 1 #0                 # Number of inner pressure velocity iterations on timestep
 #iters_on_first_timestep = 10
 
+def has_previous_level(x_1, x_2, fields):
+    """Whether x_2 holds a usable solution at t - 2*dt for the given fields.
+
+    It does if it differs from x_1 (the solution at t - dt) and is not zero, or
+    if the fields are zero at both levels.
+    """
+    norm_1 = sum(x_1[ui].norm('l2') for ui in fields)
+    norm_2 = sum(x_2[ui].norm('l2') for ui in fields)
+    diff = sum((x_1[ui] - x_2[ui]).norm('l2') for ui in fields)
+    tol = DOLFIN_EPS_LARGE * (1. + norm_1)
+    if norm_1 <= tol and norm_2 <= tol:
+        return True
+    return diff > tol and norm_2 > tol
+
+
 def setup(u_components, u, v, p, q, bcs, #dt,
           scalar_components, V, Q, x_, x_1, x_2, p_, u_, A_cache, q_,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
@@ -110,16 +125,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # the field is zero at both levels. Problems that copy x_1 into x_2, or leave
     # x_2 at zero, therefore start with BDF1.
     if initial_step_1st_order is None:
-        def has_previous_level(fields):
-            norm_1 = sum(x_1[ui].norm('l2') for ui in fields)
-            norm_2 = sum(x_2[ui].norm('l2') for ui in fields)
-            diff = sum((x_1[ui] - x_2[ui]).norm('l2') for ui in fields)
-            tol = DOLFIN_EPS_LARGE * (1. + norm_1)
-            if norm_1 <= tol and norm_2 <= tol:
-                return True
-            return diff > tol and norm_2 > tol
-        bdf1_first_step = not (has_previous_level(u_components)
-                               and has_previous_level(['phig']))
+        bdf1_first_step = not (has_previous_level(x_1, x_2, u_components)
+                               and has_previous_level(x_1, x_2, ['phig']))
     else:
         bdf1_first_step = bool(initial_step_1st_order) and tstep == 0
     if bdf_order == 2:

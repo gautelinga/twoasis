@@ -1,0 +1,72 @@
+name: tests
+
+# Legacy dolfin 2019.2 from the FEniCS PPA, installed with apt on the Ubuntu 24.04
+# runner -- the same setup as the development machine and as stokes-beadpack's CI.
+# Everything else comes from apt too, so h5py uses dolfin's (parallel) HDF5, NumPy
+# is the one dolfin was built against, and mpirun is Ubuntu's Open MPI.
+#
+# The fast tests run on every push and pull request. The slow tests (temporal
+# convergence, a smoke run of every problem) run weekly and on demand from the
+# Actions tab.
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - &install
+        name: legacy dolfin from the FEniCS PPA, and twoasis
+        run: |
+          sudo add-apt-repository -y ppa:fenics-packages/fenics
+          sudo apt-get update -qq
+          # libdolfin-dev, pybind11-dev and g++: dolfin compiles every form at run time.
+          # gmsh and meshio: the SimplePore2D mesh. h5py: the checkpoint tests;
+          # python3-h5py is the wrapper that makes `import h5py` load the MPI build.
+          sudo apt-get install -y --no-install-recommends \
+            python3-dolfin python3-mpi4py python3-h5py python3-h5py-mpi python3-matplotlib \
+            python3-gmsh python3-meshio python3-pytest python3-pip \
+            libdolfin-dev pybind11-dev g++ pkg-config
+          python3 -m pip install --break-system-packages --no-deps .
+      - &check
+        name: the interpreter has everything the tests need
+        run: python3 -c "import dolfin, h5py, gmsh, meshio, matplotlib, twoasis; h5py.File; print(dolfin.__version__)"
+      # dijitso keys by a hash of the generated code, so a stale entry is a miss,
+      # not a wrong answer. A cold cache pays for every form in the suite.
+      - &cache
+        name: JIT cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/dijitso
+          key: dijitso-${{ runner.os }}-${{ hashFiles('twoasis/**/*.py') }}
+          restore-keys: dijitso-${{ runner.os }}-
+      - name: fast tests
+        working-directory: tests
+        run: python3 -m pytest -v -rs --durations=10
+
+  slow:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - *install
+      - *check
+      - *cache
+      - name: slow tests
+        working-directory: tests
+        run: python3 -m pytest -m slow -v -rs --durations=10

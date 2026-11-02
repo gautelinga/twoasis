@@ -9,8 +9,8 @@ import pytest
 from conftest import QUIET, run_twoasis
 
 # Problems that build their own mesh.
-PROBLEMS = ["Bubble2D", "BubbleOpen", "OscBubble2D", "PeriodicBubble2D", "PlaneCouette",
-            "RayleighTaylor2D", "TaylorBubble2D", "TaylorGreen2D"]
+PROBLEMS = ["Bubble2D", "BubbleOpen", "LaplaceBubble2D", "OscBubble2D", "PeriodicBubble2D",
+            "PlaneCouette", "RayleighTaylor2D", "TaylorBubble2D", "TaylorGreen2D"]
 
 # Problems that read a mesh file, which has to be generated first with the
 # scripts in meshes/.

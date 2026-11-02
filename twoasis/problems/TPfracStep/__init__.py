@@ -145,7 +145,7 @@ def start_timestep_hook(**NS_namespace):
 
 def temporal_hook(**NS_namespace):
     """Called at the end of each timestep. May return a dict of values to update
-    in the solver namespace."""
+    in the solver namespace; stop=True in it ends the run after this step."""
     pass
 
 

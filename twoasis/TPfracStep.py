@@ -295,10 +295,11 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
             t1.stop()
 
     # temporal_hook may return a dict of values to update; None means nothing.
+    # A returned stop=True ends the run after this step.
     vars().update(temporal_hook(**vars()) or {})
 
     # Save solution if required and check for killoasis file
-    stop = save_solution(**vars())
+    stop = save_solution(**vars()) or stop
 
     # Update to a new timestep
     for ui in u_components:

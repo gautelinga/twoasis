@@ -54,7 +54,9 @@ The most common ones:
 
 Problems that run without further setup: `PeriodicBubble2D`, `Bubble2D`,
 `BubbleOpen`, `OscBubble2D`, `PlaneCouette`, `RayleighTaylor2D`,
-`TaylorBubble2D` and `TaylorGreen2D` (which compares with an exact solution).
+`TaylorBubble2D`, `TaylorGreen2D` (which compares with an exact solution) and
+`LaplaceBubble2D` (which runs a resting bubble to steady state and measures the
+pressure jump against the Young–Laplace law, and the spurious currents).
 The others read a mesh from `meshes/`, which you generate first with the scripts
 there. For example, for `SimplePore2D`:
 

@@ -19,11 +19,15 @@ NS_parameters.update(
     AB_projection_pressure=False,
     solver="Naive",  # "IPCS", "BDF"
     bdf_order=2,
+    initial_step_1st_order=None,   # BDF1 on first step: None=auto (if x_2 == x_1), True=always on fresh start, False=never
     constant_poisson_coefficient=False,
+    quadrature_degree=None,        # Fixed quadrature degree for all forms; None -> 2*velocity_degree + 1
 
     # Phase field parameters
     phase_field_degree=1,
     chemical_potential_degree=1,
+    phase_field_fieldsplit=False,  # opt-in Schur fieldsplit PC for the (phi,g) solve
+
     M=0.001,
     epsilon=0.04,
     sigma=1.0,
@@ -77,37 +81,52 @@ NS_parameters.update(
     krylov_solvers=dict(
         monitor_convergence=False,
         report=False,
-        error_on_nonconvergence=False,
+        error_on_nonconvergence=True,   # surface non-converged solves instead of silently continuing
         nonzero_initial_guess=True,
         maximum_iterations=200,
         relative_tolerance=1e-8,
-        absolute_tolerance=1e-8),
+        absolute_tolerance=1e-12),       # relative-dominated; avoid premature stop on small ||b||
 
     # Velocity update
     velocity_update_solver=dict(
-        method='default',  # "lumping", "gradient_matrix"
+        method='lumping',  # lumped mass (P1; auto falls back to consistent mass on P2+)
         solver_type='cg',
         preconditioner_type='jacobi',
         low_memory_version=False),
 
     velocity_krylov_solver=dict(
         solver_type='bicgstab',
-        preconditioner_type='jacobi'),
+        preconditioner_type='jacobi',
+        relative_tolerance=1e-6,    # outer pressure-velocity iteration drives accuracy
+        maximum_iterations=300),
 
     pressure_krylov_solver=dict(
         solver_type='gmres',
         #preconditioner_type='petsc_amg'  # seemed faster than hypre_amg
-        preconditioner_type='hypre_amg'   # but hypre_amg seems superior + better scaling
-        ),
+        preconditioner_type='hypre_amg',  # but hypre_amg seems superior + better scaling
+        relative_tolerance=1e-6,
+        maximum_iterations=100),    # strong (AMG) PC -> fail fast if it stalls
 
     scalar_krylov_solver=dict(
         solver_type='bicgstab',
-        preconditioner_type='jacobi'),
+        preconditioner_type='jacobi',
+        relative_tolerance=1e-6,
+        maximum_iterations=300),
 
     phase_field_krylov_solver=dict(
         solver_type='gmres',
-        preconditioner_type='jacobi')
+        preconditioner_type='jacobi',
+        relative_tolerance=1e-8,    # keep tight: sets the interface/constitutive accuracy
+        maximum_iterations=1000)    # weak (jacobi) PC + biharmonic-like system; drop to ~100 with fieldsplit
 )
+
+# Snapshot of the package defaults for the Krylov settings, taken before problem
+# files or the command line modify NS_parameters. Used by the solvers to tell a
+# user-set value apart from a default (see solvers.TPfracStep.krylov_solver).
+import copy as _copy
+KRYLOV_DEFAULTS = _copy.deepcopy({key: NS_parameters[key] for key in (
+    "krylov_solvers", "velocity_krylov_solver", "velocity_update_solver",
+    "pressure_krylov_solver", "scalar_krylov_solver", "phase_field_krylov_solver")})
 
 
 def velocity_tentative_hook(**NS_namespace):

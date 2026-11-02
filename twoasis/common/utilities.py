@@ -103,12 +103,18 @@ class OasisFunction(Function):
                 bcs), solver_type, preconditioner_type)]
 
         elif method.lower() == "lumping":
-            assert Space.ufl_element().degree() < 2
             self.A = A_cache[(Mass, tuple(bcs))]
-            ones = Function(Space)
-            ones.vector()[:] = 1.
-            self.ML = self.A * ones.vector()
-            self.ML.set_local(1. / self.ML.array())
+            if Space.ufl_element().degree() >= 2:
+                # Lumping is P1-only; fall back to consistent mass on higher order.
+                self.method = "default"
+                self.sol = Solver_cache[(Mass, tuple(
+                    bcs), solver_type, preconditioner_type)]
+            else:
+                ones = Function(Space)
+                ones.vector()[:] = 1.
+                self.ML = self.A * ones.vector()
+                self.ML.set_local(1. / self.ML.get_local())
+                self.ML.apply("insert")
 
     def assemble_rhs(self):
         """

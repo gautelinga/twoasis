@@ -12,9 +12,10 @@ from twoasis.problems import info_blue
 
 def setup(u_components, u, v, p, q, bcs, #dt,
           scalar_components, V, Q, x_, x_1, x_2, p_, u_, A_cache, q_,
-          rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
+          rho, mu, phi_, phi_1, phi_2, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
           angles, ds, bdf_order, constant_poisson_coefficient, normal,
-          velocity_update_solver, assemble_matrix, homogenize,
+          initial_step_1st_order, tstep,
+          velocity_update_solver, assemble_matrix, homogenize, acc, gradp_avg,
           GradFunction, PhiGradFunction, DivFunction, TPsource, **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
@@ -54,7 +55,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     #rho_ * u_1 - M * drho_ * grad(g_)
     a_conv = inner(v, dot(u_adv, nabla_grad(u))) * dx
 
-    # Allocate phase field matrices
+    # Tangent linearization of the potential about phi_1: the implicit
+    # f''(phi_1)-term makes the replacement error O(dt^2), matching BDF2.
     fprime = potential_linear_derivative(phi, phi_1)
     fwprime = wall_potential_linear_derivative(phi, phi_1)
 
@@ -70,8 +72,22 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
     a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
     Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx), assemble_matrix(inner(grad(phi), grad(eta)) * dx))
-    Fpft = (Matrix(Mpf[0]), apft, Lpft)
+    Fpft = (apft, Lpft)
     Apf = Matrix(Mpf[0])
+
+    # Time-varying part of the phase-field operator, assembled in ONE sweep per
+    # step: advection + linearized potential (incl. wall terms).
+    a_pf_full = a_pf + apft
+
+    # Constant part, combined once: mobility diffusion + g-mass + capillary.
+    # The time-derivative mass alpha[0]*Mpf[0] is baked in by phase_field_assemble
+    # when alpha[0] changes (startup and the BDF1->BDF2 switch).
+    Apf_const = Matrix(Mpf[0])
+    Apf_const.zero()
+    Apf_const.axpy(M, Kpf[0], True)
+    Apf_const.axpy(1., Mpf[1], True)
+    Apf_const.axpy(-sigma_bar * epsilon, Kpf[1], True)
+    Apf_alpha = np.zeros(1)
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
@@ -84,22 +100,63 @@ def setup(u_components, u, v, p, q, bcs, #dt,
                               method=velocity_update_solver)
              for i, ui in enumerate(u_components)}
 
-    # Check first if we are starting from two equal velocities (u_1=u_2)
-    initial_u1_norm = sum([x_1[ui].norm('l2') for ui in u_components])
-    initial_u2_norm = sum([x_2[ui].norm('l2') for ui in u_components])
-
-    # In that case use Euler on first iteration
-    initial_step_1st_order = np.array([abs(initial_u1_norm - initial_u2_norm) < DOLFIN_EPS_LARGE], dtype=bool)
-    info_blue(f"initial_step_1st_order={initial_step_1st_order[0]}")
-
+    # Decide whether the first step of this run uses BDF1 (see phase_field_assemble).
+    #   None  -> auto: BDF2 only if initialize/restart provided a distinct t-2*dt
+    #            velocity level (x_2 != x_1), as in TaylorGreen2D's analytic start,
+    #            and the phase field's t-2*dt level is not a mere copy of a nonzero
+    #            t-dt level. Cases that get BDF1: problems with x_2 = x_1; problems
+    #            that leave x_2['phig'] at zero (velocity zero at both levels); and
+    #            restarts from old checkpoints without '/previous' for phig, where
+    #            q_2 = q_1 is the fallback.
+    #   True  -> BDF1 on the first step of a fresh run (tstep == 0).
+    #   False -> BDF2 from the first step.
+    if initial_step_1st_order is None:
+        def levels_differ(fields):
+            diff = sum((x_1[ui] - x_2[ui]).norm('l2') for ui in fields)
+            scale = sum(x_1[ui].norm('l2') for ui in fields)
+            return diff > DOLFIN_EPS_LARGE * (1. + scale)
+        phig_copied = (not levels_differ(['phig'])
+                       and x_1['phig'].norm('l2') > DOLFIN_EPS_LARGE)
+        bdf1_first_step = not levels_differ(u_components) or phig_copied
+    else:
+        bdf1_first_step = bool(initial_step_1st_order) and tstep == 0
+    if bdf_order == 2:
+        info_blue(f"BDF1 on first timestep: {bdf1_first_step}")
+    bdf1_first_step = np.array([bdf1_first_step], dtype=bool)
     alpha = np.zeros(3)
     beta = np.zeros(2)
 
     # Create dictionary to be returned into global NS namespace
-    d = dict(A=A, Md=Md, Ai=Ai, Apd=Apd, Apt=Apt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg, 
-             Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf, alpha=alpha, beta=beta, initial_step_1st_order=initial_step_1st_order)
+    d = dict(A=A, Md=Md, Ai=Ai, Apd=Apd, Apt=Apt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg,
+             Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf, alpha=alpha, beta=beta,
+             bdf1_first_step=bdf1_first_step,
+             a_pf_full=a_pf_full, Apf_const=Apf_const, Apf_alpha=Apf_alpha)
 
     TPT = TPsource(mu_, u_adv, V, name="N")
+
+    # Spatially uniform (Constant) body forces: their rhs vectors are scaled
+    # copies of assemble(v*dx) resp. Md*rho_inv_, so skip per-step assembly.
+    # Values are re-read every step, so mutated Constants stay correct.
+    Fv = assemble(v * dx)
+    acc_is_uniform = isinstance(acc, Constant)
+    gradp_is_uniform = isinstance(gradp_avg, Constant)
+    d.update(Fv=Fv, acc_is_uniform=acc_is_uniform, gradp_is_uniform=gradp_is_uniform)
+
+    # Matched-property fast paths (exact, auto-detected): matched mu makes
+    # grad(mu)=0 so the TPT source vanishes identically; matched rho makes the
+    # Poisson coefficient constant; with both, Kt never changes.
+    matched_mu = mu[0] == mu[1]
+    if matched_mu:
+        info_blue("Matched viscosities: skipping the identically zero TPT source.")
+    if rho[0] == rho[1] and not constant_poisson_coefficient:
+        info_blue("Matched densities: enabling constant-coefficient pressure Poisson.")
+        constant_poisson_coefficient = True
+    matched_properties = matched_mu and rho[0] == rho[1]
+    if matched_properties:
+        info_blue("Matched properties: assembling the stiffness matrix once.")
+        assemble(Kt[1] * dx, tensor=Kt[0])
+    d.update(matched_mu=matched_mu, matched_properties=matched_properties,
+             constant_poisson_coefficient=constant_poisson_coefficient)
 
     if bcs['p'] == []:
         Apt[2] = attach_pressure_nullspace(Apt[0], x_, Q)
@@ -108,40 +165,22 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__, sigma_bar=sigma_bar)
     return d
 
-def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
-                x_, Q, scalar_components, velocity_krylov_solver, velocity_update_solver,
-                pressure_krylov_solver, scalar_krylov_solver, phase_field_krylov_solver, **NS_namespace):
-    """Return linear solvers. """
+def get_solvers(krylov_solvers, q_, velocity_krylov_solver, velocity_update_solver,
+                pressure_krylov_solver, phase_field_krylov_solver,
+                phase_field_fieldsplit, **NS_namespace):
+    """Return linear solvers: (tentative velocity, velocity update), pressure,
+    phase field, scalar (None)."""
+    u_sol = (krylov_solver("velocity_krylov_solver", velocity_krylov_solver, krylov_solvers),
+             krylov_solver("velocity_update_solver", velocity_update_solver, krylov_solvers))
+    p_sol = krylov_solver("pressure_krylov_solver", pressure_krylov_solver, krylov_solvers)
+    if phase_field_fieldsplit:
+        pf_sol = phase_field_fieldsplit_solver(q_['phig'].function_space(),
+                                               phase_field_krylov_solver, krylov_solvers)
+    else:
+        pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
+                               krylov_solvers)
+    return [u_sol, p_sol, pf_sol, None]
 
-    ## tentative velocity solver ##
-    u_pred_prec = PETScPreconditioner(velocity_krylov_solver['preconditioner_type'])
-    u_pred_sol = PETScKrylovSolver(velocity_krylov_solver['solver_type'], u_pred_prec)
-    u_pred_sol.parameters.update(krylov_solvers)
-
-    ## velocity update solver ##
-    u_corr_prec = PETScPreconditioner(velocity_update_solver['preconditioner_type'])
-    u_corr_sol = PETScKrylovSolver(velocity_update_solver['solver_type'], u_corr_prec)
-    u_corr_sol.parameters.update(krylov_solvers)
-
-    u_sol = (u_pred_sol, u_corr_sol)
-
-    ## pressure solver ##
-    p_prec = PETScPreconditioner(pressure_krylov_solver['preconditioner_type'])
-    p_sol = PETScKrylovSolver(pressure_krylov_solver['solver_type'], p_prec)
-    p_sol.parameters.update(krylov_solvers)
-    #p_sol.set_reuse_preconditioner(True) TEST
-
-    ## phase field solver ##
-    pf_prec = PETScPreconditioner(phase_field_krylov_solver["preconditioner_type"])
-    pf_sol = PETScKrylovSolver(phase_field_krylov_solver['solver_type'], pf_prec)
-    pf_sol.parameters.update(krylov_solvers)
-    #phig_sol.set_reuse_preconditioner(True) TEST!
-
-    sols = [u_sol, p_sol, pf_sol]
-
-    sols.append(None)
-
-    return sols
 
 def set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu):
     assign(c__, q_['phig'].sub(0))
@@ -161,7 +200,9 @@ def set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu):
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_order,
                               Kt, u_adv, u_components, alpha, beta, AB_projection_pressure,
                               b_tmp, bg0, b0, x_, x_1, x_2, bcs, TPT, rho, mu,
-                              rho_, mu_, rho_inv_, c__, q_, gradp_avg, bgp0,
+                              rho_, mu_, rho_inv_, c__, q_, acc, gradp_avg, bgp0,
+                              Fv, acc_is_uniform, gradp_is_uniform,
+                              matched_mu, matched_properties,
                               **NS_namespace):
     """Called on first inner iteration of velocity/pressure system.
 
@@ -173,29 +214,44 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
 
     t0 = Timer("Assemble first inner iter")
 
-    set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu)
+    # Uniform coefficient fields were set once in setup.
+    if not matched_properties:
+        set_mixed_fields(c__, rho_, rho_inv_, mu_, q_, rho, mu)
+
+    if acc_is_uniform:
+        acc_vals = acc.values()
+    if gradp_is_uniform:
+        gradp_vals = gradp_avg.values()
+        b_gp = Md * rho_inv_.vector()  # == assemble(v*rho_inv_*dx), shared by all components
 
     for i, ui in enumerate(u_components):
         # zero out rhs
         b_tmp[ui].zero()
         # start with (gravitational) acceleration
-        assemble(bg0[ui] * dx, tensor=b_tmp[ui]) # check if it can be precomputed (Constant vs. Expression)
+        if acc_is_uniform:
+            b_tmp[ui].axpy(acc_vals[i], Fv)
+        else:
+            assemble(bg0[ui] * dx, tensor=b_tmp[ui])
         # add average pressure gradient
-        b0[ui].zero()
-        assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])  # add check for this!
-        
-        b_tmp[ui].axpy(-1., b0[ui])
+        if gradp_is_uniform:
+            b_tmp[ui].axpy(-gradp_vals[i], b_gp)
+        else:
+            b0[ui].zero()
+            assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])
+            b_tmp[ui].axpy(-1., b0[ui])
         b_tmp[ui].axpy(-alpha[1], Md * x_1[ui])
         b_tmp[ui].axpy(-alpha[2], Md * x_2[ui])
 
-        TPT.assemble_rhs(i)
-        b_tmp[ui].axpy(1., TPT.vector() * rho_inv_.vector())
+        if not matched_mu:  # grad(mu) = 0 -> TPT source is identically zero
+            TPT.assemble_rhs(i)
+            b_tmp[ui].axpy(1., TPT.vector() * rho_inv_.vector())
 
     # assemble semi-implicit convection, diffusion etc. for lhs
     assemble(a_conv, tensor=A)
     A.axpy(alpha[0], Md, True)
 
-    assemble(Kt[1] * dx, tensor=Kt[0])
+    if not matched_properties:  # else Kt was assembled once in setup
+        assemble(Kt[1] * dx, tensor=Kt[0])
     A.axpy(1.0, Kt[0], True)
 
     if Ai:
@@ -225,7 +281,8 @@ def attach_pressure_nullspace(Ap, x_, Q):
     Aa.null_space = null_space
     return null_space
 
-def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, rho_inv_, **NS_namespace):
+def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, rho_inv_,
+                                inner_iter, **NS_namespace):
     """Add pressure gradient to rhs of tentative velocity system."""
     #info_blue(f"Assembling {ui}")
 
@@ -233,13 +290,22 @@ def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, rho_inv_,
     b[ui].axpy(1., b_tmp[ui])
     gradp[ui].assemble_rhs(p_)
     b[ui].axpy(-1., gradp[ui].rhs * rho_inv_.vector())
-    phigradg[ui].assemble_rhs()
+    # phig_ only changes once per timestep (solved before the inner loop), so
+    # the capillary rhs is frozen within a timestep.
+    if inner_iter == 1:
+        phigradg[ui].assemble_rhs()
     b[ui].axpy(-1., phigradg[ui].rhs * rho_inv_.vector())
 
 def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
-                             use_krylov_solvers, **NS_namespace):
+                             use_krylov_solvers, u_components, inner_iter, **NS_namespace):
     """Linear algebra solve of tentative velocity component."""
     #info_blue(f"Solving {ui}")
+
+    # Reuse the preconditioner within a timestep when all components share one
+    # matrix A (Ai is None). With per-component Ai the shared KSP alternates
+    # operators, so reuse would use the wrong hierarchy -> skip.
+    if Ai is None:
+        u_sol[0].set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
 
     [bc.apply(b[ui]) for bc in bcs[ui]]
     # x_2 only used on inner_iter 1, so use here as work vector
@@ -254,11 +320,14 @@ def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
     udiff[0] += norm(x_2[ui] - x_[ui])
 
 
-def pressure_assemble(b, x_, dx, dt, Apt, Apd, divu, bcs, alpha, constant_poisson_coefficient, **NS_namespace):
+def pressure_assemble(b, x_, dx, dt, Apt, Apd, divu, bcs, alpha, constant_poisson_coefficient,
+                      inner_iter, **NS_namespace):
     """Assemble rhs of pressure equation."""
     #info_blue("Assembling P")
 
-    if not constant_poisson_coefficient:
+    # rho_inv_ only changes in assemble_first_inner_iter, so the Laplacian is
+    # frozen within a timestep; reassemble on the first inner iteration only.
+    if not constant_poisson_coefficient and inner_iter == 1:
         t1 = Timer("Pressure assemble")
         assemble(Apt[1] * dx, tensor=Apt[0])
         if bcs['p'] == []:
@@ -276,9 +345,17 @@ def pressure_assemble(b, x_, dx, dt, Apt, Apd, divu, bcs, alpha, constant_poisso
     else:
         b['p'].axpy(1., Apd * x_['p'])
 
-def pressure_solve(dp_, x_, Apt, Apd, b, p_sol, bcs, constant_poisson_coefficient, **NS_namespace):
+def pressure_solve(dp_, x_, Apt, Apd, b, p_sol, bcs, constant_poisson_coefficient,
+                   inner_iter, tstep, **NS_namespace):
     """Solve pressure equation."""
     #info_blue("Solving P")
+
+    # Reuse the AMG hierarchy across inner iterations (operator frozen within a
+    # timestep); build once per run when constant_poisson_coefficient.
+    if constant_poisson_coefficient:
+        p_sol.set_reuse_preconditioner(tstep > 1 or inner_iter > 1)
+    else:
+        p_sol.set_reuse_preconditioner(inner_iter > 1)
 
     [bc.apply(b['p']) for bc in bcs['p']]
     dp_.vector().zero()
@@ -327,11 +404,15 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve scalar equation."""
     pass
 
-def phase_field_assemble(t, dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, x_2, u_adv, u_components, alpha,
-                         beta, bdf_order, initial_step_1st_order, fpf, bpf, **NS_namespace):
+def phase_field_assemble(t, tstep, dt, Apf, Mpf, Fpft, a_pf_full, Apf_const, Apf_alpha,
+                         b, x_1, x_2, u_adv, u_components, alpha,
+                         beta, bdf_order, bdf1_first_step, fpf, bpf,
+                         **NS_namespace):
     """Assemble phase field equation."""
     #info_blue("Assembling PF")
-    if bdf_order == 2 and not initial_step_1st_order[0]:
+    # BDF1 on the first step when x_2 is not a valid t-2*dt level (BDF2 there loses
+    # mass); decided once in setup from initial_step_1st_order.
+    if bdf_order == 2 and not bdf1_first_step[0]:
         w_n = 1. # dt / dt_1
 
         alpha[0] = (1. + 2.*w_n)/(1. + w_n) / dt  # 3.0 / (2. * dt)
@@ -348,7 +429,7 @@ def phase_field_assemble(t, dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf
         beta[0] = 1.0
         beta[1] = 0.0
 
-    initial_step_1st_order[0] = False
+    bdf1_first_step[0] = False
     #info_blue(f"{alpha}, {beta}")
 
     # Update u_adv used as convecting velocity
@@ -358,23 +439,22 @@ def phase_field_assemble(t, dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf
         u_adv[i].vector().axpy(beta[1], x_2[ui])
 
     t1 = Timer("Phase field assemble")
-    assemble(a_pf, tensor=Apf)
-    assemble(Fpft[1], tensor=Fpft[0])
-    
-    b['phig'].zero()
-    assemble(Fpft[2], tensor=b['phig'])
+    if alpha[0] != Apf_alpha[0]:
+        # Bake the time-derivative mass into the constant part; alpha[0] only
+        # changes at startup and at the BDF1->BDF2 switch.
+        Apf_const.axpy(alpha[0] - Apf_alpha[0], Mpf[0], True)
+        Apf_alpha[0] = alpha[0]
 
-    Apf.axpy(M, Kpf[0], True)
-    Apf.axpy(1., Mpf[1], True)
-    Apf.axpy(-sigma_bar * epsilon, Kpf[1], True)
-    Apf.axpy(1., Fpft[0], True)
+    assemble(a_pf_full, tensor=Apf)  # advection + linearized potential
+    Apf.axpy(1., Apf_const, True)    # + diffusion, g-mass, capillary, dt-mass
+
+    assemble(Fpft[1], tensor=b['phig'])
     if bpf:
         if "t" in fpf._user_parameters:
             fpf.t = t
         assemble(bpf[0] * dx, tensor=bpf[1])
         b['phig'].axpy(1.0, bpf[1])
 
-    Apf.axpy(alpha[0], Mpf[0], True)
     # Add mass
     b['phig'].axpy(-alpha[1], Mpf[0] * x_1['phig'])
     b['phig'].axpy(-alpha[2], Mpf[0] * x_2['phig'])

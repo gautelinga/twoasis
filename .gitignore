@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+*_results/
+docker/*.sif
+subdomains.h5
+subdomains.xdmf

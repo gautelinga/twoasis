@@ -4,12 +4,12 @@ import sys
 import json
 
 def convert(input):
+    # Python 2 heritage: used to encode unicode to str; in Python 3 strings
+    # pass through, only containers are walked.
     if isinstance(input, dict):
-        return {convert(key): convert(value) for key, value in input.iter()}
+        return {convert(key): convert(value) for key, value in input.items()}
     elif isinstance(input, list):
         return [convert(element) for element in input]
-    elif isinstance(input, str):
-        return input.encode('utf-8')
     else:
         return input
 

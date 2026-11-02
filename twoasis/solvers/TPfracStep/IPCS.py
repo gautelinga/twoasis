@@ -13,7 +13,7 @@ from twoasis.problems import info_blue
 def setup(u_components, u, v, p, q, bcs, #dt,
           scalar_components, V, Q, x_, p_, u_, A_cache, q_,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
-          angles, ds,
+          angles, ds, normal,
           velocity_update_solver, assemble_matrix, homogenize,
           GradFunction, PhiGradFunction, DivFunction, TPsource, **NS_namespace):
     """Preassemble matrices."""
@@ -50,6 +50,9 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # Allocate Function for holding and computing the velocity divergence on Q
     divu = DivFunction(u_, Q, name='divu', method=velocity_update_solver)
 
+    # Convecting velocity (set per timestep); used by phase-field and momentum advection.
+    u_adv = as_vector([Function(V) for _ in range(len(u_components))])
+
     # Allocate phase field matrices
     fprime = potential_linear_derivative(phi, phi_1)
     fwprime = wall_potential_linear_derivative(phi, phi_1)
@@ -75,7 +78,9 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     """
     
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
-    a_pf = -inner(dot(grad(xi), u_), phi) * dx
+    # Conservative advection of phi (matches BDF): -int phi(u.grad xi) dx
+    # + int (u.n) phi xi ds; the boundary term gives the correct flux at open boundaries.
+    a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
     Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx), assemble_matrix(inner(grad(phi), grad(eta)) * dx))
     Fpft = (Matrix(Mpf[0]), apft, Lpft)
     Apf = Matrix(Mpf[0])
@@ -95,8 +100,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     d = dict(A=A, Ai=Ai, Apt=Apt, Mt=Mt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg, 
              Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf)
 
-    # Setup for solving convection
-    u_adv = as_vector([Function(V) for _ in range(len(u_components))])
+    # Setup for solving convection (u_adv allocated above)
     #rho_ * u_1 - M * drho_ * grad(g_)
     a_conv = inner(v, rho_ * dot(u_adv, nabla_grad(u))) * dx
 
@@ -109,48 +113,22 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__, sigma_bar=sigma_bar)
     return d
 
-def get_solvers(use_krylov_solvers, krylov_solvers, bcs,
-                x_, Q, scalar_components, velocity_krylov_solver, velocity_update_solver,
-                pressure_krylov_solver, scalar_krylov_solver, phase_field_krylov_solver, **NS_namespace):
-    """Return linear solvers.
+def get_solvers(krylov_solvers, q_, velocity_krylov_solver, velocity_update_solver,
+                pressure_krylov_solver, phase_field_krylov_solver,
+                phase_field_fieldsplit, **NS_namespace):
+    """Return linear solvers: (tentative velocity, velocity update), pressure,
+    phase field, scalar (None)."""
+    u_sol = (krylov_solver("velocity_krylov_solver", velocity_krylov_solver, krylov_solvers),
+             krylov_solver("velocity_update_solver", velocity_update_solver, krylov_solvers))
+    p_sol = krylov_solver("pressure_krylov_solver", pressure_krylov_solver, krylov_solvers)
+    if phase_field_fieldsplit:
+        pf_sol = phase_field_fieldsplit_solver(q_['phig'].function_space(),
+                                               phase_field_krylov_solver, krylov_solvers)
+    else:
+        pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
+                               krylov_solvers)
+    return [u_sol, p_sol, pf_sol, None]
 
-    We are solving for
-       - tentative velocity
-       - pressure correction
-
-       and possibly:
-       - scalars
-
-    """
-    ## tentative velocity solver ##
-    u_pred_prec = PETScPreconditioner(velocity_krylov_solver['preconditioner_type'])
-    u_pred_sol = PETScKrylovSolver(velocity_krylov_solver['solver_type'], u_pred_prec)
-    u_pred_sol.parameters.update(krylov_solvers)
-
-    ## velocity update solver ##
-    u_corr_prec = PETScPreconditioner(velocity_update_solver['preconditioner_type'])
-    u_corr_sol = PETScKrylovSolver(velocity_update_solver['solver_type'], u_corr_prec)
-    u_corr_sol.parameters.update(krylov_solvers)
-
-    u_sol = (u_pred_sol, u_corr_sol)
-
-    ## pressure solver ##
-    p_prec = PETScPreconditioner(pressure_krylov_solver['preconditioner_type'])
-    p_sol = PETScKrylovSolver(pressure_krylov_solver['solver_type'], p_prec)
-    p_sol.parameters.update(krylov_solvers)
-    #p_sol.set_reuse_preconditioner(True) TEST
-
-    ## phase field solver ##
-    pf_prec = PETScPreconditioner(phase_field_krylov_solver["preconditioner_type"])
-    pf_sol = PETScKrylovSolver(phase_field_krylov_solver['solver_type'], pf_prec)
-    pf_sol.parameters.update(krylov_solvers)
-    #phig_sol.set_reuse_preconditioner(True) TEST!
-
-    sols = [u_sol, p_sol, pf_sol]
-
-    sols.append(None)
-
-    return sols
 
 
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
@@ -238,13 +216,14 @@ def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, c__, **NS
     b[ui].axpy(-1., phigradg[ui].rhs)
 
 def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
-                             use_krylov_solvers, **NS_namespace):
+                             use_krylov_solvers, u_components, inner_iter, **NS_namespace):
     """Linear algebra solve of tentative velocity component."""
-    #if use_krylov_solvers:
-        #if ui == 'u0':
-            #u_sol.parameters['preconditioner']['structure'] = 'same_nonzero_pattern'
-        #else:
-            #u_sol.parameters['preconditioner']['structure'] = 'same'
+    # Reuse the preconditioner within a timestep when all components share one
+    # matrix A (Ai is None). With per-component Ai the shared KSP alternates
+    # operators, so reuse would use the wrong hierarchy -> skip.
+    if Ai is None:
+        u_sol[0].set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
+
     [bc.apply(b[ui]) for bc in bcs[ui]]
     # x_2 only used on inner_iter 1, so use here as work vector
     x_2[ui].zero()
@@ -270,8 +249,10 @@ def pressure_assemble(b, x_, dx, dt, Apt, divu, bcs, **NS_namespace):
     b['p'].axpy(1., Apt[0] * x_['p'])
 
 
-def pressure_solve(dp_, x_, Apt, b, p_sol, bcs, **NS_namespace):
+def pressure_solve(dp_, x_, Apt, b, p_sol, bcs, inner_iter, **NS_namespace):
     """Solve pressure equation."""
+    # Reuse the preconditioner across inner iterations (operator frozen within a timestep).
+    p_sol.set_reuse_preconditioner(inner_iter > 1)
     [bc.apply(b['p']) for bc in bcs['p']]
     dp_.vector().zero()
     dp_.vector().axpy(1., x_['p'])

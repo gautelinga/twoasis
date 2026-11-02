@@ -37,9 +37,8 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
         if not path.exists(newfolder):
             newfolder = path.join(newfolder, '1')
         else:
-            #previous = listdir(newfolder)
-            previous = [f for f in listdir(newfolder) if not f.startswith('.')]
-            previous = max(map(eval, previous)) if previous else 0
+            previous = [f for f in listdir(newfolder) if f.isnumeric()]
+            previous = max(map(int, previous)) if previous else 0
             newfolder = path.join(newfolder, str(previous + 1))
 
     MPI.barrier(MPI.comm_world)
@@ -169,8 +168,8 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, u_components,
         newfile = HDF5File(MPI.comm_world, h5file, 'w')
         newfile.flush()
         newfile.write(q_[ui].vector(), '/current')
-        if ui in u_components:
-            newfile.write(q_1[ui].vector(), '/previous')
+        #if ui in u_components:
+        newfile.write(q_1[ui].vector(), '/previous')
         if path.exists(oldfile):
             if MPI.rank(MPI.comm_world) == 0:
                 system('rm {0}'.format(oldfile))
@@ -246,9 +245,14 @@ def init_from_restart(restart_folder, sys_comp, uc_comp, u_components,
                     q_1[ui].vector().zero()
                     q_1[ui].vector().axpy(1., q_[ui].vector())
                     q_1[ui].vector().apply('insert')
-                    if ui in u_components:
+                    # Checkpoints written before '/previous' was stored for all
+                    # fields only have it for the velocity; fall back to q_2 = q_1.
+                    if hdf5_file.has_dataset("/previous"):
                         hdf5_file.read(q_2[ui].vector(), "/previous", False)
-                        q_2[ui].vector().apply('insert')
+                    else:
+                        q_2[ui].vector().zero()
+                        q_2[ui].vector().axpy(1., q_[ui].vector())
+                    q_2[ui].vector().apply('insert')
 
 
 def merge_visualization_files(newfolder, **namespace):

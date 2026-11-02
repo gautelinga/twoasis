@@ -20,7 +20,70 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "potential_linear_derivative", "potential_derivative_approx",
            "wall_potential_linear_derivative",
            "weighted_arithmetic_mean", "weighted_geometric_mean", 
-           "weighted_arithmetic_derivative"]
+           "weighted_arithmetic_derivative",
+           "krylov_solver_parameters", "krylov_solver", "phase_field_fieldsplit_solver"]
+
+
+def krylov_solver_parameters(name, cfg, krylov_solvers):
+    """Parameters for the Krylov solver configured by the per-solver dict `cfg`
+    (NS_parameters[name], e.g. name='pressure_krylov_solver').
+
+    The global `krylov_solvers` dict applies to every solver. A per-solver dict may
+    additionally carry 'relative_tolerance' and 'maximum_iterations'. For those keys
+    the precedence is:
+        per-solver value set by the user > global value set by the user
+        > per-solver default > global default,
+    where "set by the user" means it differs from the package default in
+    problems.TPfracStep.KRYLOV_DEFAULTS. So krylov_solvers='{"relative_tolerance": 1e-10}'
+    tightens every solver, while pressure_krylov_solver='{"relative_tolerance": 1e-10}'
+    tightens only the pressure solve.
+    """
+    from twoasis.problems.TPfracStep import KRYLOV_DEFAULTS
+    params = dict(krylov_solvers)
+    for key in ("relative_tolerance", "maximum_iterations"):
+        if key not in cfg:
+            continue
+        cfg_user_set = cfg[key] != KRYLOV_DEFAULTS.get(name, {}).get(key)
+        global_user_set = (key in krylov_solvers and
+                           krylov_solvers[key] != KRYLOV_DEFAULTS["krylov_solvers"].get(key))
+        if cfg_user_set or not global_user_set:
+            params[key] = cfg[key]
+    return params
+
+
+def krylov_solver(name, cfg, krylov_solvers):
+    """PETScKrylovSolver with solver/preconditioner type from `cfg` and parameters
+    from krylov_solver_parameters."""
+    sol = PETScKrylovSolver(cfg['solver_type'], PETScPreconditioner(cfg['preconditioner_type']))
+    sol.parameters.update(krylov_solver_parameters(name, cfg, krylov_solvers))
+    return sol
+
+
+def phase_field_fieldsplit_solver(W, phase_field_krylov_solver, krylov_solvers):
+    """Fieldsplit (Schur) preconditioner for the coupled (phi, g) Cahn-Hilliard KSP."""
+    from petsc4py import PETSc
+    pf_sol = PETScKrylovSolver(phase_field_krylov_solver['solver_type'])
+    pf_sol.parameters.update(krylov_solver_parameters(
+        "phase_field_krylov_solver", phase_field_krylov_solver, krylov_solvers))
+    ksp = pf_sol.ksp()
+    ksp.setOptionsPrefix("phasefield_")
+    pc = ksp.getPC()
+    pc.setType("fieldsplit")
+    is_phi = PETSc.IS().createGeneral(W.sub(0).dofmap().dofs(), comm=PETSc.COMM_WORLD)
+    is_g = PETSc.IS().createGeneral(W.sub(1).dofmap().dofs(), comm=PETSc.COMM_WORLD)
+    pc.setFieldSplitIS(("phi", is_phi), ("g", is_g))
+    # Schur on (phi, g): g-block is a mass matrix; the Schur complement onto phi is
+    # the stiff biharmonic-like operator -> AMG. (Multiplicative splits do poorly:
+    # both diagonal blocks are well-conditioned mass matrices.)
+    PETScOptions.set("phasefield_pc_fieldsplit_type",
+                     phase_field_krylov_solver.get('fieldsplit_type', 'schur'))
+    PETScOptions.set("phasefield_pc_fieldsplit_schur_fact_type", "full")
+    PETScOptions.set("phasefield_pc_fieldsplit_schur_precondition", "selfp")
+    for name in ("phi", "g"):
+        PETScOptions.set("phasefield_fieldsplit_%s_ksp_type" % name, "preonly")
+        PETScOptions.set("phasefield_fieldsplit_%s_pc_type" % name, "hypre")
+    ksp.setFromOptions()
+    return pf_sol
 
 
 def get_solvers(**NS_namespace):

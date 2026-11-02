@@ -60,6 +60,12 @@ problem_parameters(**vars())
 # Update current namespace with NS_parameters and commandline_kwargs ++
 vars().update(post_import_problem(**vars()))
 
+# Fix the quadrature degree; automatic estimation picks needlessly high degrees
+# for the coefficient-weighted forms.
+if quadrature_degree is None:
+    quadrature_degree = 2 * velocity_degree + 1
+parameters["form_compiler"]["quadrature_degree"] = quadrature_degree
+
 # Use t and tstep from stored parameters if restarting
 if restart_folder is not None:
     f = open(path.join(path.abspath(restart_folder), 'params.dat'), 'rb')

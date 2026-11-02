@@ -70,6 +70,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         checkpoint=10,
         print_intermediate_info=10,
         use_krylov_solvers=True,
+        regulator=None,  # "V_c" or "y_cm"
         solver="IPCS",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
@@ -138,7 +139,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, 
                    pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, Ly, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -173,7 +174,7 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree,
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     """
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, V_c_prev=0)
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, vel_prev=0, y_cm_prev=None)
 
 """
 def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
@@ -197,8 +198,8 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   sigma, epsilon, volume, g0, statsfolder, timestampsfolder,
                   plot_interval, stat_interval, timestamps_interval,
-                  uv, mesh, acc, dt, gradp_avg, u_wall, u_target, Lx, Ly, V_c_prev, rho, mu,
-                  **NS_namespace):
+                  uv, mesh, acc, dt, gradp_avg, u_wall, u_target, Lx, Ly, vel_prev, rho, mu,
+                  regulator, y_cm_prev, **NS_namespace):
     returndict = dict()
 
     info_red("tstep = {}".format(tstep))
@@ -221,24 +222,44 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
         # Do not forget boundary term in E_int !
 
-        # both are adaptive
-        Kp = 1.0
+        forcing = gradp_avg.forcing
+        grav = 0
+        if regulator is not None:
+            # both are adaptive
+            Kp = 1.0
 
-        #grav_prev = acc.grav
-        #grav = grav_prev - Kp * V_c * stat_interval * dt 
-        #acc.grav = grav
-        grav=0
+            #grav_prev = acc.grav
+            #grav = grav_prev - Kp * V_c * stat_interval * dt 
+            #acc.grav = grav
 
-        k = 10.
-        tau = Lx**2 / (12 * mu[0] / rho[0])
-        alpha = rho[0] * 0.25 * (1+k)**2 / tau**2
-        beta = rho[0] * k / tau
+            k = 10.
+            tau = Lx**2 / (12 * mu[0] / rho[0])
+            alpha = rho[0] * 0.25 * (1+k)**2 / tau**2
+            beta = rho[0] * k / tau
 
-        forcing_prev = gradp_avg.forcing
-        forcing = forcing_prev + alpha * (u_target + u_wall - V_c) * stat_interval * dt - beta * (V_c - V_c_prev)
-        #forcing = forcing_prev - Kp * V_c * stat_interval * dt
-        #forcing = 0
-        gradp_avg.forcing = forcing
+            if regulator == "V_c":
+                vel = V_c
+            elif regulator == "y_cm":
+                if y_cm_prev is None:
+                    # First sample of this run (fresh start or restart): no previous
+                    # position to difference against, so use the bubble velocity.
+                    vel = V_c
+                else:
+                    # Unwrap the jump of ~Ly when the bubble crosses the periodic
+                    # top/bottom boundary.
+                    dy = y_cm - y_cm_prev
+                    dy -= Ly * round(dy / Ly)
+                    vel = dy / (stat_interval * dt)
+                returndict["y_cm_prev"] = y_cm
+            else:
+                exit("Unknown regulator")
+
+            forcing_prev = gradp_avg.forcing
+            forcing = forcing_prev + alpha * (u_target + u_wall - vel) * stat_interval * dt - beta * (vel - vel_prev)
+            #forcing = forcing_prev - Kp * V_c * stat_interval * dt
+            #forcing = 0
+            gradp_avg.forcing = forcing
+            returndict["vel_prev"] = vel
 
         if MPI.rank(MPI.comm_world) == 0:
             with open(statsfolder + "/tdata.dat", "a") as tfile:
@@ -247,7 +268,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                     ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
                     tstep, t, *entries))
 
-        returndict.update(dict(V_c_prev=V_c))
+        #returndict.update(dict(V_c_prev=V_c))
 
     """
     if tstep % timestamps_interval == 0 and False:

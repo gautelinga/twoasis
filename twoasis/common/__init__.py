@@ -3,16 +3,6 @@ from .utilities import *
 import sys
 import json
 
-def convert(input):
-    # Python 2 heritage: used to encode unicode to str; in Python 3 strings
-    # pass through, only containers are walked.
-    if isinstance(input, dict):
-        return {convert(key): convert(value) for key, value in input.items()}
-    elif isinstance(input, list):
-        return [convert(element) for element in input]
-    else:
-        return input
-
 # Parse command-line keyword arguments
 def parse_command_line():
     commandline_kwargs = {}
@@ -32,8 +22,6 @@ def parse_command_line():
                 value = eval(value)
             elif "True" in value or "False" in value:
                 value = eval(value)
-        if isinstance(value, dict):
-            value = convert(value)
 
         commandline_kwargs[key] = value
     return commandline_kwargs

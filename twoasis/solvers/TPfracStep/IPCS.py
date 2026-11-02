@@ -50,7 +50,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # Allocate Function for holding and computing the velocity divergence on Q
     divu = DivFunction(u_, Q, name='divu', method=velocity_update_solver)
 
-    # Convecting velocity (set per timestep); used by phase-field and momentum advection.
+    # Convecting velocity, set every timestep; used for both phase-field and momentum advection.
     u_adv = as_vector([Function(V) for _ in range(len(u_components))])
 
     # Allocate phase field matrices
@@ -78,8 +78,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     """
     
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
-    # Conservative advection of phi (matches BDF): -int phi(u.grad xi) dx
-    # + int (u.n) phi xi ds; the boundary term gives the correct flux at open boundaries.
+    # Conservative advection of phi, as in BDF: -int phi (u.grad xi) dx
+    # + int (u.n) phi xi ds. The boundary term gives the right flux at open boundaries.
     a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
     Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx), assemble_matrix(inner(grad(phi), grad(eta)) * dx))
     Fpft = (Matrix(Mpf[0]), apft, Lpft)
@@ -100,7 +100,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     d = dict(A=A, Ai=Ai, Apt=Apt, Mt=Mt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg, 
              Apf=Apf, Mpf=Mpf, Kpf=Kpf, Fpft=Fpft, a_pf=a_pf)
 
-    # Setup for solving convection (u_adv allocated above)
+    # Convection form
     #rho_ * u_1 - M * drho_ * grad(g_)
     a_conv = inner(v, rho_ * dot(u_adv, nabla_grad(u))) * dx
 
@@ -113,34 +113,19 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, c__=c__, sigma_bar=sigma_bar)
     return d
 
-def get_solvers(krylov_solvers, q_, velocity_krylov_solver, velocity_update_solver,
-                pressure_krylov_solver, phase_field_krylov_solver,
-                phase_field_fieldsplit, **NS_namespace):
-    """Return linear solvers: (tentative velocity, velocity update), pressure,
-    phase field, scalar (None)."""
-    u_sol = (krylov_solver("velocity_krylov_solver", velocity_krylov_solver, krylov_solvers),
-             krylov_solver("velocity_update_solver", velocity_update_solver, krylov_solvers))
-    p_sol = krylov_solver("pressure_krylov_solver", pressure_krylov_solver, krylov_solvers)
-    if phase_field_fieldsplit:
-        pf_sol = phase_field_fieldsplit_solver(q_['phig'].function_space(),
-                                               phase_field_krylov_solver, krylov_solvers)
-    else:
-        pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
-                               krylov_solvers)
-    return [u_sol, p_sol, pf_sol, None]
-
+get_solvers = krylov_get_solvers
 
 
 def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
                               Kt, u_adv, u_components,
                               b_tmp, bg0, b0, x_1, bcs, TPT, rho, mu,
                               rho_, mu_, rho_inv_, c__, q_, gradp_avg, bgp0,
-                              **NS_namespace):
-    """Called on first inner iteration of velocity/pressure system.
+                              phigradg, Apt, **NS_namespace):
+    """Called on the first inner iteration of each timestep.
 
-    Assemble convection matrix, compute rhs of tentative velocity and
-    reset coefficient matrix for solve.
-
+    Assembles everything that stays fixed during the inner iterations: the
+    coefficient fields, the tentative-velocity matrix and the parts of its
+    right-hand side that do not depend on the pressure, and the pressure matrix.
     """
     t0 = Timer("Assemble first inner iter")
 
@@ -181,6 +166,11 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
         TPT.assemble_rhs(i)
         b_tmp[ui].axpy(1., TPT.vector())
 
+        # Capillary force. The phase field is solved before the inner
+        # iterations, so this term is fixed within the timestep.
+        phigradg[ui].assemble_rhs()
+        b_tmp[ui].axpy(-1., phigradg[ui].rhs)
+
     # assemble semi-implicit convection, diffusion etc. for lhs
     A = assemble(a_conv, tensor=A)
     A.axpy(1. / dt, Mt[0], True)
@@ -195,6 +185,14 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
     else:
         [bc.apply(A) for bc in bcs['u0']] # assumes only no-slip!
 
+    # The pressure matrix depends on the density, which is fixed within the timestep.
+    assemble(Apt[1] * dx, tensor=Apt[0])
+    if bcs['p'] == []:
+        Aa = as_backend_type(Apt[0])
+        Aa.set_nullspace(Apt[2])
+    else:
+        [bc.apply(Apt[0]) for bc in bcs['p']]
+
 def attach_pressure_nullspace(Apt, x_, Q):
     """Create null space basis object and attach to Krylov solver."""
     null_vec = Vector(x_['p'])
@@ -206,43 +204,17 @@ def attach_pressure_nullspace(Apt, x_, Q):
     Aa.null_space = null_space
     Apt[2] = null_space
 
-def velocity_tentative_assemble(ui, q_, b, b_tmp, p_, gradp, phigradg, c__, **NS_namespace):
-    """Add pressure gradient to rhs of tentative velocity system."""
+def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, **NS_namespace):
+    """Add the pressure gradient to the rhs of the tentative velocity system."""
     b[ui].zero()
     b[ui].axpy(1., b_tmp[ui])
     gradp[ui].assemble_rhs(p_)
     b[ui].axpy(-1., gradp[ui].rhs)
-    phigradg[ui].assemble_rhs()
-    b[ui].axpy(-1., phigradg[ui].rhs)
-
-def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
-                             use_krylov_solvers, u_components, inner_iter, **NS_namespace):
-    """Linear algebra solve of tentative velocity component."""
-    # Reuse the preconditioner within a timestep when all components share one
-    # matrix A (Ai is None). With per-component Ai the shared KSP alternates
-    # operators, so reuse would use the wrong hierarchy -> skip.
-    if Ai is None:
-        u_sol[0].set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
-
-    [bc.apply(b[ui]) for bc in bcs[ui]]
-    # x_2 only used on inner_iter 1, so use here as work vector
-    x_2[ui].zero()
-    x_2[ui].axpy(1., x_[ui])
-    t1 = Timer("Tentative Linear Algebra Solve")
-    if Ai:
-        u_sol[0].solve(Ai[ui], x_[ui], b[ui])
-    else:
-        u_sol[0].solve(A, x_[ui], b[ui])
-    t1.stop()
-    udiff[0] += norm(x_2[ui] - x_[ui])
 
 
-def pressure_assemble(b, x_, dx, dt, Apt, divu, bcs, **NS_namespace):
-    """Assemble rhs of pressure equation."""
-    assemble(Apt[1] * dx, tensor=Apt[0])
-    if bcs['p'] == []:
-        Aa = as_backend_type(Apt[0])
-        Aa.set_nullspace(Apt[2])
+def pressure_assemble(b, x_, dt, Apt, divu, **NS_namespace):
+    """Assemble the rhs of the pressure equation. The matrix is assembled in
+    assemble_first_inner_iter."""
     divu.assemble_rhs()  # Computes div(u_)*q*dx
     b['p'][:] = divu.rhs
     b['p'] *= (-1. / dt)
@@ -251,7 +223,8 @@ def pressure_assemble(b, x_, dx, dt, Apt, divu, bcs, **NS_namespace):
 
 def pressure_solve(dp_, x_, Apt, b, p_sol, bcs, inner_iter, **NS_namespace):
     """Solve pressure equation."""
-    # Reuse the preconditioner across inner iterations (operator frozen within a timestep).
+    # The matrix only changes at the start of a timestep, so rebuild the
+    # preconditioner on the first inner iteration and reuse it after that.
     p_sol.set_reuse_preconditioner(inner_iter > 1)
     [bc.apply(b['p']) for bc in bcs['p']]
     dp_.vector().zero()

@@ -60,8 +60,9 @@ problem_parameters(**vars())
 # Update current namespace with NS_parameters and commandline_kwargs ++
 vars().update(post_import_problem(**vars()))
 
-# Fix the quadrature degree; automatic estimation picks needlessly high degrees
-# for the coefficient-weighted forms.
+# Use one quadrature degree for all forms. The form compiler's automatic estimate
+# is very high for forms with variable coefficients (density, viscosity, the
+# phase-field potential), which makes assembly slow for little gain in accuracy.
 if quadrature_degree is None:
     quadrature_degree = 2 * velocity_degree + 1
 parameters["form_compiler"]["quadrature_degree"] = quadrature_degree
@@ -293,7 +294,8 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
             scalar_solve(**vars())
             t1.stop()
 
-    vars().update(temporal_hook(**vars()))
+    # temporal_hook may return a dict of values to update; None means nothing.
+    vars().update(temporal_hook(**vars()) or {})
 
     # Save solution if required and check for killoasis file
     stop = save_solution(**vars())

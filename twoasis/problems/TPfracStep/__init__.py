@@ -19,14 +19,16 @@ NS_parameters.update(
     AB_projection_pressure=False,
     solver="Naive",  # "IPCS", "BDF"
     bdf_order=2,
-    initial_step_1st_order=None,   # BDF1 on first step: None=auto (if x_2 == x_1), True=always on fresh start, False=never
+    # First BDF step: True = first order, False = second order, None = second order
+    # only if initialize() (or the checkpoint) provides the solution at t - 2*dt.
+    initial_step_1st_order=None,
     constant_poisson_coefficient=False,
-    quadrature_degree=None,        # Fixed quadrature degree for all forms; None -> 2*velocity_degree + 1
+    quadrature_degree=None,        # quadrature degree for all forms; None means 2*velocity_degree + 1
 
     # Phase field parameters
     phase_field_degree=1,
     chemical_potential_degree=1,
-    phase_field_fieldsplit=False,  # opt-in Schur fieldsplit PC for the (phi,g) solve
+    phase_field_fieldsplit=False,  # use a Schur fieldsplit preconditioner for the (phi, g) solve
 
     M=0.001,
     epsilon=0.04,
@@ -77,57 +79,54 @@ NS_parameters.update(
     # Parameter set when enabling test mode
     testing=False,
 
-    # Solver parameters that will be transferred to dolfins parameters['krylov_solver']
+    # Settings for all Krylov solvers. Each solver below can also set its own
+    # relative_tolerance and maximum_iterations. A value set for one solver wins
+    # over a value set here, and a value set here wins over the solver's default
+    # in KRYLOV_TOLERANCES at the end of this file.
     krylov_solvers=dict(
         monitor_convergence=False,
         report=False,
-        error_on_nonconvergence=True,   # surface non-converged solves instead of silently continuing
+        error_on_nonconvergence=True,   # stop the run if a linear solve does not converge
         nonzero_initial_guess=True,
-        maximum_iterations=200,
-        relative_tolerance=1e-8,
-        absolute_tolerance=1e-12),       # relative-dominated; avoid premature stop on small ||b||
+        absolute_tolerance=1e-12),      # small, so the relative tolerance decides when to stop
 
     # Velocity update
     velocity_update_solver=dict(
-        method='lumping',  # lumped mass (P1; auto falls back to consistent mass on P2+)
+        method='lumping',  # lumped mass for P1; P2 and higher use the consistent mass matrix
         solver_type='cg',
         preconditioner_type='jacobi',
         low_memory_version=False),
 
     velocity_krylov_solver=dict(
         solver_type='bicgstab',
-        preconditioner_type='jacobi',
-        relative_tolerance=1e-6,    # outer pressure-velocity iteration drives accuracy
-        maximum_iterations=300),
+        preconditioner_type='jacobi'),
 
     pressure_krylov_solver=dict(
         solver_type='gmres',
-        #preconditioner_type='petsc_amg'  # seemed faster than hypre_amg
-        preconditioner_type='hypre_amg',  # but hypre_amg seems superior + better scaling
-        relative_tolerance=1e-6,
-        maximum_iterations=100),    # strong (AMG) PC -> fail fast if it stalls
+        preconditioner_type='hypre_amg'),  # scales better than 'petsc_amg' on large meshes
 
     scalar_krylov_solver=dict(
         solver_type='bicgstab',
-        preconditioner_type='jacobi',
-        relative_tolerance=1e-6,
-        maximum_iterations=300),
+        preconditioner_type='jacobi'),
 
     phase_field_krylov_solver=dict(
         solver_type='gmres',
-        preconditioner_type='jacobi',
-        relative_tolerance=1e-8,    # keep tight: sets the interface/constitutive accuracy
-        maximum_iterations=1000)    # weak (jacobi) PC + biharmonic-like system; drop to ~100 with fieldsplit
+        preconditioner_type='jacobi')
 )
 
-# Snapshot of the package defaults for the Krylov settings, taken before problem
-# files or the command line modify NS_parameters. Used by the solvers to tell a
-# user-set value apart from a default (see solvers.TPfracStep.krylov_solver).
-import copy as _copy
-KRYLOV_DEFAULTS = _copy.deepcopy({key: NS_parameters[key] for key in (
-    "krylov_solvers", "velocity_krylov_solver", "velocity_update_solver",
-    "pressure_krylov_solver", "scalar_krylov_solver", "phase_field_krylov_solver")})
-
+# Default relative tolerance and iteration limit for each Krylov solver, used
+# when neither the solver's own settings nor krylov_solvers give a value.
+KRYLOV_TOLERANCES = dict(
+    # Loose: the outer pressure-velocity iteration controls the accuracy.
+    velocity_krylov_solver=dict(relative_tolerance=1e-6, maximum_iterations=300),
+    velocity_update_solver=dict(relative_tolerance=1e-8, maximum_iterations=200),
+    # AMG converges in a few iterations; needing more means it has stalled.
+    pressure_krylov_solver=dict(relative_tolerance=1e-6, maximum_iterations=100),
+    # Tight, since it sets the accuracy of the interface. Jacobi is a weak
+    # preconditioner for this system; with phase_field_fieldsplit ~100
+    # iterations are enough.
+    phase_field_krylov_solver=dict(relative_tolerance=1e-8, maximum_iterations=1000),
+)
 
 def velocity_tentative_hook(**NS_namespace):
     """Called just prior to solving for tentative velocity."""
@@ -145,7 +144,8 @@ def start_timestep_hook(**NS_namespace):
 
 
 def temporal_hook(**NS_namespace):
-    """Called at end of a timestep."""
+    """Called at the end of each timestep. May return a dict of values to update
+    in the solver namespace."""
     pass
 
 

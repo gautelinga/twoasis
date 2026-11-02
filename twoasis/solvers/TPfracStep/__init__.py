@@ -6,8 +6,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from dolfin import *
 from twoasis.solvers import *
 import math
+# Use the UFL that dolfin was built with (ufl_legacy in recent installations).
 import ufl_legacy as ufl
-if not isinstance(Constant, ufl.Coefficient):
+if not isinstance(Constant(0.), ufl.Coefficient):
     import ufl
 
 
@@ -21,42 +22,53 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "wall_potential_linear_derivative",
            "weighted_arithmetic_mean", "weighted_geometric_mean", 
            "weighted_arithmetic_derivative",
-           "krylov_solver_parameters", "krylov_solver", "phase_field_fieldsplit_solver"]
+           "krylov_solver_parameters", "krylov_solver", "krylov_get_solvers",
+           "phase_field_fieldsplit_solver"]
 
 
 def krylov_solver_parameters(name, cfg, krylov_solvers):
-    """Parameters for the Krylov solver configured by the per-solver dict `cfg`
-    (NS_parameters[name], e.g. name='pressure_krylov_solver').
+    """Parameters for the Krylov solver whose settings are NS_parameters[name] (`cfg`).
 
-    The global `krylov_solvers` dict applies to every solver. A per-solver dict may
-    additionally carry 'relative_tolerance' and 'maximum_iterations'. For those keys
-    the precedence is:
-        per-solver value set by the user > global value set by the user
-        > per-solver default > global default,
-    where "set by the user" means it differs from the package default in
-    problems.TPfracStep.KRYLOV_DEFAULTS. So krylov_solvers='{"relative_tolerance": 1e-10}'
-    tightens every solver, while pressure_krylov_solver='{"relative_tolerance": 1e-10}'
+    The settings in `krylov_solvers` apply to every solver. The relative tolerance
+    and the iteration limit are taken from the first of these that gives a value:
+    the solver's own settings, `krylov_solvers`, and the solver's default in
+    KRYLOV_TOLERANCES. So krylov_solvers='{"relative_tolerance": 1e-10}' tightens
+    every solve, while pressure_krylov_solver='{"relative_tolerance": 1e-10}'
     tightens only the pressure solve.
     """
-    from twoasis.problems.TPfracStep import KRYLOV_DEFAULTS
-    params = dict(krylov_solvers)
-    for key in ("relative_tolerance", "maximum_iterations"):
-        if key not in cfg:
-            continue
-        cfg_user_set = cfg[key] != KRYLOV_DEFAULTS.get(name, {}).get(key)
-        global_user_set = (key in krylov_solvers and
-                           krylov_solvers[key] != KRYLOV_DEFAULTS["krylov_solvers"].get(key))
-        if cfg_user_set or not global_user_set:
-            params[key] = cfg[key]
+    from twoasis.problems.TPfracStep import KRYLOV_TOLERANCES
+    params = {key: value for key, value in krylov_solvers.items() if value is not None}
+    for key, default in KRYLOV_TOLERANCES.get(name, {}).items():
+        value = cfg.get(key)
+        if value is None:
+            value = krylov_solvers.get(key)
+        params[key] = default if value is None else value
     return params
 
 
 def krylov_solver(name, cfg, krylov_solvers):
-    """PETScKrylovSolver with solver/preconditioner type from `cfg` and parameters
-    from krylov_solver_parameters."""
+    """Krylov solver with the solver and preconditioner type given in `cfg`."""
     sol = PETScKrylovSolver(cfg['solver_type'], PETScPreconditioner(cfg['preconditioner_type']))
     sol.parameters.update(krylov_solver_parameters(name, cfg, krylov_solvers))
     return sol
+
+
+def krylov_get_solvers(krylov_solvers, q_, velocity_krylov_solver, velocity_update_solver,
+                       pressure_krylov_solver, phase_field_krylov_solver,
+                       phase_field_fieldsplit, **NS_namespace):
+    """Linear solvers for the BDF and IPCS schemes, in the order
+    (tentative velocity, velocity update), pressure, phase field, scalar.
+    Scalars are not supported, so the scalar solver is None."""
+    u_sol = (krylov_solver("velocity_krylov_solver", velocity_krylov_solver, krylov_solvers),
+             krylov_solver("velocity_update_solver", velocity_update_solver, krylov_solvers))
+    p_sol = krylov_solver("pressure_krylov_solver", pressure_krylov_solver, krylov_solvers)
+    if phase_field_fieldsplit:
+        pf_sol = phase_field_fieldsplit_solver(q_['phig'].function_space(),
+                                               phase_field_krylov_solver, krylov_solvers)
+    else:
+        pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
+                               krylov_solvers)
+    return [u_sol, p_sol, pf_sol, None]
 
 
 def phase_field_fieldsplit_solver(W, phase_field_krylov_solver, krylov_solvers):
@@ -72,9 +84,10 @@ def phase_field_fieldsplit_solver(W, phase_field_krylov_solver, krylov_solvers):
     is_phi = PETSc.IS().createGeneral(W.sub(0).dofmap().dofs(), comm=PETSc.COMM_WORLD)
     is_g = PETSc.IS().createGeneral(W.sub(1).dofmap().dofs(), comm=PETSc.COMM_WORLD)
     pc.setFieldSplitIS(("phi", is_phi), ("g", is_g))
-    # Schur on (phi, g): g-block is a mass matrix; the Schur complement onto phi is
-    # the stiff biharmonic-like operator -> AMG. (Multiplicative splits do poorly:
-    # both diagonal blocks are well-conditioned mass matrices.)
+    # Schur complement on (phi, g). The g-block is a mass matrix, and the Schur
+    # complement onto phi is a stiff, biharmonic-like operator that AMG handles
+    # well. A multiplicative split works poorly here: both diagonal blocks are
+    # well-conditioned mass matrices, while the stiff terms sit off the diagonal.
     PETScOptions.set("phasefield_pc_fieldsplit_type",
                      phase_field_krylov_solver.get('fieldsplit_type', 'schur'))
     PETScOptions.set("phasefield_pc_fieldsplit_schur_fact_type", "full")
@@ -106,9 +119,26 @@ def assemble_first_inner_iter(**NS_namespace):
     pass
 
 
-def velocity_tentative_solve(**NS_namespace):
-    """Linear algebra solve of tentative velocity component."""
-    pass
+def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
+                             u_components, inner_iter, **NS_namespace):
+    """Solve for one component of the tentative velocity."""
+    # When all components share the matrix A (Ai is None), it only changes at the
+    # start of a timestep, so the preconditioner is rebuilt for the first solve of
+    # the timestep and reused after that. With one matrix per component (Ai), the
+    # solver switches matrices between solves and must rebuild each time.
+    if Ai is None:
+        u_sol[0].set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
+
+    [bc.apply(b[ui]) for bc in bcs[ui]]
+    # x_2 is only needed on the first inner iteration, so use it as a work
+    # vector for the change in velocity.
+    x_2[ui].zero()
+    x_2[ui].axpy(1., x_[ui])
+    t1 = Timer("Tentative Linear Algebra Solve")
+    u_sol[0].solve(Ai[ui] if Ai else A, x_[ui], b[ui])
+    t1.stop()
+    x_2[ui].axpy(-1., x_[ui])
+    udiff[0] += x_2[ui].norm('l2')
 
 
 def velocity_tentative_assemble(**NS_namespace):

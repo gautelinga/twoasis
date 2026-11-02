@@ -19,10 +19,13 @@ import pytest
 COLS = dict(tstep=0, t=1, u0m=2, u1m=3, phim=4, E_kin=5, E_int=6, E_pot=7,
             vol_c=8, y_cm=9, V_c=10)
 
-BUBBLE = dict(problem="PeriodicBubble2D", dt=0.002, res=0.03125, epsilon=0.05,
-              R=0.25, M=0.000125, stat_interval=1, plot_interval=1000000,
-              timestamps_interval=1000000, save_step=1000000, checkpoint=10,
-              folder="results")
+# Write statistics every step and no other output. BUBBLE turns checkpoints
+# back on, since the restart test needs them.
+QUIET = dict(stat_interval=1, plot_interval=1000000, timestamps_interval=1000000,
+             save_step=1000000, checkpoint=1000000, folder="results")
+
+BUBBLE = dict(QUIET, problem="PeriodicBubble2D", dt=0.002, res=0.03125, epsilon=0.05,
+              R=0.25, M=0.000125, checkpoint=10)
 
 GOLDEN_FILE = Path(__file__).parent / "golden.json"
 
@@ -111,7 +114,17 @@ def golden_compare(request, key, values, rtol=1e-4, atol=1e-7):
     golden = json.loads(GOLDEN_FILE.read_text())
     assert key in golden, "no golden values for '{}'; run pytest --regen-golden".format(key)
     for name, val in values.items():
-        ref = golden[key][name]
-        assert abs(val - ref) <= rtol * abs(ref) + atol, \
-            "{}[{}] = {:.10g}, expected {:.10g} (rtol={}, atol={})".format(
-                key, name, val, ref, rtol, atol)
+        assert_close("{}[{}]".format(key, name), val, golden[key][name], rtol, atol)
+
+
+def assert_close(label, value, reference, rtol, atol=0.):
+    """Assert |value - reference| <= rtol*|reference| + atol."""
+    assert abs(value - reference) <= rtol * abs(reference) + atol, \
+        "{} = {:.10g}, expected {:.10g} (rtol={}, atol={})".format(
+            label, value, reference, rtol, atol)
+
+
+def assert_mass_conserved(td, tol):
+    """Assert that the mean of phi stays within tol of its initial value."""
+    phim = td[:, COLS["phim"]]
+    assert np.max(np.abs(phim - phim[0])) < tol

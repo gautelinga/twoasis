@@ -105,7 +105,8 @@ class OasisFunction(Function):
         elif method.lower() == "lumping":
             self.A = A_cache[(Mass, tuple(bcs))]
             if Space.ufl_element().degree() >= 2:
-                # Lumping is P1-only; fall back to consistent mass on higher order.
+                # Mass lumping is only accurate for P1; use the consistent mass
+                # matrix for higher degrees.
                 self.method = "default"
                 self.sol = Solver_cache[(Mass, tuple(
                     bcs), solver_type, preconditioner_type)]

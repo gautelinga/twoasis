@@ -139,7 +139,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, 
                    pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, Ly, **NS_namespace):
+                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
@@ -225,13 +225,9 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
         forcing = gradp_avg.forcing
         grav = 0
         if regulator is not None:
-            # both are adaptive
-            Kp = 1.0
-
-            #grav_prev = acc.grav
-            #grav = grav_prev - Kp * V_c * stat_interval * dt 
-            #acc.grav = grav
-
+            # Adjust the driving force so that the bubble moves at u_target
+            # relative to the wall. The gains alpha and beta are set from the
+            # viscous time scale tau of the channel.
             k = 10.
             tau = Lx**2 / (12 * mu[0] / rho[0])
             alpha = rho[0] * 0.25 * (1+k)**2 / tau**2
@@ -241,12 +237,12 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                 vel = V_c
             elif regulator == "y_cm":
                 if y_cm_prev is None:
-                    # First sample of this run (fresh start or restart): no previous
-                    # position to difference against, so use the bubble velocity.
+                    # First sample of this run: there is no earlier position
+                    # to compare with, so use the bubble velocity.
                     vel = V_c
                 else:
-                    # Unwrap the jump of ~Ly when the bubble crosses the periodic
-                    # top/bottom boundary.
+                    # Remove the jump of ~Ly when the bubble crosses the
+                    # periodic top/bottom boundary.
                     dy = y_cm - y_cm_prev
                     dy -= Ly * round(dy / Ly)
                     vel = dy / (stat_interval * dt)
@@ -254,10 +250,7 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
             else:
                 exit("Unknown regulator")
 
-            forcing_prev = gradp_avg.forcing
-            forcing = forcing_prev + alpha * (u_target + u_wall - vel) * stat_interval * dt - beta * (vel - vel_prev)
-            #forcing = forcing_prev - Kp * V_c * stat_interval * dt
-            #forcing = 0
+            forcing += alpha * (u_target + u_wall - vel) * stat_interval * dt - beta * (vel - vel_prev)
             gradp_avg.forcing = forcing
             returndict["vel_prev"] = vel
 
@@ -267,8 +260,6 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                 tfile.write(
                     ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
                     tstep, t, *entries))
-
-        #returndict.update(dict(V_c_prev=V_c))
 
     """
     if tstep % timestamps_interval == 0 and False:

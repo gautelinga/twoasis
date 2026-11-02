@@ -107,10 +107,12 @@ def acceleration(g0, **NS_namespace):
     return Constant(tuple(g0))
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, **NS_namespace):
+def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, A, **NS_namespace):
+    # Heavy fluid (phi = 1) on top of light fluid, with the interface perturbed
+    # by one cosine wavelength of amplitude A across the periodic width.
     phig_init = interpolate(Expression(
-        "tanh(((x[1]-Ly/2)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
+        "tanh((x[1] - Ly/2 - A*cos(2*M_PI*x[0]/Lx))/(sqrt(2)*epsilon))",
+        epsilon=epsilon, Lx=Lx, Ly=Ly, A=A, degree=2), VV['phig'].sub(0).collapse())
     assign(q_['phig'].sub(0), phig_init)
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:

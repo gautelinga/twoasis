@@ -85,8 +85,7 @@ def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
 
     killoasis = check_if_kill(folder, killtime, total_timer)
     if tstep % checkpoint == 0 or killoasis:
-        save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, u_components,
-                                    NS_parameters)
+        save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters)
 
     return killoasis
 
@@ -135,8 +134,7 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
             pickle.dump(NS_parameters,  f)
 
 
-def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, u_components,
-                                NS_parameters):
+def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     """Overwrite solution in Checkpoint folder.
 
     For safety reasons, in case the solver is interrupted, take backup of
@@ -168,7 +166,6 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, u_components,
         newfile = HDF5File(MPI.comm_world, h5file, 'w')
         newfile.flush()
         newfile.write(q_[ui].vector(), '/current')
-        #if ui in u_components:
         newfile.write(q_1[ui].vector(), '/previous')
         if path.exists(oldfile):
             if MPI.rank(MPI.comm_world) == 0:
@@ -228,7 +225,7 @@ def check_if_reset_statistics(folder, key='resettwoasis'):
         return False
 
 
-def init_from_restart(restart_folder, sys_comp, uc_comp, u_components,
+def init_from_restart(restart_folder, sys_comp, uc_comp,
                       q_, q_1, q_2, tstep, **NS_namespace):
     """Initialize solution from checkpoint files """
     if restart_folder:
@@ -240,19 +237,18 @@ def init_from_restart(restart_folder, sys_comp, uc_comp, u_components,
             with HDF5File(MPI.comm_world, filename, "r") as hdf5_file:
                 hdf5_file.read(q_[ui].vector(), "/current", False)
                 q_[ui].vector().apply('insert')
-                # Check for the solution at a previous timestep as well
-                if ui in sys_comp:
-                    q_1[ui].vector().zero()
-                    q_1[ui].vector().axpy(1., q_[ui].vector())
-                    q_1[ui].vector().apply('insert')
-                    # Checkpoints written before '/previous' was stored for all
-                    # fields only have it for the velocity; fall back to q_2 = q_1.
-                    if hdf5_file.has_dataset("/previous"):
-                        hdf5_file.read(q_2[ui].vector(), "/previous", False)
-                    else:
-                        q_2[ui].vector().zero()
-                        q_2[ui].vector().axpy(1., q_[ui].vector())
-                    q_2[ui].vector().apply('insert')
+                q_1[ui].vector().zero()
+                q_1[ui].vector().axpy(1., q_[ui].vector())
+                q_1[ui].vector().apply('insert')
+                # A checkpoint may hold only the current level of a field. In that
+                # case use it for the previous level too; the BDF solver then takes
+                # a first-order first step.
+                if hdf5_file.has_dataset("/previous"):
+                    hdf5_file.read(q_2[ui].vector(), "/previous", False)
+                else:
+                    q_2[ui].vector().zero()
+                    q_2[ui].vector().axpy(1., q_[ui].vector())
+                q_2[ui].vector().apply('insert')
 
 
 def merge_visualization_files(newfolder, **namespace):

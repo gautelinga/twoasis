@@ -5,6 +5,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
 from dolfin import Constant, grad, inner, Mesh, MPI, parameters, Timer, XDMFFile
+import inspect
 import subprocess
 from os import getpid, path
 from collections import defaultdict
@@ -199,8 +200,14 @@ def problem_parameters(**NS_namespace):
 
 
 def post_import_problem(NS_parameters, mesh, commandline_kwargs,
-                        NS_expressions, **NS_namespace):
-    """Called after importing from problem."""
+                        NS_expressions, constrained_domain=None, **NS_namespace):
+    """Called after importing from problem.
+
+    mesh and constrained_domain may be functions of the parameters; they are
+    called here, once the command line has been merged into NS_parameters, so
+    that e.g. a domain length given on the command line sets both the mesh and
+    its periodicity. constrained_domain is also called with the mesh.
+    """
 
     # Update NS_parameters with all parameters modified through command line
     for key, val in commandline_kwargs.items():
@@ -215,8 +222,12 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
 
     assert(isinstance(mesh, Mesh))
 
+    constrained_domain = NS_expressions.pop("constrained_domain", constrained_domain)
+    if inspect.isfunction(constrained_domain):
+        constrained_domain = constrained_domain(mesh=mesh, **NS_parameters)
+
     # Returned dictionary to be updated in the NS namespace
-    d = dict(mesh=mesh)
+    d = dict(mesh=mesh, constrained_domain=constrained_domain)
     d.update(NS_parameters)
     d.update(NS_expressions)
     return d

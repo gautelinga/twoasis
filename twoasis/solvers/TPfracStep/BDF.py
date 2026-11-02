@@ -17,7 +17,8 @@ from dolfin import (
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    krylov_get_solvers, potential_linear_derivative, wall_potential_linear_derivative)
+    add_contact_angles, krylov_get_solvers, potential_linear_derivative,
+    wall_potential_linear_derivative)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -88,13 +89,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     fprime = potential_linear_derivative(phi, phi_1)
     fwprime = wall_potential_linear_derivative(phi, phi_1)
 
-    Fpft = -sigma_bar / epsilon * fprime * eta * dx
-    for theta, mark in angles:
-        if isinstance(theta, Function):
-            # theta is actually cos(theta)!
-            Fpft += sigma * theta * fwprime * eta * ds(mark)
-        else:
-            Fpft += sigma * math.cos(theta) * fwprime * eta * ds(mark)
+    Fpft = add_contact_angles(-sigma_bar / epsilon * fprime * eta * dx,
+                              angles, sigma, fwprime, eta, ds)
     apft, Lpft = lhs(Fpft), rhs(Fpft)
 
     Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))

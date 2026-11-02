@@ -15,7 +15,8 @@ from dolfin import (
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    krylov_get_solvers, potential_linear_derivative, wall_potential_linear_derivative)
+    add_contact_angles, krylov_get_solvers, potential_linear_derivative,
+    wall_potential_linear_derivative)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -68,10 +69,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     fprime = potential_linear_derivative(phi, phi_1)
     fwprime = wall_potential_linear_derivative(phi, phi_1)
 
-    Fpft = -sigma_bar / epsilon * fprime * eta * dx
-    #Fpft = fprime * eta * dx
-    for theta, mark in angles:
-        Fpft += sigma * math.cos(theta) * fwprime * eta * ds(mark)
+    Fpft = add_contact_angles(-sigma_bar / epsilon * fprime * eta * dx,
+                              angles, sigma, fwprime, eta, ds)
     apft, Lpft = lhs(Fpft), rhs(Fpft)
 
     #FM = assemble_matrix(phi * xi * dx + g * eta * dx)
@@ -289,7 +288,8 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve scalar equation."""
     pass
 
-def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, u_components, u_adv, **NS_namespace):
+def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b, x_1, u_components, u_adv,
+                         t, fpf, bpf, **NS_namespace):
     """Assemble phase field equation."""
 
     # Update u_adv used as convecting velocity
@@ -308,7 +308,12 @@ def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b
     Apf.axpy(1., Fpft[0], True)
 
     assemble(Fpft[2], tensor=b['phig'])
-    #b['phig'] *= -sigma_bar / epsilon
+    # Source term (used by manufactured solutions)
+    if bpf:
+        if "t" in fpf._user_parameters:
+            fpf.t = t
+        assemble(bpf[0] * dx, tensor=bpf[1])
+        b['phig'].axpy(1.0, bpf[1])
     # Add mass
     b['phig'].axpy(1. / dt, Mpf[0] * x_1['phig'])
 

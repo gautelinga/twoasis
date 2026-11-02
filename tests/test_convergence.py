@@ -96,3 +96,13 @@ def test_bdf2_taylor_green_exact(tmp_path):
     assert all(1.8 < p < 2.3 for ps in orders.values() for p in ps), \
         "observed orders against the exact solution not ~2: {}".format(
             {k: [round(p, 2) for p in v] for k, v in orders.items()})
+
+
+@pytest.mark.slow
+def test_ipcs_taylor_green_phase_field(tmp_path):
+    """IPCS applies the phase-field source term of the manufactured solution.
+    Without it the phase-field error at t = 0.1 is 0.36; with it 0.018 (BDF2:
+    5e-4)."""
+    run_twoasis(tmp_path, T=0.1, dt=0.01, stat_interval=10,
+                **dict(TAYLOR_GREEN, solver="IPCS", N=32))
+    assert load_tdata(tmp_path)[-1, TG_ERR_COLS["phi"]] < 0.05

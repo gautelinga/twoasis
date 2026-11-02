@@ -457,10 +457,11 @@ def homogenize(bcs):
     return b
 
 
-def compute_ind(q_):
+def compute_ind(q_, phase=-1):
+    """Smoothed indicator (0 to 1) of the phase phi = phase (+1 or -1)."""
     ind_ = Function(q_["phig"].sub(0).function_space().collapse())
     assign(ind_, q_["phig"].sub(0))
-    c_ = 0.5*(1 - ind_.vector()[:])
+    c_ = 0.5*(1 + phase * ind_.vector()[:])
     c_[c_ < 0] = 0
     c_[c_ > 1] = 1
     ind_.vector()[:] = 3*c_**2 - 2*c_**3

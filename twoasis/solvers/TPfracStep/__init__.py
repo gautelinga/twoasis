@@ -4,7 +4,7 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import Constant, norm, PETScKrylovSolver, PETScOptions, PETScPreconditioner, Timer
+from dolfin import Constant, Function, norm, PETScKrylovSolver, PETScOptions, PETScPreconditioner, Timer
 from twoasis.problems import info_blue
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
@@ -184,6 +184,15 @@ def potential_linear_derivative(phi, phi0):
 
 def wall_potential_linear_derivative(phi, phi0):
     return 3.*(1. - phi0**2)/4. - 3.*phi0/2.* (phi - phi0)
+
+def add_contact_angles(F, angles, sigma, fwprime, eta, ds):
+    """Add the wall terms sigma*cos(theta)*f_w'(phi) of the phase-field equation
+    to the form F, for each (theta, marker) in angles. theta is measured through
+    the phase phi = +1; a Function in its place holds cos(theta) pointwise."""
+    for theta, mark in angles:
+        costheta = theta if isinstance(theta, Function) else math.cos(theta)
+        F += sigma * costheta * fwprime * eta * ds(mark)
+    return F
 
 def potential_derivative_approx(phi_, phi_1, phi_2):
     phi_ab = 1.5 * phi_1 - 0.5 * phi_2

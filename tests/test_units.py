@@ -96,3 +96,28 @@ def test_command_line_dicts_merge_into_defaults():
                             dict(dt=0.01, velocity_update_solver=dict(method="default")), {})
     assert d["dt"] == 0.01
     assert d["velocity_update_solver"] == dict(method="default", solver_type="cg")
+
+
+def test_periodic_map_follows_command_line():
+    """A periodic map given as a function is built after the command line has
+    been merged in, so a length given there sets both mesh and periodicity."""
+    from twoasis.problems import post_import_problem
+    from twoasis.problems.TPfracStep import Bubble2D
+    d = post_import_problem(dict(Lx=1, Ly=2, res=0.25), Bubble2D.mesh, dict(Lx=2), {},
+                            constrained_domain=Bubble2D.constrained_domain)
+    assert d["constrained_domain"].periodic == {0: (0, 2)}
+    V = dolfin.FunctionSpace(d["mesh"], "CG", 1, constrained_domain=d["constrained_domain"])
+    assert V.dim() == 8 * 9  # 9 x 9 vertices, the right column mapped onto the left
+
+
+def test_interface_energy_of_flat_interface():
+    """A flat interface at equilibrium has the energy sigma per unit length,
+    half in the gradient part and half in the double-well part."""
+    from twoasis.problems.TPfracStep.shared import interface_energy
+    eps, sigma, width = 0.05, 2.0, 0.1
+    mesh = dolfin.RectangleMesh(dolfin.Point(-1, 0), dolfin.Point(1, width), 400, 2)
+    phi = dolfin.interpolate(dolfin.Expression("tanh(x[0]/(sqrt(2)*eps))", eps=eps, degree=4),
+                             dolfin.FunctionSpace(mesh, "CG", 2))
+    E_grad, E_dw = interface_energy(phi, sigma, eps, dolfin.dx(domain=mesh))
+    assert E_grad + E_dw == pytest.approx(sigma * width, rel=1e-3)
+    assert E_grad == pytest.approx(E_dw, rel=1e-3)

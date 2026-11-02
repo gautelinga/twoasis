@@ -6,43 +6,28 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-import matplotlib.pyplot as plt
-from dolfin import (
-    assign, DirichletBC, Expression, Function, interpolate, MPI, near, norm, plot,
-    SubDomain, UnitSquareMesh, VectorFunctionSpace)
+from dolfin import assign, DirichletBC, Expression, interpolate, UnitSquareMesh
 
 from twoasis.problems import info_red
-
-#set_log_active(False)
-class PeriodicDomain(SubDomain):
-    def inside(self, x, on_boundary):
-        return bool(near(x[0], 0) and on_boundary)
-
-    def map(self, x, y):
-        if near(x[0], 2.0):
-            y[0] = x[0] - 2.0
-            y[1] = x[1]
-        else:
-            y[0] = x[0]
-            y[1] = x[1]
+from twoasis.problems.TPfracStep.shared import PeriodicBox
 
 
-# Create a mesh
 def mesh(Nx=128, Ny=64, **params):
     m = UnitSquareMesh(Nx, Ny)
-    x = m.coordinates()
-    x[:, 0] *= 2
-    #x[:] = (x - 0.5) * 2
-    #x[:] = 0.5*(cos(pi*(x-1.) / 2.) + 1.)
+    m.coordinates()[:, 0] *= 2
     return m
+
+
+def constrained_domain(**params):
+    return PeriodicBox({0: (0, 2.0)})
+
 
 top = "std::abs(x[1]-1) < 1e-8"
 bottom = "std::abs(x[1]) < 1e-8"
 
-# Override some problem specific parameters
-def problem_parameters(NS_parameters, NS_expressions, scalar_components, Schmidt, **NS_namespace):
+
+def problem_parameters(NS_parameters, **NS_namespace):
     NS_parameters.update(
-        nu=0.01,
         T=10.0,
         dt=0.002,
         u_wall=1.0,
@@ -60,21 +45,10 @@ def problem_parameters(NS_parameters, NS_expressions, scalar_components, Schmidt
         solver="IPCS",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
-        iters_on_first_timestep=200,  # Number of iterations on first timestep)
+        iters_on_first_timestep=200,  # Number of iterations on first timestep
     )
-    #scalar_components += ["alfa", "beta"]
-    #Schmidt["alfa"] = 1.
-    #Schmidt["beta"] = 10.
 
-    #NS_parameters['krylov_solvers'] = {'monitor_convergence': False,
-    #                                   'report': False,
-    #                                   'relative_tolerance': 1e-10,
-    #                                   'absolute_tolerance': 1e-10}
-    NS_expressions.update(dict(
-        constrained_domain=PeriodicDomain()
-    ))
 
-# Specify boundary conditions
 def create_bcs(V, u_wall, **NS_namespace):
     bc_ux_top = DirichletBC(V, u_wall, top)
     bc_ux_bottom = DirichletBC(V, -u_wall, bottom)
@@ -98,28 +72,5 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, **NS_namespace):
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(mesh, velocity_degree, **NS_namespace):
-    Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
-    return dict(uv=Function(Vv))
-
-
-def temporal_hook(q_, tstep, u_, p_, phi_, plot_interval, **NS_namespace):
+def temporal_hook(tstep, **NS_namespace):
     info_red("tstep = {}".format(tstep))
-    if tstep % plot_interval == 0 and False:
-        plot(u_, title='Velocity')
-        plt.show()
-        plot(phi_, title='Phase field')
-        plt.show()
-        #plot(p_, title='Pressure')
-        #plot(q_['alfa'], title='alfa')
-        #plot(q_['beta'], title='beta')
-
-
-def theend_hook(u_, p_, testing, **NS_namespace):
-    if not testing:
-        plot(u_, title='Velocity')
-        plot(p_, title='Pressure')
-
-    u_norm = norm(u_[0].vector())
-    if MPI.rank(MPI.comm_world) == 0 and testing:
-        print("Velocity norm = {0:2.6e}".format(u_norm))

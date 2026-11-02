@@ -1,67 +1,22 @@
 """Two-phase flow through a periodic three-dimensional porous medium (mesh from
-meshes/), driven by a body force and starting from a checkerboard of the two phases."""
+meshes/), driven by a mean pressure gradient and starting from a checkerboard of the two phases."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-11-25"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import makedirs, path
+from os import path
 
 import numpy as np
 from dolfin import (
     assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
-    Function, FunctionSpace, HDF5File, interpolate, Mesh, MPI, near, SubDomain)
+    interpolate, MPI, SubDomain)
 
 from twoasis.problems import info_red
-
-
-class PBC3(SubDomain):
-    def __init__(self, L):
-        self.L = L
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_boundary):
-        L = self.L
-        return bool(
-            (near(x[0], 0) or near(x[1], 0) or near(x[2], 0))
-            and not (near(x[0], L[0]) or near(x[1], L[1]) or near(x[2], L[2]))
-            and on_boundary)
-
-    def map(self, x, y):
-        L = self.L
-        if near(x[0], L[0]) and near(x[1], L[1]) and near(x[2], L[2]):
-            y[0] = x[0] - L[0]
-            y[1] = x[1] - L[1]
-            y[2] = x[2] - L[2]
-        elif near(x[0], L[0]) and near(x[2], L[2]):
-            y[0] = x[0] - L[0]
-            y[1] = x[1]
-            y[2] = x[2] - L[2]
-        elif near(x[1], L[1]) and near(x[2], L[2]):
-            y[0] = x[0]
-            y[1] = x[1] - L[1]
-            y[2] = x[2] - L[2]
-        elif near(x[0], L[0]) and near(x[1], L[1]):
-            y[0] = x[0] - L[0]
-            y[1] = x[1] - L[1]
-            y[2] = x[2]
-        elif near(x[0], L[0]):
-            y[0] = x[0] - L[0]
-            y[1] = x[1]
-            y[2] = x[2]
-        elif near(x[1], L[1]):
-            y[0] = x[0]
-            y[1] = x[1] - L[1]
-            y[2] = x[2]
-        elif near(x[2], L[2]):
-            y[0] = x[0]
-            y[1] = x[1]
-            y[2] = x[2] - L[2]
-        else:
-            y[0] = -1000
-            y[1] = -1000
-            y[2] = -1000
+from twoasis.problems.TPfracStep.shared import (
+    interface_energy, load_mesh, makedirs_on_root, PeriodicBox, write_timestamp,
+    write_timestamps_info)
 
 
 class Walls(SubDomain):
@@ -77,8 +32,6 @@ class Walls(SubDomain):
             return any(dr_ < self.r_ + DOLFIN_EPS_LARGE)
         return False
 
-def inlet(x, on_bnd):
-    return on_bnd and near(x[0], 0)
 
 def get_fname(L, R, reps, res, ext):
     meshparams = dict(L=L, R=R, reps=reps, res=res, ext=ext)
@@ -105,15 +58,10 @@ def ccode_expr(checkerboard):
 
 # Create a mesh
 def mesh(L, R, reps, res, **params):
-    mesh = Mesh()
-    #fname = "meshes/periodic_porous_Lx20_Ly10_rad0.25_N300_dx0.05.h5"
-    fname = get_fname(L, R, reps, res, "h5")
-    with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
-        h5f.read(mesh, "mesh", False)
-    return mesh
+    return load_mesh(get_fname(L, R, reps, res, "h5"))
 
 # Override some problem specific parameters
-def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
+def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
         T=100.0,
         L=1.0,
@@ -146,13 +94,10 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         iters_on_first_timestep=10,  # Number of iterations on first timestep
     )
 
-    #NS_parameters['krylov_solvers'] = {'monitor_convergence': False,
-    #                                   'report': False,
-    #                                   'relative_tolerance': 1e-10,
-    #                                   'absolute_tolerance': 1e-10}
-    NS_expressions.update(dict(
-        constrained_domain=PBC3([NS_parameters["L"], NS_parameters["L"], NS_parameters["L"]])
-    ))
+
+def constrained_domain(L, **params):
+    return PeriodicBox({i: (0, L) for i in range(3)})
+
 
 def mark_subdomains(subdomains, L, R, reps, res, **NS_namespace):
     fname = get_fname(L, R, reps, res, "obst")
@@ -161,8 +106,6 @@ def mark_subdomains(subdomains, L, R, reps, res, **NS_namespace):
     wall.mark(subdomains, 1)
     return dict()
 
-def contact_angles(theta, **NS_namespace):
-    return [(theta, 1)]
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):
@@ -172,16 +115,6 @@ def create_bcs(V, subdomains, **NS_namespace):
                 u2=[bc_u_wall],
                 p=[],
                 phig=[])
-
-
-def average_pressure_gradient(F0, **NS_namespace):
-    # average pressure gradient
-    return Constant(tuple(F0))
-
-
-def acceleration(g0, **NS_namespace):
-    # (gravitational) acceleration
-    return Constant(tuple(g0))
 
 
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, checkerboard, **NS_namespace):
@@ -199,84 +132,37 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, checkerboard, **NS_namesp
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, R, reps, res, dt, constrained_domain, **NS_namespace):
+def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
+                   AssignedVectorFunction, constrained_domain, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
-    keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "R", "reps", "res", "dt"]
-
-    # Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
     uv = AssignedVectorFunction(u_, name="u")
-    #phi__ = Function(q_['phig'].function_space().sub(0).collapse(), name="phi")
-    phi__ = Function(FunctionSpace(mesh, "CG", velocity_degree, constrained_domain=constrained_domain), name="phi")
+    makedirs_on_root(statsfolder, timestampsfolder)
+    write_timestamps_info(timestampsfolder, mesh,
+                          {key: NS_namespace[key] for key in
+                           ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "R", "reps", "res", "dt"]},
+                          velocity_degree, pressure_degree, constrained_domain)
+    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
+    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
 
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(statsfolder):
-        makedirs(statsfolder)
 
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
-        makedirs(timestampsfolder)
-
-    if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
-            for key in keys:
-                ofile.write("{}={}\n".format(key, eval(key)))
-        with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
-            ofile.write("velocity_space=P{}\n".format(velocity_degree))
-            ofile.write("pressure_space=P{}\n".format(pressure_degree))
-            ofile.write("phase_field_space=P{}\n".format(velocity_degree))
-            ofile.write("timestamps=timestamps.dat\n")
-            ofile.write("mesh=mesh.h5\n")
-            ofile.write("periodic_x=true\n")
-            ofile.write("periodic_y=true\n")
-            ofile.write("periodic_z=true\n")
-            ofile.write("rho=1.0\n")
-    with HDF5File(mesh.mpi_comm(),
-                  path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
-        h5f.write(mesh, "mesh")
-    write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder)
-
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, phi__=phi__)
-
-def write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder):
-    uv()
-
-    h5fname = "up_{}.h5".format(tstep)
-
-    assign(phi__, q_['phig'].sub(0))
-
-    with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
-        h5f.write(uv, "u")
-        h5f.write(p_, "p")
-        h5f.write(phi__, "phi")
-
-    if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
-            ofile.write("{:.6f} {}\n".format(t, h5fname))
-
-def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
-                  sigma, epsilon, volume, statsfolder, timestampsfolder,
-                  stat_interval, timestamps_interval,
-                  uv, mesh, phi__,
-                  **NS_namespace):
+def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,
+                  timestampsfolder, stat_interval, timestamps_interval, uv, mesh, **NS_namespace):
+    """Write to Stats/tdata.dat: tstep, t, u0m, u1m, u2m, phim and the energies per
+    volume (kinetic, interface gradient and double-well parts); and u, p and phi
+    to Timestamps/ every timestamps_interval steps."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        sigma_bar = sigma * 3./(2*np.sqrt(2))
-        u0m = assemble(q_['u0'] * dx) / volume
-        u1m = assemble(q_['u1'] * dx) / volume
-        u2m = assemble(q_['u2'] * dx) / volume
-        phim = assemble(phi_ * dx) / volume
-        E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dx) / volume
-        E_int = 0.5 * sigma_bar * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2 + phi_.dx(2)**2) * dx) / volume
-        E_pot = 0.25 * sigma_bar / epsilon * assemble((1-phi_**2)**2 * dx) / volume
-        # Do not forget boundary term in E_int !
+        dX = dx(domain=mesh)
+        um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(3)]
+        phim = assemble(phi_ * dX) / volume
+        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dX) / volume
+        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
         if MPI.rank(MPI.comm_world) == 0:
-            with open(statsfolder + "/tdata.dat", "a") as tfile:
-                tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(
-                    tstep, t, u0m, u1m, u2m, phim, E_kin, E_int, E_pot))
+            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
+                entries = um + [phim, E_kin, E_int, E_pot]
+                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
+                    tstep, t, *entries))
     if tstep % timestamps_interval == 0:
-        write_timestamp(tstep, t, mesh, uv, q_, p_, phi__, timestampsfolder)
-    return dict()
-
-def theend_hook(u_, p_, testing, **NS_namespace):
-    pass
+        write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)

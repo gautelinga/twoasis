@@ -1,56 +1,36 @@
 """A Taylor bubble, filling most of the width of a vertical channel that is periodic
 along its length, seen in a frame moving with the bubble: the walls move at u_wall,
-and an optional controller holds the bubble at a target speed."""
+and a controller (regulator = "V_c" or "y_cm") adjusts the mean pressure gradient to
+hold the bubble at u_target relative to the walls. Without the controller nothing
+drives the flow (F0 = g0 = 0): the moving walls just drag the fluid along."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-08-30"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import makedirs, path
+from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
-    interpolate, MPI, near, Point, RectangleMesh, SpatialCoordinate, SubDomain)
+    assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI,
+    SpatialCoordinate)
 
-from twoasis.common.utilities import compute_ind
 from twoasis.problems import info_red
-# from ufl_legacy import max_value, min_value
+from twoasis.problems.TPfracStep.shared import (
+    Faces, interface_energy, makedirs_on_root, PeriodicBox, phase_moments,
+    rectangle_mesh)
 
-class LeftRight(SubDomain):
-    def __init__(self, Lx):
-        self.Lx = Lx
-        super().__init__()
 
-    def inside(self, x, on_bnd):
-        return on_bnd and ( x[0] < DOLFIN_EPS_LARGE or x[0] > self.Lx - DOLFIN_EPS_LARGE )
-
-class TopBottom(SubDomain):
-    def __init__(self, Ly):
-        self.Ly = Ly
-        super().__init__()
-
-    def inside(self, x, on_bnd):
-        return on_bnd and x[1] < DOLFIN_EPS_LARGE
-
-    def map(self, x, y):
-        if near(x[1], self.Ly):
-            y[0] = x[0]
-            y[1] = x[1] - self.Ly
-        else:  # near(x[2], Lz/2.):
-            y[0] = x[0]
-            y[1] = x[1]
-
-# Create a mesh
 def mesh(Lx, Ly, res, **params):
-    Nx = int(Lx/res)
-    Ny = int(Ly/res)
-    mesh = RectangleMesh(Point(0., 0.), Point(Lx, Ly), Nx, Ny)
-    return mesh
+    return rectangle_mesh(Lx, Ly, res)
 
-# Override some problem specific parameters
-def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
+
+def constrained_domain(Ly, **params):
+    return PeriodicBox({1: (0, Ly)})
+
+
+def problem_parameters(NS_parameters, **NS_namespace):
     NS_parameters.update(
         T=100.0,
         Lx=1,
@@ -67,7 +47,7 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         u_wall=-0.5,
         u_target=0.5,
         F0=[0., 0.],
-        g0=[0., -0*0.98],
+        g0=[0., 0.],
         velocity_degree=1,
         folder="taylorbubble2d_results",
         plot_interval=10,
@@ -84,23 +64,12 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         iters_on_first_timestep=200,  # Number of iterations on first timestep
     )
 
-    NS_expressions.update(dict(
-        constrained_domain=TopBottom(NS_parameters["Ly"])
-    ))
 
-def mark_subdomains(subdomains, Lx, Ly, **NS_namespace):
-    lr = LeftRight(Lx)
-    #tb = TopBottom(Ly)
-    lr.mark(subdomains, 1)
-    #tb.mark(subdomains, 2)
-    return dict()
+def mark_subdomains(subdomains, Lx, **NS_namespace):
+    Faces(0, 0, Lx).mark(subdomains, 1)  # the walls
 
-def contact_angles(theta, **NS_namespace):
-    return [(theta, 1)]
 
-# Specify boundary conditions
 def create_bcs(V, subdomains, u_wall, **NS_namespace):
-    #bc_u_tb = DirichletBC(V, 0, subdomains, 2)
     bc_ux_lr = DirichletBC(V, 0, subdomains, 1)
     bc_uy_lr = DirichletBC(V, u_wall, subdomains, 1)
     return dict(u0=[bc_ux_lr],
@@ -109,24 +78,10 @@ def create_bcs(V, subdomains, u_wall, **NS_namespace):
                 phig=[])
 
 
-def average_pressure_gradient(g0, F0, q_, rho, dx, mesh, **NS_namespace):
-    # average pressure gradient
-    #return Constant(tuple(F0))
+def average_pressure_gradient(F0, **NS_namespace):
+    # An Expression, so that the controller can change it during the run.
     return Expression(("0", "-forcing"), forcing=F0[1], degree=2)
-    # rho__, g___ = q_['phig'].split(deepcopy=True)
-    # cv = rho__.vector()[:]
-    # cv += 1
-    # cv *= 0.5
-    # cv[cv < 0.0] = 0.0
-    # cv[cv > 1.0] = 1.0
-    # rho__.vector()[:] = rho[0]*cv + rho[1]*(1-cv)
-    # rho_avg = assemble(rho__ * dx)/assemble(Constant(1)*dx(domain=mesh))
-    # return Constant((rho[0]*g0[0], rho[0]*g0[1]))
 
-def acceleration(g0, **NS_namespace):
-    # (gravitational) acceleration
-    return Constant(tuple(g0))
-    #return Expression(("0", "grav"), grav=g0[1], degree=2)
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
     phig_init = interpolate(Expression(
@@ -144,91 +99,35 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, 
-                   pressure_degree, AssignedVectorFunction, 
-                   F0, g0, mu, rho, sigma, M, theta, epsilon, res, dt, **NS_namespace):
-    volume = assemble(Constant(1.) * dx(domain=mesh))
+def pre_solve_hook(mesh, newfolder, **NS_namespace):
     statsfolder = path.join(newfolder, "Stats")
-    timestampsfolder = path.join(newfolder, "Timestamps")
+    makedirs_on_root(statsfolder)
+    volume = assemble(Constant(1.) * dx(domain=mesh))
+    return dict(statsfolder=statsfolder, volume=volume, vel_prev=0, y_cm_prev=None)
 
-    # Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
-    uv = AssignedVectorFunction(u_, name="u")
 
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(statsfolder):
-        makedirs(statsfolder)
-
-    """
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
-        makedirs(timestampsfolder)
-    if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
-            keys = ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "res", "dt"]
-            for key in keys:
-                ofile.write("{}={}\n".format(key, eval(key)))
-        with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
-            ofile.write("velocity_space=P{}\n".format(velocity_degree))
-            ofile.write("pressure_space=P{}\n".format(pressure_degree))
-            ofile.write("phase_field_space=P{}\n".format(velocity_degree))
-            ofile.write("timestamps=timestamps.dat\n")
-            ofile.write("mesh=mesh.h5\n")
-            ofile.write("periodic_x=true\n")
-            ofile.write("periodic_y=true\n")
-            ofile.write("periodic_z=true\n")
-            ofile.write("rho=1.0\n")
-    with HDF5File(mesh.mpi_comm(),
-                  path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
-        h5f.write(mesh, "mesh")
-    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    """
-
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, vel_prev=0, y_cm_prev=None)
-
-"""
-def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
-    uv()
-
-    h5fname = "up_{}.h5".format(tstep)
-
-    phi__, g__ = q_['phig'].split(deepcopy=True)
-    phi__.rename("phi", "phi")
-
-    with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
-        h5f.write(uv, "u")
-        h5f.write(p_, "p")
-        h5f.write(phi__, "phi")
-
-    if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
-            ofile.write("{:.6f} {}\n".format(t, h5fname))
-"""
-
-def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
-                  sigma, epsilon, volume, g0, statsfolder, timestampsfolder,
-                  plot_interval, stat_interval, timestamps_interval,
-                  uv, mesh, acc, dt, gradp_avg, u_wall, u_target, Lx, Ly, vel_prev, rho, mu,
-                  regulator, y_cm_prev, **NS_namespace):
+def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, statsfolder,
+                  stat_interval, mesh, dt, gradp_avg, u_wall, u_target, Lx, Ly, vel_prev, rho,
+                  mu, regulator, y_cm_prev, **NS_namespace):
+    """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim, the energies per volume
+    (kinetic, interface gradient and double-well parts, gravitational), the
+    bubble's (phi = -1) area vol_c, height y_cm and velocity V_c, the mean
+    velocity V_tot, a zero column, and the driving pressure gradient."""
     returndict = dict()
 
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        u0m = assemble(q_['u0'] * dx) / volume
-        u1m = assemble(q_['u1'] * dx) / volume
-        phim = assemble(phi_ * dx) / volume
+        dX = dx(domain=mesh)
         X = SpatialCoordinate(mesh)
+        u0m = assemble(q_['u0'] * dX) / volume
+        u1m = assemble(q_['u1'] * dX) / volume
+        phim = assemble(phi_ * dX) / volume
+        vol_c, (_, y_cm), (_, V_c) = phase_moments(q_, mesh, dX)
+        V_tot = assemble(q_['u1'] * dX) / (Lx*Ly)
 
-        ind_ = compute_ind(q_)
-
-        vol_c = assemble(ind_ * dx)
-        y_cm = assemble(ind_ * X[1] * dx) / vol_c
-        V_c = assemble(ind_ * q_['u1'] * dx) / vol_c
-        V_tot = assemble(q_['u1'] * dx) / (Lx*Ly)
-
-        E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx) / volume
-        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1]*X[1]) * dx(domain=mesh)) / volume
-        E_int = 0.5 * sigma * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) / volume
-        E_pot = 0.25 * sigma / epsilon * assemble((1-phi_**2)**2 * dx) / volume
-        # Do not forget boundary term in E_int !
-
+        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
+        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1] * X[1]) * dX) / volume
+        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
         forcing = gradp_avg.forcing
         grav = 0
         if regulator is not None:
@@ -262,21 +161,9 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
             returndict["vel_prev"] = vel
 
         if MPI.rank(MPI.comm_world) == 0:
-            with open(statsfolder + "/tdata.dat", "a") as tfile:
+            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
                 entries = [u0m, u1m, phim, E_kin, E_int, E_pot, E_grav, vol_c, y_cm, V_c, V_tot, grav, forcing]
                 tfile.write(
                     ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
                     tstep, t, *entries))
-
-    """
-    if tstep % timestamps_interval == 0 and False:
-        write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    """
     return returndict
-
-
-def theend_hook(u_, p_, **NS_namespace):
-    pass
-    #u_norm = norm(u_[0].vector())
-    #if MPI.rank(MPI.comm_world) == 0 and testing:
-    #    print("Velocity norm = {0:2.6e}".format(u_norm))

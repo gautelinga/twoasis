@@ -1,19 +1,22 @@
-"""A decaying Taylor-Green vortex with a phase field in a periodic square, compared
-with its exact (manufactured) solution."""
+"""A decaying Taylor-Green vortex in a periodic square, compared with its exact
+(manufactured) solution. phi0 > 0 adds a decaying phase field of amplitude phi0,
+kept exact by a source term; with the default phi0 = 0 the flow is single-phase."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2023-08-10"
 __copyright__ = ("Copyright (C) 2023 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import makedirs, path
+from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, Constant, dx, errornorm, Expression, Function, HDF5File,
-    interpolate, MPI, near, norm, Point, RectangleMesh, SubDomain)
+    assemble, assign, dx, errornorm, Expression, Function, interpolate, MPI, norm,
+    Point, RectangleMesh)
 
 from twoasis.problems import info_red
+from twoasis.problems.TPfracStep.shared import (
+    centred, interface_energy, makedirs_on_root, PeriodicBox)
 
 ccode = dict(
     u0 = "u0*exp(-8*pow(M_PI, 2)*mu*t/(pow(L, 2)*rho))*sin(2*x[1]*M_PI/L)*cos(2*x[0]*M_PI/L)",
@@ -48,12 +51,10 @@ def compute_errors(t, exprs, q_):
     #errs['phi'] = errornorm(ue_, q_['phig'].sub(0))
     return errs
 
-def dump_stats(sigma_bar, epsilon, rho_, u_, phi_, statsfolder, tstep, t, q_, exprs, **namespace):
-    E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx)
-    E_int = sigma_bar * (
-        0.5 * epsilon * assemble((phi_.dx(0)**2 + phi_.dx(1)**2) * dx) 
-        + 0.25 / epsilon * assemble((1-phi_**2)**2 * dx))
-    
+def dump_stats(sigma, epsilon, rho_, u_, phi_, statsfolder, tstep, t, q_, exprs, mesh, **namespace):
+    E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx(domain=mesh))
+    E_int = sum(interface_energy(phi_, sigma, epsilon, dx(domain=mesh)))
+
     errs = compute_errors(t, exprs, q_)
 
     if MPI.rank(MPI.comm_world) == 0:
@@ -62,29 +63,6 @@ def dump_stats(sigma_bar, epsilon, rho_, u_, phi_, statsfolder, tstep, t, q_, ex
         with open(statsfolder + "/tdata.dat", "a") as tfile:
             tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(*items))
 
-class PBC(SubDomain):
-    def __init__(self, Lx, Ly):
-        self.Lx = Lx
-        self.Ly = Ly
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_boundary):
-        # return True if on left or bottom boundary AND NOT on one of the two slave edges
-        return bool(
-            (near(x[0], -self.Lx / 2) or near(x[1], -self.Ly / 2))
-            and (not (near(x[0], self.Lx / 2) or near(x[1], self.Ly / 2)))
-            and on_boundary)
-
-    def map(self, x, y):
-        if near(x[0], self.Lx / 2) and near(x[1], self.Ly / 2):
-            y[0] = x[0] - self.Lx
-            y[1] = x[1] - self.Ly
-        elif near(x[0], self.Lx / 2):
-            y[0] = x[0] - self.Lx
-            y[1] = x[1]
-        else:  # near(x[2], Lz/2.):
-            y[0] = x[0]
-            y[1] = x[1] - self.Ly
 
 # Create a mesh
 def mesh(L, N, **params):
@@ -92,7 +70,7 @@ def mesh(L, N, **params):
     return mesh
 
 # Override some problem specific parameters
-def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_namespace):
+def problem_parameters(NS_parameters, **NS_namespace):
     NS_parameters.update(
         T=1.0,
         L=2.0,
@@ -123,27 +101,18 @@ def problem_parameters(NS_parameters, NS_expressions, commandline_kwargs, **NS_n
         iters_on_first_timestep=20,
         AB_projection_pressure=False,)
 
-    NS_expressions.update(dict(
-        constrained_domain=PBC(NS_parameters["L"], NS_parameters["L"])
-    ))
+
+def constrained_domain(L, **params):
+    return PeriodicBox({0: centred(L), 1: centred(L)})
 
 def mark_subdomains(**NS_namespace):
     return dict()
 
-def contact_angles(**NS_namespace):
-    return []
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):
     return dict(u0=[], u1=[], p=[], phig=[])
 
-def average_pressure_gradient(F0, **NS_namespace):
-    # average pressure gradient
-    return Constant(tuple(F0))
-
-def acceleration(g0, **NS_namespace):
-    # (gravitational) acceleration
-    return Constant(tuple(g0))
 
 def phase_field_source(exprs, **NS_namespace):
     return exprs["q"]
@@ -187,45 +156,21 @@ def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, be
     
     return dict(exprs=exprs)
     
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, rho_, phi_, sigma_bar, velocity_degree, pressure_degree, AssignedVectorFunction, 
-                   F0, g0, u0, phi0, mu, rho, sigma, M, epsilon, exprs, **NS_namespace):
+def pre_solve_hook(tstep, t, q_, mesh, u_, newfolder, rho_, phi_, sigma, epsilon, exprs,
+                   **NS_namespace):
     statsfolder = path.join(newfolder, "Stats")
-    timestampsfolder = path.join(newfolder, "Timestamps")
-
-    # Vv = VectorFunctionSpace(mesh, 'CG', velocity_degree)
-    uv = AssignedVectorFunction(u_, name="u")
-
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(statsfolder):
-        makedirs(statsfolder)
-
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(timestampsfolder):
-        makedirs(timestampsfolder)
-
+    makedirs_on_root(statsfolder)
     dump_stats(**vars())
+    return dict(statsfolder=statsfolder)
 
-    with HDF5File(mesh.mpi_comm(),
-                  path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
-        h5f.write(mesh, "mesh")
-    #write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
 
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder)
-
-def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
-                  sigma_bar, epsilon, statsfolder, timestampsfolder,
-                  plot_interval, stat_interval, timestamps_interval, exprs,
-                  uv, mesh,
-                  **NS_namespace):
+def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, statsfolder, stat_interval,
+                  exprs, mesh, **NS_namespace):
+    """Write to Stats/tdata.dat: tstep, t, the kinetic and interface energies,
+    and the L2 errors of u0, u1, p and phi."""
     info_red("tstep = {}".format(tstep))
-
     if tstep % stat_interval == 0:
         dump_stats(**vars())
-        pass
-
-    if tstep % timestamps_interval == 0:
-        #write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-        pass
-    
-    return dict()
 
 def theend_hook(t, q_, u_, p_, testing, exprs, **NS_namespace):
     errs = compute_errors(t, exprs, q_)

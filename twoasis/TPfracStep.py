@@ -133,7 +133,8 @@ S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)
 
 subdomains = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
 subdomains.set_all(0)
-mark_subdomains(**vars())
+# mark_subdomains may return a dict of values to add to the namespace.
+vars().update(mark_subdomains(**vars()) or {})
 ds = Measure("ds", domain=mesh, subdomain_data=subdomains)
 normal = FacetNormal(mesh)
 

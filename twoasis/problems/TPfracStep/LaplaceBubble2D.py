@@ -23,19 +23,19 @@ __copyright__ = ("Copyright (C) 2026 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import makedirs, path
+from os import path
 
 import numpy as np
 from dolfin import (
     assemble, assign, conditional, Constant, DirichletBC, dx, Expression, gt,
-    interpolate, lt, MPI, Point, RectangleMesh, SpatialCoordinate, sqrt, SubDomain)
+    interpolate, lt, MPI, SpatialCoordinate, sqrt, SubDomain)
 
 from twoasis.problems import info_green
+from twoasis.problems.TPfracStep.shared import makedirs_on_root, rectangle_mesh
 
 
 def mesh(L, res, **params):
-    N = int(round(L / res))
-    return RectangleMesh(Point(0., 0.), Point(L, L), N, N)
+    return rectangle_mesh(L, L, res)
 
 
 def problem_parameters(NS_parameters, **NS_namespace):
@@ -90,14 +90,6 @@ def create_bcs(V, subdomains, **NS_namespace):
     return dict(u0=[bc_u], u1=[bc_u], p=[], phig=[])
 
 
-def average_pressure_gradient(F0, **NS_namespace):
-    return Constant(tuple(F0))
-
-
-def acceleration(g0, **NS_namespace):
-    return Constant(tuple(g0))
-
-
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, L, R, restart_folder, **NS_namespace):
     if restart_folder is None:
         phi_init = interpolate(Expression(
@@ -110,8 +102,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, L, R, restart_folder, *
 
 def pre_solve_hook(mesh, newfolder, L, R, epsilon, **NS_namespace):
     statsfolder = path.join(newfolder, "Stats")
-    if MPI.rank(MPI.comm_world) == 0 and not path.exists(statsfolder):
-        makedirs(statsfolder)
+    makedirs_on_root(statsfolder)
 
     # Regions where the phases are pure, away from the diffuse interface.
     X = SpatialCoordinate(mesh)

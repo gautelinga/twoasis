@@ -4,8 +4,9 @@ __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
+from dolfin import Constant
+
 from twoasis.problems import NS_parameters
-#import ufl
 
 # Default parameters NSfracStep solver
 NS_parameters.update(
@@ -26,14 +27,19 @@ NS_parameters.update(
     constant_poisson_coefficient=False,
     quadrature_degree=None,        # quadrature degree for all forms; None means 2*velocity_degree + 1
 
-    # Phase field parameters
-    phase_field_degree=1,
-    chemical_potential_degree=1,
+    # Phase field parameters. phi and g use the velocity's element.
     phase_field_fieldsplit=False,  # use a Schur fieldsplit preconditioner for the (phi, g) solve
 
     M=0.001,
     epsilon=0.04,
     sigma=1.0,
+    theta=None,          # contact angle on the boundaries marked 1 (none if None),
+                         # measured through the phase phi = +1
+
+    # Body forces: mean pressure gradient F0 and acceleration (gravity) g0,
+    # one component per dimension; None means zero.
+    F0=None,
+    g0=None,
 
     # Parameters used to tweak solver
     max_iter=1,                 # Number of inner pressure velocity iterations on timestep
@@ -157,5 +163,19 @@ def phase_field_hook(**NS_namespace):
 def mark_subdomains(**NS_namespace):
     return dict()
 
-def contact_angles(**NS_namespace):
-    return []
+def contact_angles(theta, **NS_namespace):
+    """Contact angles as a list of (angle, boundary marker): theta on the
+    boundaries marked 1, if theta is set. An angle is measured through the
+    phase phi = +1, so theta < pi/2 means that phase wets the boundary. A
+    Function in place of the angle gives cos(theta) pointwise."""
+    return [] if theta is None else [(theta, 1)]
+
+
+def average_pressure_gradient(F0, mesh, **NS_namespace):
+    """Mean pressure gradient F0 driving the flow."""
+    return Constant(tuple(F0) if F0 is not None else (0.,) * mesh.geometry().dim())
+
+
+def acceleration(g0, mesh, **NS_namespace):
+    """Body acceleration g0 (e.g. gravity)."""
+    return Constant(tuple(g0) if g0 is not None else (0.,) * mesh.geometry().dim())

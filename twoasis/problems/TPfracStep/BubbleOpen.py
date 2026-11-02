@@ -1,13 +1,22 @@
+"""A bubble in a through-flow: the velocity is prescribed at the bottom (inflow, where
+the injected phase enters) and at the top (outflow), with periodic sides."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
-__date__ = "2023-06-5"
-__copyright__ = "Copyright (C) 2023 " + __author__
+__date__ = "2023-08-08"
+__copyright__ = ("Copyright (C) 2023 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
-from twoasis.problems.TPfracStep.Porous2DFlux import PBC2, Bottom, Top, write_timestamp, read_phase_distribition
+import matplotlib.pyplot as plt
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI, norm,
+    plot, Point, RectangleMesh)
+
+from twoasis.problems import info_blue, info_red
+from twoasis.problems.TPfracStep.Porous2DFlux import (
+    Bottom, PBC2, read_phase_distribition, Top)
 
 # Create a mesh
 def mesh(Lx, Ly, res, **params):

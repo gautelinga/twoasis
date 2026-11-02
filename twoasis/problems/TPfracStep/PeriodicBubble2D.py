@@ -1,13 +1,21 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""A bubble carried by flow in a channel with no-slip walls, periodic along the channel
+and driven by a body force along it."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2024-04-09"
+__copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import numpy as np
-from os import makedirs, getcwd
-from twoasis.common.utilities import compute_ind
+from os import getcwd, makedirs, path
 import pickle
+
+import numpy as np
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    interpolate, MPI, near, Point, RectangleMesh, SpatialCoordinate, SubDomain)
+
+from twoasis.common.utilities import compute_ind
+from twoasis.problems import info_red
 
 class LeftRight(SubDomain):
     def __init__(self, Lx):

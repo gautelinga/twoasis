@@ -2,6 +2,7 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2013-11-20"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 """This is a simplest possible naive implementation of the Chorin solver.
 
 The idea is that this solver can be quickly modified and tested for
@@ -9,12 +10,16 @@ alternative implementations. In the end it can be used to validate
 the implementations of the more complex optimized solvers.
 
 """
-from dolfin import *
-from . import *
-from . import __all__
+from dolfin import (
+    CellDiameter, div, dot, dx, FacetNormal, grad, inner, lhs, nabla_grad, norm,
+    normalize, rhs, solve, system)
+from twoasis.solvers.TPfracStep import (
+    potential_linear_derivative, weighted_arithmetic_mean, weighted_geometric_mean)
+from twoasis.solvers.TPfracStep import __all__ as _solver_all
 import math
 
-__all__ += ["max_iter", "iters_on_first_timestep"]
+# A new list: extending the imported one in place would change it for every solver.
+__all__ = _solver_all + ["max_iter", "iters_on_first_timestep"]
 
 # Chorin is noniterative
 max_iter = 2

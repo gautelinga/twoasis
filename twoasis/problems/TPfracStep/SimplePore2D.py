@@ -1,13 +1,21 @@
+"""A curved meniscus moving through a single pore throat between two open ends held at
+the same pressure, periodic across the throat (mesh from meshes/lattice_mesh.py)."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
-__date__ = "2023-06-5"
-__copyright__ = "Copyright (C) 2023 " + __author__
+__date__ = "2023-06-05"
+__copyright__ = ("Copyright (C) 2023 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import numpy as np
-from os import makedirs, getcwd
-from .Porous2D import Walls
+from os import getcwd, makedirs, path
 import pickle
+
+import numpy as np
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, dx, Expression, HDF5File, interpolate,
+    Mesh, MPI, near, norm, SubDomain)
+
+from twoasis.problems import info_red
+from twoasis.problems.TPfracStep.Porous2D import Walls
 
 class PBC2(SubDomain):
     def __init__(self, Ly):

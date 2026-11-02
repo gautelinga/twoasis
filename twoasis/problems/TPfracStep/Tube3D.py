@@ -1,6 +1,19 @@
-from ..TPfracStep import *
+"""An elongated bubble in a periodic circular tube (a Taylor bubble in 3D), driven
+along the tube by a body force (mesh from meshes/tube_mesh.py)."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-11-22"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
+__license__ = "GNU Lesser GPL version 3 or any later version"
+
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, dot, dx, Expression, HDF5File,
+    interpolate, Mesh, MPI, near, norm, SubDomain)
+
+from twoasis.problems import info_red
 
 class PBCZ(SubDomain):
     def __init__(self, L, R):
@@ -201,14 +214,6 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, rho_,
                   uv, mesh,
                   **NS_namespace):
     info_red("tstep = {}".format(tstep))
-    if tstep % plot_interval == 0 and False:
-        plot(u_, title='Velocity')
-        plt.show()
-        plot(phi_, title='Phase field')
-        plt.show()
-        #plot(p_, title='Pressure')
-        #plot(q_['alfa'], title='alfa')
-        #plot(q_['beta'], title='beta')
     if tstep % stat_interval == 0:
         u0m = assemble(q_['u0'] * dx) / volume
         u1m = assemble(q_['u1'] * dx) / volume

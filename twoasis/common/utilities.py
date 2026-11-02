@@ -2,11 +2,12 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2014-10-03"
 __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import (assemble, KrylovSolver, LUSolver, Function, Constant,
+from dolfin import (assemble, Function, Constant,
     TrialFunction,TestFunction, dx, Vector, Matrix,
     FunctionSpace, Timer, div, Form, inner, grad, assign,
-    as_backend_type, VectorFunctionSpace, FunctionAssigner, PETScKrylovSolver,
+    VectorFunctionSpace, FunctionAssigner, PETScKrylovSolver,
     PETScPreconditioner, DirichletBC, split)
 
 # Import ufl (fix across installations)
@@ -386,32 +387,6 @@ class AssignedVectorFunction(Function):
         degree = V.ufl_element().degree()
         constrained_domain = V.dofmap().constrained_domain
         Vv = VectorFunctionSpace(mesh, family, degree,
-                                 constrained_domain=constrained_domain)
-
-        Function.__init__(self, Vv, name=name)
-        self.fa = [FunctionAssigner(Vv.sub(i), V) for i, _u in enumerate(u)]
-
-    def __call__(self):
-        for i, _u in enumerate(self.u):
-            self.fa[i].assign(self.sub(i), _u)
-
-
-class AssignedFunction(Function):
-    """Scalar function used for postprocessing.
-
-    Assign scalar data from mixed element using FunctionAssigner.
-    """
-
-    def __init__(self, w, name="Assigned Function"):
-
-        self.w = w
-        #assert isinstance(u, ListTensor)
-        W = w.function_space()
-        mesh = W.mesh()
-        family = w.ufl_element().family()
-        degree = S.ufl_element().degree()
-        constrained_domain = S.dofmap().constrained_domain
-        Vv = FunctionSpace(mesh, family, degree,
                                  constrained_domain=constrained_domain)
 
         Function.__init__(self, Vv, name=name)

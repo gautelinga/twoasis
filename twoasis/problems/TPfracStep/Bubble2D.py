@@ -1,13 +1,20 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""A bubble rising in a liquid column, test case 1 of the benchmark of Hysing et al.
+(2009), with no-slip walls at top and bottom and periodic sides."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-08-19"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    interpolate, MPI, near, Point, RectangleMesh, SpatialCoordinate, SubDomain)
+
 from twoasis.common.utilities import compute_ind
+from twoasis.problems import info_red
 
 #from ufl_legacy import max_value, min_value
 #from ufl import max_value, min_value

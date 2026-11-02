@@ -1,13 +1,23 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""Two-phase flow through a periodic two-dimensional porous medium of disks (mesh from
+meshes/), driven by a body force and starting from a band, a checkerboard or a saved
+state."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-03-18"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
-import numpy as np
-from os import makedirs, path, getcwd
+from os import getcwd, makedirs, path
 import pickle
+
+import numpy as np
+import matplotlib.pyplot as plt
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    Function, HDF5File, interpolate, Mesh, MPI, near, norm, plot, SubDomain,
+    VectorFunctionSpace)
+
+from twoasis.problems import info_blue, info_red
 # from .Porous3D import ccode_expr
 
 class PBC(SubDomain):

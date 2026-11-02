@@ -2,12 +2,12 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2013-06-25"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import *
+from dolfin import Constant, grad, inner, Mesh, MPI, parameters, Timer, XDMFFile
 import subprocess
 from os import getpid, path
 from collections import defaultdict
-from numpy import array, maximum, zeros
 
 
 def getMemoryUsage(rss=True):

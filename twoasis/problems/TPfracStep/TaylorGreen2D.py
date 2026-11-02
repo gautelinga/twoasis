@@ -1,12 +1,19 @@
+"""A decaying Taylor-Green vortex with a phase field in a periodic square, compared
+with its exact (manufactured) solution."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2023-08-10"
-__copyright__ = "Copyright (C) 2023 " + __author__
+__copyright__ = ("Copyright (C) 2023 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, Constant, dx, errornorm, Expression, Function, HDF5File,
+    interpolate, MPI, near, norm, Point, RectangleMesh, SubDomain)
+
+from twoasis.problems import info_red
 
 ccode = dict(
     u0 = "u0*exp(-8*pow(M_PI, 2)*mu*t/(pow(L, 2)*rho))*sin(2*x[1]*M_PI/L)*cos(2*x[0]*M_PI/L)",

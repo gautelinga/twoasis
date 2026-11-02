@@ -1,11 +1,19 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""Two-phase flow through a periodic three-dimensional porous medium (mesh from
+meshes/), driven by a body force and starting from a checkerboard of the two phases."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-11-25"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    Function, FunctionSpace, HDF5File, interpolate, Mesh, MPI, near, SubDomain)
+
+from twoasis.problems import info_red
 
 
 class PBC3(SubDomain):

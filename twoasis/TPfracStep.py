@@ -4,6 +4,7 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2013-11-06"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 
 """
 This module implements a generic form of the fractional step method for
@@ -29,11 +30,28 @@ problems/NSfracStep/__init__.py for all possible parameters.
 
 """
 import importlib
-
-from dolfin import FiniteElement, MixedElement, TestFunctions, TrialFunctions
-from twoasis.common import *
 from os import path
-#from twoasis.solvers import scalar_assemble
+
+from numpy import array
+from dolfin import (
+    as_vector, assemble, DOLFIN_EPS, dx, FacetNormal, FiniteElement, Function, FunctionSpace,
+    list_timings, Measure, MeshFunction, MixedElement, MPI, parameters, split, TestFunction,
+    TestFunctions, TimingClear, TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
+
+import twoasis.common
+import twoasis.problems
+import twoasis.problems.TPfracStep
+import twoasis.solvers.TPfracStep
+from twoasis.common import (
+    create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
+    save_solution)
+from twoasis.common.utilities import Coefficient
+from twoasis.problems import info_green, info_red, initial_memory_use, oasis_memory, OasisTimer
+
+
+def public_names(module):
+    return {name: value for name, value in vars(module).items() if not name.startswith("_")}
+
 
 commandline_kwargs = parse_command_line()
 
@@ -52,7 +70,13 @@ if MPI.rank(MPI.comm_world) == 0:
 problemmod = importlib.util.module_from_spec(problemspec)
 problemspec.loader.exec_module(problemmod)
 
-vars().update(**vars(problemmod))
+# Everything below runs in one namespace that is passed to the hooks and solver
+# functions as keyword arguments. Start it with the helpers in twoasis.common and
+# the default hooks and parameters, then let the problem module override them.
+vars().update({name: getattr(twoasis.common, name) for name in twoasis.common.__all__})
+vars().update(public_names(twoasis.problems))
+vars().update(public_names(twoasis.problems.TPfracStep))
+vars().update(public_names(problemmod))
 
 # Update problem specific parameters
 problem_parameters(**vars())
@@ -77,8 +101,11 @@ if restart_folder is not None:
     tstep = params["tstep"]
 
 # Import chosen functionality from solvers
+# Each name in the solver's __all__ comes from the solver module, or else from
+# the shared functions in twoasis.solvers.TPfracStep.
 solver = importlib.import_module('.'.join(('twoasis.solvers.TPfracStep', solver)))
-vars().update({name:solver.__dict__[name] for name in solver.__all__})
+vars().update({name: getattr(solver, name) if hasattr(solver, name)
+               else getattr(twoasis.solvers.TPfracStep, name) for name in solver.__all__})
 
 # Create lists of components solved for
 dim = mesh.geometry().dim()

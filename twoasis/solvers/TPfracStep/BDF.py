@@ -1,14 +1,27 @@
-from dolfin import *
-from ..TPfracStep import *
-from ..TPfracStep import __all__
+"""Fractional-step solver for the two-phase model with BDF time stepping (first or
+second order) and incremental pressure correction."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-09-16"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
+__license__ = "GNU Lesser GPL version 3 or any later version"
+
 import math
+
 import numpy as np
+from dolfin import (
+    as_backend_type, as_vector, assemble, assign, Constant, DOLFIN_EPS_LARGE, dot, dx,
+    Function, grad, inner, lhs, Matrix, nabla_grad, normalize, rhs, Timer, Vector,
+    VectorSpaceBasis)
+
 from twoasis.problems import info_blue
+from twoasis.solvers.TPfracStep import __all__ as _solver_all
+from twoasis.solvers.TPfracStep import (
+    krylov_get_solvers, potential_linear_derivative, wall_potential_linear_derivative)
 
-#__all__ += ["max_iter", "iters_on_first_timestep"]
+# The functions the main script takes from a solver.
+__all__ = list(_solver_all)
 
-#max_iter = 1 #0                 # Number of inner pressure velocity iterations on timestep
-#iters_on_first_timestep = 10
 
 def has_previous_level(x_1, x_2, fields):
     """Whether x_2 holds a usable solution at t - 2*dt for the given fields.

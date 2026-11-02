@@ -1,10 +1,17 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""A drop deforming in plane Couette flow between two walls moving in opposite
+directions, periodic along the walls."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-03-18"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
 import matplotlib.pyplot as plt
+from dolfin import (
+    assign, DirichletBC, Expression, Function, interpolate, MPI, near, norm, plot,
+    SubDomain, UnitSquareMesh, VectorFunctionSpace)
+
+from twoasis.problems import info_red
 
 #set_log_active(False)
 class PeriodicDomain(SubDomain):

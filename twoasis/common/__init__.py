@@ -1,7 +1,27 @@
-from .io import *
-from .utilities import *
+# Based on oasis/common/__init__.py from Oasis, Copyright (C) Mikael Mortensen
+# <mikaem@math.uio.no>, GNU Lesser GPL version 3 or any later version.
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
+from .io import (
+    check_if_kill, check_if_reset_statistics, create_initial_folders, init_from_restart,
+    merge_visualization_files, merge_xml_files, save_checkpoint_solution_h5, save_solution,
+    save_tstep_solution_h5)
+from .utilities import (
+    A_cache, assemble_matrix, AssignedVectorFunction, CG1Function, compute_ind, DivFunction,
+    GradFunction, homogenize, LESsource, Mat_cache_dict, NNsource, OasisFunction,
+    PhiGradFunction, Solver_cache, Solver_cache_dict, TPsource)
 import sys
 import json
+
+__all__ = [
+    "parse_command_line",
+    # io
+    "check_if_kill", "check_if_reset_statistics", "create_initial_folders", "init_from_restart",
+    "merge_visualization_files", "merge_xml_files", "save_checkpoint_solution_h5", "save_solution",
+    "save_tstep_solution_h5",
+    # utilities
+    "A_cache", "assemble_matrix", "AssignedVectorFunction", "CG1Function", "compute_ind",
+    "DivFunction", "GradFunction", "homogenize", "LESsource", "Mat_cache_dict", "NNsource",
+    "OasisFunction", "PhiGradFunction", "Solver_cache", "Solver_cache_dict", "TPsource"]
 
 # Parse command-line keyword arguments
 def parse_command_line():

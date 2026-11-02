@@ -1,13 +1,22 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""Displacement in a three-dimensional porous medium (mesh from meshes/): one phase
+enters at a prescribed velocity at the bottom and leaves through the top, starting
+from a flat interface at a given height."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2024-02-28"
+__copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import numpy as np
-from os import makedirs, getcwd
+from os import getcwd, makedirs, path
 import pickle
+
+import numpy as np
 import h5py
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    Function, FunctionSpace, HDF5File, interpolate, Mesh, MPI, near, SubDomain)
+
+from twoasis.problems import info_red
 
 comm = MPI.comm_world
 rank = comm.Get_rank()

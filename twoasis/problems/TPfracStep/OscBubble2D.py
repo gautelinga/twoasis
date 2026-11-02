@@ -1,13 +1,20 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""A water drop in air (CGS units) whose circular shape is perturbed by a mode-3
+cosine, oscillating as it relaxes, in a box with no-slip walls."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-09-18"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    interpolate, MPI, Point, RectangleMesh, SpatialCoordinate, SubDomain)
+
 from twoasis.common.utilities import compute_ind
+from twoasis.problems import info_red
 
 #from ufl_legacy import max_value, min_value
 

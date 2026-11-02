@@ -2,19 +2,19 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2013-11-26"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from os import makedirs, getcwd, listdir, remove, system, path
+from os import makedirs, listdir, remove, system, path
 from xml.etree import ElementTree as ET
 import pickle
 import time
 import glob
-from dolfin import (MPI, Function, XDMFFile, HDF5File,
-    VectorFunctionSpace, FunctionAssigner, assign)
+from dolfin import MPI, Function, XDMFFile, HDF5File, assign
 from twoasis.problems import info_red
 
 __all__ = ["create_initial_folders", "save_solution", "save_tstep_solution_h5",
            "save_checkpoint_solution_h5", "check_if_kill", "check_if_reset_statistics",
-           "init_from_restart", "merge_visualization_files", "merge_xml_files", "MPI"]
+           "init_from_restart", "merge_visualization_files", "merge_xml_files"]
 
 
 def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,

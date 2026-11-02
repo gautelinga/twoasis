@@ -1,12 +1,20 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""The Rayleigh-Taylor instability: a heavy fluid above a light one under gravity, with
+a cosine perturbation of the interface, periodic sides and no-slip top and bottom."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-09-08"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    interpolate, MPI, near, Point, RectangleMesh, SpatialCoordinate, SubDomain)
+
 from twoasis.common.utilities import compute_ind
+from twoasis.problems import info_red
 
 #from ufl_legacy import max_value, min_value
 

@@ -2,9 +2,11 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2013-11-25"
 __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import *
-from twoasis.solvers import *
+from dolfin import Constant, norm, PETScKrylovSolver, PETScOptions, PETScPreconditioner, Timer
+from twoasis.problems import info_blue
+from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
 # Use the UFL that dolfin was built with (ufl_legacy in recent installations).
 import ufl_legacy as ufl
@@ -159,8 +161,8 @@ def velocity_update(**NS_namespace):
     """Update the velocity after finishing pressure velocity iterations."""
     pass
 
-def print_velocity_pressure_info(num_iter, print_velocity_pressure_convergence, norm,
-                                             info_blue, inner_iter, udiff, dp_, **NS_namespace):
+def print_velocity_pressure_info(num_iter, print_velocity_pressure_convergence,
+                                 inner_iter, udiff, dp_, **NS_namespace):
     if num_iter > 1 and print_velocity_pressure_convergence:
         if inner_iter == 1:
             info_blue('  Inner iterations velocity pressure:')

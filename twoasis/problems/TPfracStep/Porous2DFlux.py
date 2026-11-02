@@ -1,16 +1,25 @@
+"""Displacement in a two-dimensional porous medium of disks (mesh from meshes/): one
+phase enters at a prescribed velocity at the bottom and pushes the other out through
+the top, starting from a flat interface or a saved state."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
-__date__ = "2023-06-5"
-__copyright__ = "Copyright (C) 2023 " + __author__
+__date__ = "2022-11-20"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
-import numpy as np
-from os import makedirs, getcwd
-from .Porous2D import Walls
+from os import getcwd, makedirs, path
 import pickle
+
+import numpy as np
 import h5py
+from dolfin import (
+    assemble, assign, compile_cpp_code, CompiledExpression, Constant, DirichletBC, dx,
+    Expression, Function, HDF5File, interpolate, Mesh, MPI, near, norm, SubDomain,
+    Timer)
 from xml.etree import cElementTree as ET
+
+from twoasis.problems import info_blue, info_red
+from twoasis.problems.TPfracStep.Porous2D import Walls
 
 #from addictif.common.utils import helpers
 

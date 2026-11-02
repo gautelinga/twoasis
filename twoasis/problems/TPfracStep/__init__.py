@@ -2,8 +2,9 @@ __author__ = "Mikael Mortensen <mikaem@math.uio.no>"
 __date__ = "2014-04-09"
 __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
+# Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from twoasis.problems import *
+from twoasis.problems import NS_parameters
 #import ufl
 
 # Default parameters NSfracStep solver

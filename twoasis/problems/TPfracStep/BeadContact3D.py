@@ -1,13 +1,21 @@
-__author__ = "Mikael Mortensen <mikaem@math.uio.no>"
-__date__ = "2013-06-25"
-__copyright__ = "Copyright (C) 2013 " + __author__
+"""A bead between two parallel plates that it touches, in a cell periodic in x and y;
+the second phase starts as a thin cylinder along x and meets bead and plates at set
+contact angles."""
+__author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
+__date__ = "2022-05-06"
+__copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from re import sub
-from ..TPfracStep import *
-import matplotlib.pyplot as plt
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+import matplotlib.pyplot as plt
+from dolfin import (
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
+    HDF5File, interpolate, Mesh, MPI, near, norm, plot, SubDomain)
+
+from twoasis.problems import info_red
 
 class Bead(SubDomain):
     def __init__(self, R):

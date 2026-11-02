@@ -17,9 +17,20 @@ Stats/steady.dat:  t dP sigma/R dP/(sigma/R)-1 max|u| R_eq dP/(sigma/R_eq)-1
 - Time step: dt < sqrt(rho*h**3/(2*pi*sigma)) (explicit surface tension); a very
   viscous bubble needs dt ~ 1/(mu_in - mu_out).
 """
-from ..TPfracStep import *
+__author__ = "Gaute Linga <gaute.linga@ntnu.no>"
+__date__ = "2026-11-02"
+__copyright__ = ("Copyright (C) 2026 " + __author__ + "; based on Oasis, "
+                 "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
+__license__ = "GNU Lesser GPL version 3 or any later version"
+
+from os import makedirs, path
+
 import numpy as np
-from os import makedirs
+from dolfin import (
+    assemble, assign, conditional, Constant, DirichletBC, dx, Expression, gt,
+    interpolate, lt, MPI, Point, RectangleMesh, SpatialCoordinate, sqrt, SubDomain)
+
+from twoasis.problems import info_green
 
 
 def mesh(L, res, **params):

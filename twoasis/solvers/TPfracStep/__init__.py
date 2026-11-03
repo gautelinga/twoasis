@@ -5,11 +5,13 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
 from dolfin import (
-    Constant, Function, FunctionAssigner, norm, PETScDMCollection, PETScKrylovSolver,
-    PETScOptions, PETScPreconditioner, Timer)
+    as_backend_type, assemble, Constant, dot, dx, Function, FunctionAssigner, grad,
+    inner, lhs, Matrix, norm, PETScDMCollection, PETScKrylovSolver, PETScOptions,
+    PETScPreconditioner, rhs, Timer, Vector, VectorSpaceBasis)
 from twoasis.problems import info_blue
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
+import numpy as np
 # Use the UFL that dolfin was built with (ufl_legacy in recent installations).
 try:
     import ufl_legacy as ufl
@@ -237,6 +239,75 @@ def add_contact_angles(F, angles, sigma, fwprime, eta, ds):
         costheta = theta if isinstance(theta, Function) else math.cos(theta)
         F += sigma * costheta * fwprime * eta * ds(mark)
     return F
+
+def attach_pressure_nullspace(Ap, x_, Q):
+    """Attach the null space of constant pressures to the pressure matrix Ap
+    (for a pressure without Dirichlet conditions) and return it."""
+    null_vec = Vector(x_['p'])
+    Q.dofmap().set(null_vec, 1.0)
+    null_vec *= 1.0 / null_vec.norm('l2')
+    null_space = VectorSpaceBasis([null_vec])
+    as_backend_type(Ap).set_nullspace(null_space)
+    return null_space
+
+
+def phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
+                       epsilon, angles, ds, assemble_matrix):
+    """Forms and matrices of the (phi, g) system of the Cahn-Hilliard equation.
+
+    The double-well potential is linearized about phi_1 (tangent line), with an
+    error of O(dt^2). The matrix is split in two parts:
+      a_pf_full  the part that changes every timestep: advection by u_adv and the
+                 linearized potential, including the wall terms. One form.
+      Apf_const  the part that does not: mobility diffusion, the mass matrix for g
+                 and the capillary term, plus the time-derivative term
+                 alpha0*Mpf[0], which assemble_phase_field_system adds (the
+                 coefficient it holds is kept in Apf_alpha).
+    Lpft is the right-hand side of the linearized potential.
+    """
+    fprime = potential_linear_derivative(phi, phi_1)
+    fwprime = wall_potential_linear_derivative(phi, phi_1)
+    Fpft = add_contact_angles(-sigma_bar / epsilon * fprime * eta * dx,
+                              angles, sigma, fwprime, eta, ds)
+    apft, Lpft = lhs(Fpft), rhs(Fpft)
+
+    Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
+    Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx),
+           assemble_matrix(inner(grad(phi), grad(eta)) * dx))
+    # Conservative advection of phi: -int phi (u.grad xi) dx + int (u.n) phi xi ds.
+    # The boundary term gives the right flux at open boundaries.
+    a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
+
+    Apf_const = Matrix(Mpf[0])
+    Apf_const.zero()
+    Apf_const.axpy(M, Kpf[0], True)
+    Apf_const.axpy(1., Mpf[1], True)
+    Apf_const.axpy(-sigma_bar * epsilon, Kpf[1], True)
+    return dict(Apf=Matrix(Mpf[0]), Mpf=Mpf, Lpft=Lpft, a_pf_full=a_pf + apft,
+                Apf_const=Apf_const, Apf_alpha=np.zeros(1))
+
+
+def assemble_phase_field_system(alpha0, Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
+                                Lpft, b, bpf, fpf, t):
+    """Assemble the phase-field matrix Apf, with the time-derivative term
+    alpha0*Mpf[0], and the parts of the right-hand side b that do not involve
+    earlier timesteps: the linearized potential and the source term bpf (if any).
+    The caller adds the time-derivative terms of the earlier timesteps to b."""
+    if alpha0 != Apf_alpha[0]:
+        # The constant part only changes when the time-derivative coefficient does.
+        Apf_const.axpy(alpha0 - Apf_alpha[0], Mpf[0], True)
+        Apf_alpha[0] = alpha0
+
+    assemble(a_pf_full, tensor=Apf)  # advection + linearized potential
+    Apf.axpy(1., Apf_const, True)    # + diffusion, g-mass, capillary, dt-mass
+
+    assemble(Lpft, tensor=b)
+    # Source term (used by manufactured solutions)
+    if bpf:
+        if "t" in getattr(fpf, "_user_parameters", {}):
+            fpf.t = t
+        assemble(bpf[0] * dx, tensor=bpf[1])
+        b.axpy(1.0, bpf[1])
 
 def weighted_arithmetic_mean(a, phi):
     phi_bar = ufl.min_value(ufl.max_value(phi, -1.0), 1.0)

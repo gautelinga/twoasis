@@ -7,16 +7,13 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
 from dolfin import (
-    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
-    interpolate, MPI, SubDomain)
+    assign, DirichletBC, DOLFIN_EPS_LARGE, Expression, interpolate, SubDomain)
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, interface_energy, load_mesh, makedirs_on_root, PeriodicBox)
+    centred, load_mesh, PeriodicBox, setup_stats, standard_stats, write_tdata)
 
 class Bead(SubDomain):
     def __init__(self, R):
@@ -127,10 +124,7 @@ def initialize(q_, q_1, x_1, x_2, bcs, epsilon, r, VV, Ly, **NS_namespace):
 
 
 def pre_solve_hook(mesh, newfolder, **NS_namespace):
-    statsfolder = path.join(newfolder, "Stats")
-    makedirs_on_root(statsfolder)
-    volume = assemble(Constant(1.) * dx(domain=mesh))
-    return dict(statsfolder=statsfolder, volume=volume)
+    return setup_stats(mesh, newfolder)
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfolder,
@@ -139,13 +133,5 @@ def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfol
     volume (kinetic, interface gradient and double-well parts)."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        dX = dx(domain=mesh)
-        um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(3)]
-        phim = assemble(phi_ * dX) / volume
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = um + [phim, E_kin, E_int, E_pot]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+        write_tdata(statsfolder, tstep, t,
+                    standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh))

@@ -2,24 +2,25 @@
 along its length, seen in a frame moving with the bubble: the walls move at u_wall,
 and a controller (regulator = "V_c" or "y_cm") adjusts the mean pressure gradient to
 hold the bubble at u_target relative to the walls. Without the controller nothing
-drives the flow (F0 = g0 = 0): the moving walls just drag the fluid along."""
+drives the flow (F0 = g0 = 0): the moving walls just drag the fluid along.
+
+With the default dt = 0.005, a 2-time-unit run is within 0.3% of one at dt = 0.0016
+in kinetic energy and bubble position; at dt = 0.02 the kinetic energy of the
+translating fluid decays by 13% over that time. The controller acts every
+stat_interval*dt, 0.2 time units by default."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-08-30"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
-from dolfin import (
-    assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI,
-    SpatialCoordinate)
+from dolfin import assemble, assign, DirichletBC, dx, Expression, interpolate
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    Faces, interface_energy, makedirs_on_root, PeriodicBox, phase_moments,
-    rectangle_mesh)
+    Faces, gravitational_energy, PeriodicBox, phase_moments, rectangle_mesh,
+    setup_stats, standard_stats, write_tdata)
 
 
 def mesh(Lx, Ly, res, **params):
@@ -37,7 +38,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         Ly=2,
         res=1./64,
         R=0.4,
-        dt=0.02,
+        dt=0.005,
         rho=[1000., 100.],
         mu=[10., 1.],
         theta=np.pi/2,
@@ -50,14 +51,18 @@ def problem_parameters(NS_parameters, **NS_namespace):
         g0=[0., 0.],
         velocity_degree=1,
         folder="taylorbubble2d_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
-        print_intermediate_info=10,
+        plot_interval=40,
+        stat_interval=40,
+        timestamps_interval=40,
+        save_step=40,
+        checkpoint=40,
+        print_intermediate_info=40,
         use_krylov_solvers=True,
         regulator=None,  # "V_c" or "y_cm"
+        # The controller's state (forcing, vel_prev, y_cm_prev), set during the
+        # run. It is saved with the checkpoint's parameters, so that a restart
+        # continues the control where it stopped.
+        controller=None,
         solver="IPCS",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
@@ -78,9 +83,10 @@ def create_bcs(V, subdomains, u_wall, **NS_namespace):
                 phig=[])
 
 
-def average_pressure_gradient(F0, **NS_namespace):
+def average_pressure_gradient(F0, controller, **NS_namespace):
     # An Expression, so that the controller can change it during the run.
-    return Expression(("0", "-forcing"), forcing=F0[1], degree=2)
+    forcing = F0[1] if controller is None else controller["forcing"]
+    return Expression(("0", "-forcing"), forcing=forcing, degree=2)
 
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
@@ -99,35 +105,27 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(mesh, newfolder, **NS_namespace):
-    statsfolder = path.join(newfolder, "Stats")
-    makedirs_on_root(statsfolder)
-    volume = assemble(Constant(1.) * dx(domain=mesh))
-    return dict(statsfolder=statsfolder, volume=volume, vel_prev=0, y_cm_prev=None)
+def pre_solve_hook(mesh, newfolder, regulator, **NS_namespace):
+    if regulator not in (None, "V_c", "y_cm"):
+        raise ValueError("Unknown regulator {!r}; use None, 'V_c' or 'y_cm'".format(regulator))
+    return setup_stats(mesh, newfolder)
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, statsfolder,
-                  stat_interval, mesh, dt, gradp_avg, u_wall, u_target, Lx, Ly, vel_prev, rho,
-                  mu, regulator, y_cm_prev, **NS_namespace):
+                  stat_interval, mesh, dt, gradp_avg, u_wall, u_target, Lx, Ly, rho, mu,
+                  regulator, NS_parameters, **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim, the energies per volume
     (kinetic, interface gradient and double-well parts, gravitational), the
     bubble's (phi = -1) area vol_c, height y_cm and velocity V_c, the mean
     velocity V_tot, a zero column, and the driving pressure gradient."""
-    returndict = dict()
-
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         dX = dx(domain=mesh)
-        X = SpatialCoordinate(mesh)
-        u0m = assemble(q_['u0'] * dX) / volume
-        u1m = assemble(q_['u1'] * dX) / volume
-        phim = assemble(phi_ * dX) / volume
+        entries = standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
+        entries.append(gravitational_energy(rho_, g0, volume, mesh))
         vol_c, (_, y_cm), (_, V_c) = phase_moments(q_, mesh, dX)
         V_tot = assemble(q_['u1'] * dX) / (Lx*Ly)
 
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
-        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1] * X[1]) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
         forcing = gradp_avg.forcing
         grav = 0
         if regulator is not None:
@@ -139,31 +137,21 @@ def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, stat
             alpha = rho[0] * 0.25 * (1+k)**2 / tau**2
             beta = rho[0] * k / tau
 
-            if regulator == "V_c":
-                vel = V_c
-            elif regulator == "y_cm":
-                if y_cm_prev is None:
-                    # First sample of this run: there is no earlier position
-                    # to compare with, so use the bubble velocity.
-                    vel = V_c
-                else:
-                    # Remove the jump of ~Ly when the bubble crosses the
-                    # periodic top/bottom boundary.
-                    dy = y_cm - y_cm_prev
-                    dy -= Ly * round(dy / Ly)
-                    vel = dy / (stat_interval * dt)
-                returndict["y_cm_prev"] = y_cm
+            state = NS_parameters["controller"] or dict(vel_prev=0., y_cm_prev=None)
+            if regulator == "y_cm" and state["y_cm_prev"] is not None:
+                # Remove the jump of ~Ly when the bubble crosses the periodic
+                # top/bottom boundary.
+                dy = y_cm - state["y_cm_prev"]
+                dy -= Ly * round(dy / Ly)
+                vel = dy / (stat_interval * dt)
             else:
-                exit("Unknown regulator")
+                # Regulating V_c, or the first sample of y_cm: there is no
+                # earlier position to compare with, so use the bubble velocity.
+                vel = V_c
 
-            forcing += alpha * (u_target + u_wall - vel) * stat_interval * dt - beta * (vel - vel_prev)
+            forcing += (alpha * (u_target + u_wall - vel) * stat_interval * dt
+                        - beta * (vel - state["vel_prev"]))
             gradp_avg.forcing = forcing
-            returndict["vel_prev"] = vel
+            NS_parameters["controller"] = dict(forcing=forcing, vel_prev=vel, y_cm_prev=y_cm)
 
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, E_grav, vol_c, y_cm, V_c, V_tot, grav, forcing]
-                tfile.write(
-                    ("{:d} {:.8f} " + " ".join(["{:.8f}" for _ in entries]) + "\n").format(
-                    tstep, t, *entries))
-    return returndict
+        write_tdata(statsfolder, tstep, t, entries + [vol_c, y_cm, V_c, V_tot, grav, forcing])

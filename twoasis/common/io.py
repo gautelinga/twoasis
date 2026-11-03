@@ -4,7 +4,8 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from os import makedirs, listdir, remove, system, path
+from os import makedirs, listdir, remove, rename, path
+import shutil
 from xml.etree import ElementTree as ET
 import pickle
 import time
@@ -115,44 +116,38 @@ _TIMESERIES_OUTPUT = {}
 
 
 def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
-    """Overwrite solution in Checkpoint folder.
+    """Write the parameters and the current and previous levels of every field
+    to Checkpoint/.
 
-    For safety reasons, in case the solver is interrupted, take backup of
-    solution first.
-
-    Must be restarted using the same mesh-partitioning. This will be fixed
-    soon. (MM)
-
+    The files are written to Checkpoint.new/, which then replaces Checkpoint/ by
+    renaming, so a run stopped while writing leaves the last complete checkpoint
+    in place. The fields are stored in the parallel dof order, so a restart must
+    use the same number of processes (post_import_problem checks this).
     """
+    comm = MPI.comm_world
     checkpointfolder = path.join(newfolder, "Checkpoint")
-    NS_parameters["num_processes"] = MPI.size(MPI.comm_world)
-    if MPI.rank(MPI.comm_world) == 0:
-        if path.exists(path.join(checkpointfolder, "params.dat")):
-            system('cp {0} {1}'.format(path.join(checkpointfolder, "params.dat"),
-                                       path.join(checkpointfolder, "params_old.dat")))
-        f = open(path.join(checkpointfolder, "params.dat"), 'wb')
-        pickle.dump(NS_parameters,  f)
-
-    MPI.barrier(MPI.comm_world)
+    tmpfolder = checkpointfolder + ".new"
+    oldfolder = checkpointfolder + ".old"
+    NS_parameters["num_processes"] = MPI.size(comm)
+    if MPI.rank(comm) == 0:
+        # Left over if an earlier run stopped while writing.
+        for folder in (tmpfolder, oldfolder):
+            shutil.rmtree(folder, ignore_errors=True)
+        makedirs(tmpfolder)
+        with open(path.join(tmpfolder, "params.dat"), "wb") as f:
+            pickle.dump(NS_parameters, f)
+    MPI.barrier(comm)
     for ui in q_:
-        h5file = path.join(checkpointfolder, ui + '.h5')
-        oldfile = path.join(checkpointfolder, ui + '_old.h5')
-        # For safety reasons...
-        if path.exists(h5file):
-            if MPI.rank(MPI.comm_world) == 0:
-                system('cp {0} {1}'.format(h5file, oldfile))
-        MPI.barrier(MPI.comm_world)
-        ###
-        newfile = HDF5File(MPI.comm_world, h5file, 'w')
-        newfile.flush()
-        newfile.write(q_[ui].vector(), '/current')
-        newfile.write(q_1[ui].vector(), '/previous')
-        if path.exists(oldfile):
-            if MPI.rank(MPI.comm_world) == 0:
-                system('rm {0}'.format(oldfile))
-        MPI.barrier(MPI.comm_world)
-    if MPI.rank(MPI.comm_world) == 0 and path.exists(path.join(checkpointfolder, "params_old.dat")):
-        system('rm {0}'.format(path.join(checkpointfolder, "params_old.dat")))
+        with HDF5File(comm, path.join(tmpfolder, ui + ".h5"), "w") as h5file:
+            h5file.write(q_[ui].vector(), "/current")
+            h5file.write(q_1[ui].vector(), "/previous")
+    MPI.barrier(comm)
+    if MPI.rank(comm) == 0:
+        if path.exists(checkpointfolder):
+            rename(checkpointfolder, oldfolder)
+        rename(tmpfolder, checkpointfolder)
+        shutil.rmtree(oldfolder)
+    MPI.barrier(comm)
 
 
 def check_if_kill(folder, killtime, total_timer, key='killtwoasis'):

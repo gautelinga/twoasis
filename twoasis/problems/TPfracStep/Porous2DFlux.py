@@ -10,15 +10,15 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI
+from dolfin import assign, DirichletBC, Expression, interpolate
 
 from twoasis.common.io import load_timeseries
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep import Porous2D
 from twoasis.problems.TPfracStep.Porous2D import get_fname, Walls
 from twoasis.problems.TPfracStep.shared import (
-    centred, Faces, interface_energy, makedirs_on_root,
-    PeriodicBox, read_phase_field, write_timestamp, write_timestamps_info)
+    centred, Faces, makedirs_on_root, PeriodicBox, read_phase_field, setup_stats,
+    standard_stats, write_tdata, write_timestamp, write_timestamps_info)
 
 # The mesh and its file name are those of Porous2D.
 mesh = Porous2D.mesh
@@ -130,18 +130,17 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
                    phase_field_degree, AssignedVectorFunction, constrained_domain, **NS_namespace):
-    volume = assemble(Constant(1.) * dx(domain=mesh))
-    statsfolder = path.join(newfolder, "Stats")
+    stats = setup_stats(mesh, newfolder)
     timestampsfolder = path.join(newfolder, "Timestamps")
     uv = AssignedVectorFunction(u_, name="u")
-    makedirs_on_root(statsfolder, timestampsfolder)
+    makedirs_on_root(timestampsfolder)
     write_timestamps_info(timestampsfolder, mesh,
                           {key: NS_namespace[key] for key in
                            ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt", "Lx", "Ly"]},
                           velocity_degree, pressure_degree, phase_field_degree,
                           constrained_domain)
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
+    return dict(uv=uv, timestampsfolder=timestampsfolder, **stats)
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,
@@ -151,15 +150,7 @@ def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, stat
     to Timestamps/ every timestamps_interval steps."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        dX = dx(domain=mesh)
-        um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(2)]
-        phim = assemble(phi_ * dX) / volume
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = um + [phim, E_kin, E_int, E_pot]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+        write_tdata(statsfolder, tstep, t,
+                    standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh))
     if tstep % timestamps_interval == 0:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)

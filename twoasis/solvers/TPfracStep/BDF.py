@@ -11,14 +11,13 @@ import math
 import numpy as np
 from dolfin import (
     as_backend_type, as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx,
-    Function, grad, inner, lhs, Matrix, nabla_grad, normalize, rhs, Timer, Vector,
-    VectorSpaceBasis)
+    Function, grad, inner, Matrix, nabla_grad, normalize, Timer)
 
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    add_contact_angles, krylov_get_solvers, PhaseFieldOnVelocitySpace,
-    potential_linear_derivative, set_mixed_fields, wall_potential_linear_derivative)
+    assemble_phase_field_system, attach_pressure_nullspace, krylov_get_solvers,
+    phase_field_system, PhaseFieldOnVelocitySpace, set_mixed_fields)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -84,34 +83,11 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     #rho_ * u_1 - M * drho_ * grad(g_)
     a_conv = inner(v, dot(u_adv, nabla_grad(u))) * dx
 
-    # Linearize the double-well potential about phi_1 (tangent line). The error
-    # of this linearization is O(dt^2), the same order as BDF2.
-    fprime = potential_linear_derivative(phi, phi_1)
-    fwprime = wall_potential_linear_derivative(phi, phi_1)
-
-    Fpft = add_contact_angles(-sigma_bar / epsilon * fprime * eta * dx,
-                              angles, sigma, fwprime, eta, ds)
-    apft, Lpft = lhs(Fpft), rhs(Fpft)
-
-    Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
-    a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
-    Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx), assemble_matrix(inner(grad(phi), grad(eta)) * dx))
-    Apf = Matrix(Mpf[0])
-
-    # The part of the phase-field matrix that changes every timestep: advection
-    # and the linearized potential, including the wall terms. Assembled as one form.
-    a_pf_full = a_pf + apft
-
-    # The part that does not change: mobility diffusion, the mass matrix for g and
-    # the capillary term. phase_field_assemble adds the time-derivative term
-    # alpha[0]*Mpf[0] whenever alpha[0] changes: on the first step, and when
-    # switching from BDF1 to BDF2.
-    Apf_const = Matrix(Mpf[0])
-    Apf_const.zero()
-    Apf_const.axpy(M, Kpf[0], True)
-    Apf_const.axpy(1., Mpf[1], True)
-    Apf_const.axpy(-sigma_bar * epsilon, Kpf[1], True)
-    Apf_alpha = np.zeros(1)
+    # Phase-field matrices and forms. phase_field_assemble adds the time-derivative
+    # term alpha[0]*Mpf[0] to the constant part whenever alpha[0] changes: on the
+    # first step, and when switching from BDF1 to BDF2.
+    pf = phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
+                            epsilon, angles, ds, assemble_matrix)
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
@@ -147,8 +123,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
 
     # Create dictionary to be returned into global NS namespace
     d = dict(A=A, Md=Md, Ai=Ai, Apd=Apd, Apt=Apt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg,
-             Apf=Apf, Mpf=Mpf, Lpft=Lpft, alpha=alpha, beta=beta, bdf1_tstep=bdf1_tstep,
-             a_pf_full=a_pf_full, Apf_const=Apf_const, Apf_alpha=Apf_alpha)
+             alpha=alpha, beta=beta, bdf1_tstep=bdf1_tstep, **pf)
 
     TPT = TPsource(mu_, u_adv, V, name="N")
 
@@ -275,16 +250,6 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
     else:
         x_['p'].axpy(1., x_1['p'])
 
-def attach_pressure_nullspace(Ap, x_, Q):
-    """Create null space basis object and attach to Krylov solver."""
-    null_vec = Vector(x_['p'])
-    Q.dofmap().set(null_vec, 1.0)
-    null_vec *= 1.0 / null_vec.norm('l2')
-    Aa = as_backend_type(Ap)
-    null_space = VectorSpaceBasis([null_vec])
-    Aa.set_nullspace(null_space)
-    return null_space
-
 def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, rho_inv_, **NS_namespace):
     """Add the pressure gradient to the rhs of the tentative velocity system."""
     b[ui].zero()
@@ -395,21 +360,8 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
         u_adv[i].vector().axpy(beta[1], x_2[ui])
 
     t1 = Timer("Phase field assemble")
-    if alpha[0] != Apf_alpha[0]:
-        # Update the time-derivative term in the constant part. alpha[0] only
-        # changes on the first step and when switching from BDF1 to BDF2.
-        Apf_const.axpy(alpha[0] - Apf_alpha[0], Mpf[0], True)
-        Apf_alpha[0] = alpha[0]
-
-    assemble(a_pf_full, tensor=Apf)  # advection + linearized potential
-    Apf.axpy(1., Apf_const, True)    # + diffusion, g-mass, capillary, dt-mass
-
-    assemble(Lpft, tensor=b['phig'])
-    if bpf:
-        if "t" in getattr(fpf, "_user_parameters", {}):
-            fpf.t = t
-        assemble(bpf[0] * dx, tensor=bpf[1])
-        b['phig'].axpy(1.0, bpf[1])
+    assemble_phase_field_system(alpha[0], Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
+                                Lpft, b['phig'], bpf, fpf, t)
 
     # Add mass
     b['phig'].axpy(-alpha[1], Mpf[0] * x_1['phig'])

@@ -1,5 +1,8 @@
 """A bubble carried by flow in a channel with no-slip walls, periodic along the channel
-and driven by a body force along it."""
+and driven by a body force along it.
+
+The default dt is at the capillary time-step limit sqrt(rho h^3/(2 pi sigma)) ~ 2.5e-4
+(h = res/2 for P2): with dt = 5e-4 or more the run blows up within ~0.03 time units."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2024-04-09"
 __copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
@@ -7,15 +10,12 @@ __copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 
-from os import path
-
 import numpy as np
-from dolfin import assemble, assign, DirichletBC, dx, Expression, interpolate, MPI
+from dolfin import assign, DirichletBC, dx, Expression, interpolate
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep import Bubble2D
-from twoasis.problems.TPfracStep.shared import (
-    interface_energy, phase_moments)
+from twoasis.problems.TPfracStep.shared import phase_moments, standard_stats, write_tdata
 
 
 # Periodic along the channel, walls at top and bottom and statistics set up as
@@ -34,7 +34,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         Ly=1,
         res=1./64,
         R=0.4,
-        dt=0.002,
+        dt=0.00025,
         rho=[1., 1.],
         mu=[1., 1.],
         theta=np.pi/2,
@@ -46,12 +46,12 @@ def problem_parameters(NS_parameters, **NS_namespace):
         g0=[1.0, 0],
         velocity_degree=2,
         folder="periodicbubble2d_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
-        print_intermediate_info=10,
+        plot_interval=80,
+        stat_interval=80,
+        timestamps_interval=80,
+        save_step=80,
+        checkpoint=80,
+        print_intermediate_info=80,
         use_krylov_solvers=True,
         solver="BDF",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
@@ -94,15 +94,6 @@ def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfol
     channel and velocity along it."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        dX = dx(domain=mesh)
-        u0m = assemble(q_['u0'] * dX) / volume
-        u1m = assemble(q_['u1'] * dX) / volume
-        phim = assemble(phi_ * dX) / volume
-        vol_c, (_, y_cm), (V_c, _) = phase_moments(q_, mesh, dX)
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, vol_c, y_cm, V_c]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+        entries = standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
+        vol_c, (_, y_cm), (V_c, _) = phase_moments(q_, mesh, dx(domain=mesh))
+        write_tdata(statsfolder, tstep, t, entries + [vol_c, y_cm, V_c])

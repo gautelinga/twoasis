@@ -163,6 +163,13 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
         restart_folder = path.abspath(commandline_kwargs["restart_folder"])
         with open(path.join(restart_folder, "params.dat"), "rb") as f:
             NS_parameters.update(pickle.load(f))
+        # The checkpoint holds the fields in the parallel dof order of the run
+        # that wrote it, which depends on the number of processes.
+        nprocs = NS_parameters.get("num_processes", MPI.size(MPI.comm_world))
+        if nprocs != MPI.size(MPI.comm_world):
+            raise ValueError("The checkpoint in {} was written by {} processes; restart it "
+                             "with the same number (got {})".format(
+                                 restart_folder, nprocs, MPI.size(MPI.comm_world)))
         commandline_kwargs = dict(commandline_kwargs, restart_folder=restart_folder)
 
     # Update NS_parameters with all parameters modified through command line

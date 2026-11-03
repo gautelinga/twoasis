@@ -32,11 +32,11 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, conditional, Constant, DirichletBC, dx, Expression, gt,
-    interpolate, lt, MPI, SpatialCoordinate, sqrt, SubDomain)
+    assemble, assign, conditional, DirichletBC, dx, Expression, gt, interpolate, lt, MPI,
+    SpatialCoordinate, sqrt, SubDomain)
 
 from twoasis.problems import info_green
-from twoasis.problems.TPfracStep.shared import makedirs_on_root, rectangle_mesh
+from twoasis.problems.TPfracStep.shared import rectangle_mesh, setup_stats
 
 
 def mesh(L, res, **params):
@@ -105,9 +105,6 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, L, R, **NS_namespace):
 
 
 def pre_solve_hook(mesh, newfolder, L, R, epsilon, **NS_namespace):
-    statsfolder = path.join(newfolder, "Stats")
-    makedirs_on_root(statsfolder)
-
     # Regions where the phases are pure, away from the diffuse interface.
     X = SpatialCoordinate(mesh)
     r = sqrt((X[0] - L/2)**2 + (X[1] - L/2)**2)
@@ -115,9 +112,8 @@ def pre_solve_hook(mesh, newfolder, L, R, epsilon, **NS_namespace):
     outside = conditional(gt(r, R + 5*epsilon), 1., 0.)
     area_in = assemble(inside * dx(domain=mesh))
     area_out = assemble(outside * dx(domain=mesh))
-    volume = assemble(Constant(1.) * dx(domain=mesh))
-    return dict(statsfolder=statsfolder, inside=inside, outside=outside,
-                area_in=area_in, area_out=area_out, volume=volume, laplace_history=[])
+    return dict(inside=inside, outside=outside, area_in=area_in, area_out=area_out,
+                laplace_history=[], **setup_stats(mesh, newfolder))
 
 
 def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, g_, rho_, sigma, R, statsfolder,

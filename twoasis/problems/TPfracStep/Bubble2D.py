@@ -13,17 +13,13 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
-from dolfin import (
-    assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI,
-    SpatialCoordinate)
+from dolfin import assign, DirichletBC, dx, Expression, interpolate
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    Faces, interface_energy, makedirs_on_root, PeriodicBox, phase_moments,
-    rectangle_mesh)
+    Faces, gravitational_energy, PeriodicBox, phase_moments, rectangle_mesh,
+    setup_stats, standard_stats, write_tdata)
 
 
 def mesh(Lx, Ly, res, **params):
@@ -96,10 +92,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, **NS_namespa
 
 
 def pre_solve_hook(mesh, newfolder, **NS_namespace):
-    statsfolder = path.join(newfolder, "Stats")
-    makedirs_on_root(statsfolder)
-    volume = assemble(Constant(1.) * dx(domain=mesh))
-    return dict(statsfolder=statsfolder, volume=volume)
+    return setup_stats(mesh, newfolder)
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, statsfolder,
@@ -110,17 +103,7 @@ def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, stat
     and vertical velocity."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        dX = dx(domain=mesh)
-        X = SpatialCoordinate(mesh)
-        u0m = assemble(q_['u0'] * dX) / volume
-        u1m = assemble(q_['u1'] * dX) / volume
-        phim = assemble(phi_ * dX) / volume
-        vol_c, (_, y_cm), (_, V_c) = phase_moments(q_, mesh, dX)
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
-        E_grav = assemble(-rho_ * (g0[0] * X[0] + g0[1] * X[1]) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = [u0m, u1m, phim, E_kin, E_int, E_pot, E_grav, vol_c, y_cm, V_c]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+        entries = standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
+        entries.append(gravitational_energy(rho_, g0, volume, mesh))
+        vol_c, (_, y_cm), (_, V_c) = phase_moments(q_, mesh, dx(domain=mesh))
+        write_tdata(statsfolder, tstep, t, entries + [vol_c, y_cm, V_c])

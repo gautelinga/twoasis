@@ -8,8 +8,8 @@ from os import makedirs, path
 
 import numpy as np
 from dolfin import (
-    assemble, DOLFIN_EPS_LARGE, Function, grad, HDF5File, inner, Mesh, MPI, Point, RectangleMesh,
-    SpatialCoordinate, SubDomain)
+    assemble, Constant, DOLFIN_EPS_LARGE, dx, Function, grad, HDF5File, inner, Mesh, MPI, Point,
+    RectangleMesh, SpatialCoordinate, SubDomain)
 
 from twoasis.common.utilities import compute_ind, subfunction
 
@@ -116,6 +116,49 @@ def makedirs_on_root(*folders):
         for folder in folders:
             if not path.exists(folder):
                 makedirs(folder)
+
+
+def setup_stats(mesh, newfolder):
+    """Create the folder newfolder/Stats (on rank 0) and measure the volume of
+    the mesh. Returns dict(statsfolder=..., volume=...), to be returned (or
+    merged into the dict returned) by a pre_solve_hook."""
+    statsfolder = path.join(newfolder, "Stats")
+    makedirs_on_root(statsfolder)
+    volume = assemble(Constant(1.) * dx(domain=mesh))
+    return dict(statsfolder=statsfolder, volume=volume)
+
+
+def standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh):
+    """The mean velocity components (u0m, u1m and, in 3D, u2m), the mean phase
+    field phim and the energies per volume: kinetic E_kin, interface gradient
+    E_int and double-well E_pot parts (see interface_energy). Returns them as a
+    list in this order. All processes must call it (it assembles)."""
+    dX = dx(domain=mesh)
+    dim = mesh.geometry().dim()
+    um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(dim)]
+    phim = assemble(phi_ * dX) / volume
+    E_kin = 0.5 * assemble(rho_ * sum(u_[i]**2 for i in range(dim)) * dX) / volume
+    E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
+    return um + [phim, E_kin, E_int, E_pot]
+
+
+def gravitational_energy(rho_, g0, volume, mesh):
+    """The gravitational energy per volume, -rho g0.x, with g0 = None meaning no
+    gravity. All processes must call it (it assembles)."""
+    if g0 is None:
+        return 0.
+    X = SpatialCoordinate(mesh)
+    dim = mesh.geometry().dim()
+    return assemble(-rho_ * sum(g0[i] * X[i] for i in range(dim)) * dx(domain=mesh)) / volume
+
+
+def write_tdata(statsfolder, tstep, t, entries):
+    """Append the line "tstep t entries..." to statsfolder/tdata.dat (on rank 0),
+    with 8 decimals for t and each entry."""
+    if MPI.rank(MPI.comm_world) == 0:
+        with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
+            tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
+                tstep, t, *entries))
 
 
 def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, pressure_degree,

@@ -16,7 +16,7 @@ from dolfin import (
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, interface_energy, makedirs_on_root, PeriodicBox)
+    centred, interface_energy, makedirs_on_root, PeriodicBox, write_tdata)
 
 ccode = dict(
     u0 = "u0*exp(-8*pow(M_PI, 2)*mu*t/(pow(L, 2)*rho))*sin(2*x[1]*M_PI/L)*cos(2*x[0]*M_PI/L)",
@@ -57,11 +57,8 @@ def dump_stats(sigma, epsilon, rho_, u_, phi_, statsfolder, tstep, t, q_, exprs,
 
     errs = compute_errors(t, exprs, q_)
 
-    if MPI.rank(MPI.comm_world) == 0:
-        #print("{0:2.6e}".format(E_kin))
-        items = [tstep, t, E_kin, E_int, errs["u0"], errs["u1"], errs["p"], errs["phi"]]
-        with open(statsfolder + "/tdata.dat", "a") as tfile:
-            tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(*items))
+    write_tdata(statsfolder, tstep, t,
+                [E_kin, E_int, errs["u0"], errs["u1"], errs["p"], errs["phi"]])
 
 
 # Create a mesh

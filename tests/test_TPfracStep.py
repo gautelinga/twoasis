@@ -8,14 +8,18 @@ variants) checking:
   * golden values: selected scalars after 10 steps match tests/golden.json
     (regenerate deliberately with `pytest --regen-golden`),
   * BDF and IPCS agree on the same case to discretization accuracy,
+  * Naive, the plain reference implementation of IPCS's scheme, agrees with
+    IPCS to solver tolerance,
   * checkpoint/restart reproduces an uninterrupted run, also from a checkpoint
-    that lacks the previous time level.
+    that lacks the previous time level, leaves no temporary checkpoint folders,
+    and refuses a checkpoint written by another number of processes.
 """
 import numpy as np
 import pytest
 
-from conftest import (BUBBLE, COLS, MASS_TOL, QUIET, assert_close, assert_mass_conserved,
-                      golden_compare, load_tdata, require_mpi, run_twoasis)
+from conftest import (BUBBLE, BUBBLE_P1, COLS, MASS_TOL, QUIET, assert_close,
+                      assert_mass_conserved, copy_run, golden_compare, load_tdata,
+                      require_mpi, run_twoasis)
 
 # Scalars pinned by the golden tests.
 GOLDEN_COLS = ["u0m", "phim", "E_kin", "E_int", "vol_c"]
@@ -62,6 +66,28 @@ def test_bdf_ipcs_agree(request, variant, rtols):
         assert_close("IPCS " + name, td_i[-1, COLS[name]], td_b[-1, COLS[name]], rtol)
 
 
+def test_naive_ipcs_agree(tmp_path):
+    """Naive writes IPCS's scheme as plain UFL forms solved with LU, so the two
+    differ only by IPCS's Krylov tolerances (1e-6 relative for the velocity and
+    the pressure). Measured on this case, the statistics agree to the 8 decimals
+    they are written with. The case has unequal properties, so the density and
+    viscosity weighting and the grad(mu) term are exercised. A fixed number of
+    inner iterations (max_error=0) makes both solvers take the same steps; it is
+    cut to 10 to keep Naive fast, which is enough for these three steps.
+    """
+    params = dict(BUBBLE_P1, T=0.006, max_iter=10, iters_on_first_timestep=10, max_error=0)
+    td = {}
+    for solver in ("Naive", "IPCS"):
+        wd = tmp_path / solver
+        wd.mkdir()
+        run_twoasis(wd, solver=solver, **params)
+        td[solver] = load_tdata(wd)
+    assert td["Naive"].shape == td["IPCS"].shape == (3, td["IPCS"].shape[1])
+    cols = [COLS[name] for name in ("u0m", "phim", "E_kin", "E_int", "E_pot", "vol_c")]
+    # atol: the rounding of the written statistics.
+    np.testing.assert_allclose(td["Naive"][:, cols], td["IPCS"][:, cols], rtol=1e-6, atol=2e-8)
+
+
 def test_restart_continuation(bubble_bdf_restarted, bubble_bdf_long):
     """Steps 11-20 after a restart must match the uninterrupted run.
 
@@ -76,6 +102,25 @@ def test_restart_continuation(bubble_bdf_restarted, bubble_bdf_long):
     for name in GOLDEN_COLS:
         assert_close("restarted " + name, td_r[-1, COLS[name]], td_l[-1, COLS[name]],
                      1e-4, 1e-7)
+
+
+def test_checkpoint_folder(bubble_bdf_restarted):
+    """The restarted run swaps its checkpoints into place and leaves no
+    temporary folders behind."""
+    wd, _, _ = bubble_bdf_restarted
+    run = wd / "results" / "data" / "1"
+    assert {f.name for f in (run / "Checkpoint").iterdir()} == \
+        {"params.dat", "p.h5", "phig.h5", "u0.h5", "u1.h5"}
+    assert not (run / "Checkpoint.new").exists() and not (run / "Checkpoint.old").exists()
+
+
+def test_restart_other_process_count(tmp_path_factory, bubble_bdf):
+    """A checkpoint written in serial cannot be read on two processes (the dof
+    order differs), so the restart stops with a clear error."""
+    require_mpi(2)
+    wd, ckpt = copy_run(tmp_path_factory, "restart_np2", bubble_bdf)
+    with pytest.raises(AssertionError, match="written by 1 processes"):
+        run_twoasis(wd, nprocs=2, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
 
 
 def test_restart_old_format(bubble_bdf_restarted_old_format, bubble_bdf_long):

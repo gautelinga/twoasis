@@ -1,22 +1,22 @@
 """A bubble in a through-flow: the velocity is prescribed at the bottom (inflow) and
 at the top (outflow), with periodic sides. The phase entering at the bottom is
-injected_phase, by default the surrounding phase (phi = 1)."""
+injected_phase, by default the surrounding phase (phi = 1).
+
+The interface energy is still sensitive to dt at the default dt = 0.005: it is ~2.5%
+below a run at dt = 0.0025 while the bubble passes through (and ~5% at dt = 0.01)."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2023-08-08"
 __copyright__ = ("Copyright (C) 2023 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
-from dolfin import (
-    assemble, assign, Constant, DirichletBC, dx, Expression, interpolate, MPI)
+from dolfin import assign, DirichletBC, Expression, interpolate
 
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, Faces, interface_energy, makedirs_on_root, PeriodicBox, read_phase_field,
-    rectangle_mesh)
+    centred, Faces, PeriodicBox, read_phase_field, rectangle_mesh, setup_stats,
+    standard_stats, write_tdata)
 
 
 def mesh(Lx, Ly, res, **params):
@@ -34,7 +34,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         Ly=4,
         res=0.1,
         R=1.0,
-        dt=0.01,
+        dt=0.005,
         rho=[1, 1],
         mu=[1, 10],
         u0=1.0,
@@ -46,12 +46,12 @@ def problem_parameters(NS_parameters, **NS_namespace):
         g0=[0., 0.],
         velocity_degree=1,
         folder="bubbleopen_results",
-        plot_interval=10,
-        stat_interval=10,
-        timestamps_interval=10,
-        save_step=10,
-        checkpoint=10,
-        print_intermediate_info=10,
+        plot_interval=20,
+        stat_interval=20,
+        timestamps_interval=20,
+        save_step=20,
+        checkpoint=20,
+        print_intermediate_info=20,
         use_krylov_solvers=True,
         solver="BDF",
         bdf_order=1,
@@ -104,10 +104,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, R, initial_state, mesh,
 
 
 def pre_solve_hook(mesh, newfolder, **NS_namespace):
-    statsfolder = path.join(newfolder, "Stats")
-    makedirs_on_root(statsfolder)
-    volume = assemble(Constant(1.) * dx(domain=mesh))
-    return dict(statsfolder=statsfolder, volume=volume)
+    return setup_stats(mesh, newfolder)
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfolder,
@@ -116,14 +113,5 @@ def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfol
     volume (kinetic, interface gradient and double-well parts)."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        dX = dx(domain=mesh)
-        u0m = assemble(q_['u0'] * dX) / volume
-        u1m = assemble(q_['u1'] * dX) / volume
-        phim = assemble(phi_ * dX) / volume
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = [u0m, u1m, phim, E_kin, E_int, E_pot]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+        write_tdata(statsfolder, tstep, t,
+                    standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh))

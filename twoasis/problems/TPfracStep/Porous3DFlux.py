@@ -19,13 +19,13 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
-    Function, interpolate, MPI, SubDomain)
+    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, Expression, Function,
+    interpolate, SubDomain)
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    Faces, interface_energy, load_mesh, makedirs_on_root,
-    mesh_extrema, PeriodicBox, write_timestamp, write_timestamps_info)
+    Faces, load_mesh, makedirs_on_root, mesh_extrema, PeriodicBox, setup_stats,
+    standard_stats, write_tdata, write_timestamp, write_timestamps_info)
 
 class SideWalls(SubDomain):
     """The faces of the bounding box [x_min, x_max]."""
@@ -169,19 +169,18 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
                    phase_field_degree, AssignedVectorFunction, constrained_domain, ds, **NS_namespace):
-    volume = assemble(Constant(1.) * dx(domain=mesh))
+    stats = setup_stats(mesh, newfolder)
     area = [assemble(Constant(1.) * ds(i)) for i in (2, 3)]  # bottom, top
-    statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
     uv = AssignedVectorFunction(u_, name="u")
-    makedirs_on_root(statsfolder, timestampsfolder)
+    makedirs_on_root(timestampsfolder)
     write_timestamps_info(timestampsfolder, mesh,
                           {key: NS_namespace[key] for key in
                            ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"]},
                           velocity_degree, pressure_degree, phase_field_degree,
                           constrained_domain)
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume, area=area)
+    return dict(uv=uv, timestampsfolder=timestampsfolder, area=area, **stats)
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, area, statsfolder,
@@ -193,16 +192,8 @@ def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, area
     drop dp from bottom to top."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
-        dX = dx(domain=mesh)
-        um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(3)]
-        phim = assemble(phi_ * dX) / volume
-        E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
+        entries = standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
         costheta, mark = angles[0]
         E_surf = 0.25 * sigma * assemble(costheta * (phi_**3 - 3 * phi_ + 2) * ds(mark))
         dp = assemble(p_ * ds(2)) / area[0] - assemble(p_ * ds(3)) / area[1]
-        if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = um + [phim, E_kin, E_int, E_pot, E_surf, dp]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+        write_tdata(statsfolder, tstep, t, entries + [E_surf, dp])

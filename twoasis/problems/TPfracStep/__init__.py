@@ -19,7 +19,7 @@ NS_parameters.update(
     # Some discretization options
     # Use Adams Bashforth projection as first estimate for pressure on new timestep
     AB_projection_pressure=False,
-    solver="BDF",  # or "IPCS"
+    solver="BDF",  # or "IPCS", or "Naive" (a plain, slow version of IPCS for validation)
     bdf_order=2,
     # First BDF step: True = first order, False = second order, None = second order
     # only if initialize() (or the checkpoint) provides the solution at t - 2*dt.
@@ -76,7 +76,8 @@ NS_parameters.update(
 
     # Velocity update
     velocity_update_solver=dict(
-        method='lumping',  # lumped mass for P1; P2 and higher use the consistent mass matrix
+        method='default',  # consistent mass matrix; 'lumping' lumps it for P1 (P2 and higher
+                           # always use the consistent one)
         solver_type='cg',
         preconditioner_type='jacobi',
         low_memory_version=False),

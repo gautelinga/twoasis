@@ -14,26 +14,16 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression, Function,
-    FunctionAssigner, HDF5File, interpolate, SubDomain, VectorFunctionSpace)
+    assemble, Constant, DirichletBC, dx, Expression, Function, FunctionAssigner, HDF5File,
+    interpolate, VectorFunctionSpace)
 
 from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, load_mesh, makedirs_on_root, PeriodicBox, setup_stats, standard_stats,
+    centred, load_mesh, makedirs_on_root, mark_walls, PeriodicBox, setup_stats, standard_stats,
     write_tdata, write_timestamp, write_timestamps_info)
 
 
-class Walls(SubDomain):
-    def __init__(self, pos_, r_):
-        self.pos_ = pos_
-        self.r_ = r_
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_bnd):
-        x_ = np.outer(x, np.ones(len(self.pos_))).T
-        dr_ = np.linalg.norm(x_ - self.pos_, axis=1)
-        return any(dr_ < self.r_ + DOLFIN_EPS_LARGE)
 
 
 def get_fname(Lx, Ly, rad, R, N, res, ext):
@@ -94,7 +84,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         epsilon=0.05,
         sigma=5.0,
         M=0.0001,
-        F0=[0., 10.],
+        F0=[0., -10.],
         g0=[0., 0.],
         init_state="",
         checkerboard=[12, 18],
@@ -115,14 +105,9 @@ def constrained_domain(Lx, Ly, **params):
     return PeriodicBox({0: centred(Lx), 1: centred(Ly)})
 
 
-def mark_subdomains(subdomains, dim, Lx, Ly, rad, R, N, res, **NS_namespace):
-    fname = get_fname(Lx, Ly, rad, R, N, res, "dat")
-    obst = np.loadtxt(fname, ndmin=2)
-    x = obst[:, :dim]
-    r = obst[:, dim]
-    wall = Walls(x, r)
-    wall.mark(subdomains, 1)
-    return dict()
+def mark_subdomains(subdomains, mesh, **NS_namespace):
+    """Mark the obstacles' walls 1."""
+    mark_walls(subdomains, mesh)
 
 
 # Specify boundary conditions

@@ -17,7 +17,7 @@ from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     assemble_phase_field_system, attach_pressure_nullspace, krylov_get_solvers,
-    phase_field_system, PhaseFieldOnVelocitySpace, set_mixed_fields)
+    phase_field_system, PhaseFieldOnVelocitySpace, set_mixed_fields, velocity_matrices)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -69,11 +69,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     Apt = [Matrix(Apd), rho_inv_ * inner(grad(q), grad(p)), None]
 
     # Allocate coefficient matrix (needs reassembling)
-    A = Matrix(Md)
-    Ai = None
-    if not all([bcs['u0'] == bcs[ui] for ui in u_components[1:]]):
-        info_blue("Some velocity Dirichlet BCs are not no-slip.")
-        Ai = dict([(ui, Matrix(Md)) for ui in u_components])
+    A, Ai = velocity_matrices(Md, bcs, u_components)
 
     # Allocate Function for holding and computing the velocity divergence on Q
     divu = DivFunction(u_, Q, name='divu', method=velocity_update_solver)
@@ -229,7 +225,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
             Ai[ui].axpy(1.0, A, True)
             [bc.apply(Ai[ui]) for bc in bcs[ui]]
     else:
-        [bc.apply(A) for bc in bcs['u0']] # assumes only no-slip!
+        [bc.apply(A) for bc in bcs['u0']]  # the same rows for every component
 
     # The pressure matrix depends on the density, which is fixed within the timestep.
     if not constant_poisson_coefficient:

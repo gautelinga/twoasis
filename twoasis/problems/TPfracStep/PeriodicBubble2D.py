@@ -71,9 +71,10 @@ def create_bcs(V, subdomains, u0, **NS_namespace):
 
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, u0, VV, Lx, Ly, R, **NS_namespace):
-    # Uniform flow
-    q_['u0'].vector()[:] = u0
-    q_['u1'].vector()[:] = 0.
+    # Uniform flow, also at the previous time level, from which the solvers step
+    for q in (q_, q_1):
+        q['u0'].vector()[:] = u0
+        q['u1'].vector()[:] = 0.
     # Centered
     set_subfunction(q_['phig'], 0, Expression(
         "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",

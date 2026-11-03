@@ -12,27 +12,15 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import DirichletBC, DOLFIN_EPS_LARGE, Expression, SubDomain
+from dolfin import DirichletBC, Expression
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    load_mesh, makedirs_on_root, PeriodicBox, setup_stats, standard_stats, write_tdata,
+    load_mesh, makedirs_on_root, mark_walls, PeriodicBox, setup_stats, standard_stats, write_tdata,
     write_timestamp, write_timestamps_info)
 
 
-class Walls(SubDomain):
-    def __init__(self, xyzr_):
-        self.pos_ = xyzr_[:, :3]
-        self.r_ = xyzr_[:, 3]
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_bnd):
-        if on_bnd:
-            x_ = np.outer(x, np.ones(len(self.pos_))).T
-            dr_ = np.linalg.norm(x_ - self.pos_, axis=1)
-            return any(dr_ < self.r_ + DOLFIN_EPS_LARGE)
-        return False
 
 
 def get_fname(L, R, reps, res, ext):
@@ -78,7 +66,7 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         sigma=0.1,
         checkerboard=[4, 4, 4],
         M=0.00002,
-        F0=[0., 0., -10],
+        F0=[0., 0., 10],
         g0=[0., 0., 0.],
         velocity_degree=1,
         folder="porous3d_results",
@@ -101,12 +89,9 @@ def constrained_domain(L, **params):
     return PeriodicBox({i: (0, L) for i in range(3)})
 
 
-def mark_subdomains(subdomains, L, R, reps, res, **NS_namespace):
-    fname = get_fname(L, R, reps, res, "obst")
-    xyzr_ = np.loadtxt(fname, ndmin=2)
-    wall = Walls(xyzr_)
-    wall.mark(subdomains, 1)
-    return dict()
+def mark_subdomains(subdomains, mesh, **NS_namespace):
+    """Mark the obstacles' walls 1."""
+    mark_walls(subdomains, mesh)
 
 
 # Specify boundary conditions

@@ -27,6 +27,7 @@ from dolfin import assemble, cos, Expression, MPI, SpatialCoordinate
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems.TPfracStep import Bubble2D
+from twoasis.problems.TPfracStep.shared import append_row
 
 
 # Periodic sides, walls, boundary conditions and the setup of statistics as in Bubble2D.
@@ -94,5 +95,5 @@ def temporal_hook(tstep, t, phi_, dx, mesh, Lx, statsfolder, stat_interval, **NS
         x = SpatialCoordinate(mesh)
         a = -assemble(phi_ * cos(2 * np.pi * x[0] / Lx) * dx) / Lx
         if MPI.rank(MPI.comm_world) == 0:
-            with open(path.join(statsfolder, "amplitude.dat"), "a") as ofile:
-                ofile.write("{:d} {:.8f} {:.10e}\n".format(tstep, t, a))
+            append_row(path.join(statsfolder, "amplitude.dat"), tstep,
+                       "{:d} {:.8f} {:.10e}\n".format(tstep, t, a))

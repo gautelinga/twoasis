@@ -1,6 +1,6 @@
 """A Taylor bubble, filling most of the width of a vertical channel that is periodic
 along its length, seen in a frame moving with the bubble: the walls move at u_wall,
-and a controller (regulator = "V_c" or "y_cm") adjusts the mean pressure gradient to
+and a controller (regulator = "V_c" or "y_cm") adjusts the driving force F0[1] to
 hold the bubble at u_target relative to the walls. Without the controller nothing
 drives the flow (F0 = g0 = 0): the moving walls just drag the fluid along.
 
@@ -85,9 +85,11 @@ def create_bcs(V, subdomains, u_wall, **NS_namespace):
 
 
 def average_pressure_gradient(F0, controller, **NS_namespace):
-    # An Expression, so that the controller can change it during the run.
+    """The mean pressure gradient, -F0, with its y component `forcing` (the
+    driving force along y) an Expression parameter, so that the controller can
+    change it during the run."""
     forcing = F0[1] if controller is None else controller["forcing"]
-    return Expression(("0", "-forcing"), forcing=forcing, degree=2)
+    return Expression(("-fx", "-forcing"), fx=F0[0], forcing=forcing, degree=2)
 
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
@@ -117,7 +119,7 @@ def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, stat
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim, the energies per volume
     (kinetic, interface gradient and double-well parts, gravitational), the
     bubble's (phi = -1) area vol_c, height y_cm and velocity V_c, the mean
-    velocity V_tot, a zero column, and the driving pressure gradient."""
+    velocity V_tot, a zero column, and the driving force along y (F0[1])."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         dX = dx(domain=mesh)

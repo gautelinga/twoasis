@@ -47,7 +47,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         epsilon=0.03,
         sigma=5.0,
         M=0.0001,
-        F0=[0., 0., -10.],
+        F0=[0., 0., 10.],
         g0=[0., 0., 0.],
         velocity_degree=1,
         folder="tube3d_results",

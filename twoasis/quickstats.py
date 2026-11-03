@@ -28,7 +28,7 @@ def main():
     rho = np.mean(params["rho"])
     nu = mu/rho
     sigma = params["sigma"]
-    fy = params["F0"][1]
+    fy = abs(params["F0"][1])
     res = params["res"]
     M = params["M"]
     epsilon = params["epsilon"]

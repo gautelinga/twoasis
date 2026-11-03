@@ -18,30 +18,16 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
-    assemble, Constant, DirichletBC, DOLFIN_EPS_LARGE, Expression, Function, interpolate,
-    SubDomain)
+from dolfin import assemble, Constant, DirichletBC, Expression, Function, interpolate
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    Faces, load_mesh, makedirs_on_root, mesh_extrema, PeriodicBox, setup_stats,
+    Faces, load_mesh, makedirs_on_root, mark_walls, mesh_extrema, PeriodicBox, setup_stats,
     standard_stats, write_tdata, write_timestamp, write_timestamps_info)
 
-class SideWalls(SubDomain):
-    """The faces of the bounding box [x_min, x_max]."""
-    def __init__(self, x_min, x_max):
-        self.x_min, self.x_max = x_min, x_max
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_bnd):
-        return on_bnd and (any(x[i] < self.x_min[i] + DOLFIN_EPS_LARGE for i in range(3)) or
-                           any(x[i] > self.x_max[i] - DOLFIN_EPS_LARGE for i in range(3)))
 
 
-class Boundary(SubDomain):
-    def inside(self, x, on_bnd):
-        return on_bnd
 
 
 def mesh(meshfile, **params):
@@ -90,8 +76,7 @@ def mark_subdomains(subdomains, mesh, **NS_namespace):
     """Mark the obstacles 1, the bottom 2 and the top 3, and add the mesh's
     bounding box x_min, x_max to the namespace."""
     x_min, x_max = mesh_extrema(mesh)
-    Boundary().mark(subdomains, 1)
-    SideWalls(x_min, x_max).mark(subdomains, 0)
+    mark_walls(subdomains, mesh)
     Faces(2, x_min[2]).mark(subdomains, 2)
     Faces(2, x_max[2]).mark(subdomains, 3)
     return dict(x_min=x_min, x_max=x_max)

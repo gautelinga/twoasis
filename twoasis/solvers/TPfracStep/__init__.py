@@ -6,7 +6,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from dolfin import (
     as_backend_type, assemble, Constant, dot, dx, Function, FunctionAssigner, grad,
-    inner, lhs, Matrix, norm, PETScDMCollection, PETScKrylovSolver, PETScOptions,
+    inner, lhs, Matrix, MPI, norm, PETScDMCollection, PETScKrylovSolver, PETScOptions,
     PETScPreconditioner, rhs, Timer, Vector, VectorSpaceBasis)
 from twoasis.common.utilities import subfunction, subspace
 from twoasis.problems import info_blue
@@ -126,6 +126,25 @@ def get_solvers(**NS_namespace):
 def assemble_first_inner_iter(**NS_namespace):
     """Called first thing on a new velocity/pressure iteration."""
     pass
+
+
+def velocity_matrices(Md, bcs, u_components):
+    """The tentative velocity's coefficient matrix A (with the boundary rows of
+    u0's conditions), and Ai, one matrix per component, only when the components'
+    Dirichlet conditions constrain different dofs. Applying a condition to a
+    matrix sets the rows of its dofs whatever its values, so components
+    constrained at the same dofs (no-slip walls, or a wall moving along x) share
+    A. Decided alike on every process."""
+    def dofs(ui):
+        return set(k for bc in bcs[ui] for k in bc.get_boundary_values())
+
+    first = dofs(u_components[0])
+    same = all(dofs(ui) == first for ui in u_components[1:])
+    if MPI.min(MPI.comm_world, float(same)) == 1.:
+        return Matrix(Md), None
+    info_blue("The velocity components have Dirichlet conditions on different dofs: "
+              "one matrix each.")
+    return Matrix(Md), {ui: Matrix(Md) for ui in u_components}
 
 
 def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,

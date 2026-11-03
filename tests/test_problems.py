@@ -25,37 +25,31 @@ PROBLEMS = ["Bubble2D", "BubbleOpen", "LaplaceBubble2D", "OscBubble2D", "PlaneCo
 
 def porous2d(meshes):
     """A periodic square with two disks (Porous2D's walls are its obstacles)."""
-    from meshgen import obstacle_mesh, write_obstacles
+    from meshgen import obstacle_mesh
     from twoasis.problems.TPfracStep.Porous2D import get_fname
     params = dict(Lx=2, Ly=2, rad=0.3, R=0.5, N=2, res=0.15)
-    obstacles = [(-0.4, -0.3, 0.3), (0.5, 0.5, 0.25)]
     obstacle_mesh(meshes / get_fname(ext="h5", **params)[len("meshes/"):], (-1, -1), (1, 1),
-                  obstacles, (True, True), params["res"])
-    write_obstacles(meshes / get_fname(ext="dat", **params)[len("meshes/"):], obstacles)
+                  [(-0.4, -0.3, 0.3), (0.5, 0.5, 0.25)], (True, True), params["res"])
     return params
 
 
 def cylarr2d(meshes):
     """CylArr2D's cell (Lx wide, sqrt(3)*Lx high) with one cylinder in the middle."""
-    from meshgen import obstacle_mesh, write_obstacles
+    from meshgen import obstacle_mesh
     from twoasis.problems.TPfracStep.CylArr2D import get_fname
     params = dict(Lx=1, rad=0.33, res=0.1)
-    obstacles = [(0, 0, params["rad"])]
     half = (0.5, np.sqrt(3) / 2)
     obstacle_mesh(meshes / get_fname(ext="h5", **params)[len("meshes/"):],
-                  (-half[0], -half[1]), half, obstacles, (True, True), params["res"])
-    write_obstacles(meshes / get_fname(ext="dat", **params)[len("meshes/"):], obstacles)
+                  (-half[0], -half[1]), half, [(0, 0, params["rad"])], (True, True), params["res"])
     return params
 
 
 def porous3d(meshes):
     """The unit cube, periodic on all axes, with one sphere."""
-    from meshgen import obstacle_mesh, write_obstacles
+    from meshgen import obstacle_mesh
     from twoasis.problems.TPfracStep.Porous3D import get_fname
-    obstacles = [(0.5, 0.5, 0.5, 0.25)]
     obstacle_mesh(meshes / get_fname(1, 0, 0, 0, "h5")[len("meshes/"):], (0, 0, 0), (1, 1, 1),
-                  obstacles, (True, True, True), 0.2)
-    write_obstacles(meshes / get_fname(1, 0, 0, 0, "obst")[len("meshes/"):], obstacles)
+                  [(0.5, 0.5, 0.5, 0.25)], (True, True, True), 0.2)
     return dict(L=1)
 
 

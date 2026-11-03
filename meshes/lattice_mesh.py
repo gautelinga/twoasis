@@ -6,7 +6,7 @@ periodic boundary the two half-disks form one obstacle, so the pore throat at
 x = 0 has width Ly - 2*rad.
 
 Writes lattice_Lx{Lx}_Ly{Ly}_r{rad}_dx{res}.h5 (the mesh) and .dat (one line
-"x y r" per obstacle, used to mark the walls) to the current directory. Run it
+"x y r" per obstacle) to the current directory. Run it
 inside meshes/, where SimplePore2D looks for them.
 """
 import argparse

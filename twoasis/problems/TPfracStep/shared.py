@@ -8,12 +8,16 @@ from os import makedirs, path, remove
 
 import numpy as np
 from dolfin import (
-    assemble, Constant, DOLFIN_EPS_LARGE, dx, Function, grad, HDF5File, inner, Mesh, MPI, Point,
-    RectangleMesh, SpatialCoordinate, SubDomain)
+    assemble, CompiledSubDomain, Constant, DomainBoundary, dx, Function, grad, HDF5File,
+    inner, Mesh, MPI, Point, RectangleMesh, SpatialCoordinate, SubDomain)
 
 from femtools.periodic import periodic_box
 
 from twoasis.common.utilities import compute_ind, subfunction, subspace
+
+# How near a face of the box a point must be to lie on it: above the rounding of
+# mesh generators (gmsh leaves points ~1e-14 off a face), far below any cell.
+FACE_TOL = 1e-10
 
 
 def rectangle_mesh(Lx, Ly, res, centred=False):
@@ -65,7 +69,7 @@ def PeriodicBox(periodic):
     """
     lower, upper = ([periodic[i][k] if i in periodic else 0. for i in range(3)] for k in (0, 1))
     # map_tol: dolfin's default for a SubDomain.
-    return periodic_box(upper, DOLFIN_EPS_LARGE, [i in periodic for i in range(3)], lower,
+    return periodic_box(upper, FACE_TOL, [i in periodic for i in range(3)], lower,
                         map_tol=1e-10)
 
 
@@ -77,7 +81,22 @@ class Faces(SubDomain):
         super().__init__()
 
     def inside(self, x, on_boundary):
-        return on_boundary and any(abs(x[self.axis] - v) < DOLFIN_EPS_LARGE for v in self.values)
+        return on_boundary and any(abs(x[self.axis] - v) < FACE_TOL for v in self.values)
+
+
+def mark_walls(subdomains, mesh, marker=1):
+    """Mark the walls of the obstacles inside the mesh's bounding box `marker`:
+    every boundary facet, except those on the faces of the box (left 0; a
+    problem marks its inlets and outlets there afterwards). Compiled, so fast on
+    large meshes, and it needs no list of the obstacles."""
+    DomainBoundary().mark(subdomains, marker)
+    lo, hi = mesh_extrema(mesh)
+    faces = " || ".join("near(x[{0}], lo{0}, tol) || near(x[{0}], hi{0}, tol)".format(i)
+                        for i in range(mesh.geometry().dim()))
+    bounds = {"lo{}".format(i): v for i, v in enumerate(lo)}
+    bounds.update({"hi{}".format(i): v for i, v in enumerate(hi)})
+    CompiledSubDomain("on_boundary && ({})".format(faces), tol=FACE_TOL,
+                      **bounds).mark(subdomains, 0)
 
 
 def mesh_extrema(mesh):
@@ -160,13 +179,34 @@ def gravitational_energy(rho_, g0, volume, mesh):
     return assemble(-rho_ * sum(g0[i] * X[i] for i in range(dim)) * dx(domain=mesh)) / volume
 
 
+# The statistics files appended to by this run.
+_APPENDED = set()
+
+
+def append_row(fname, tstep, line):
+    """Append line, the row of time step tstep, to the statistics file fname (call
+    on one process). A restart continues the file of the run it restarts, which
+    may hold rows from tstep on, written after the checkpoint: the first row this
+    run appends drops those, so that the file is one run's history."""
+    if fname not in _APPENDED and path.exists(fname):
+        with open(fname) as f:
+            rows = f.readlines()
+        keep = [r for r in rows if not r.split() or int(r.split()[0]) < tstep]
+        if len(keep) < len(rows):
+            with open(fname, "w") as f:
+                f.writelines(keep)
+    _APPENDED.add(fname)
+    with open(fname, "a") as f:
+        f.write(line)
+
+
 def write_tdata(statsfolder, tstep, t, entries):
     """Append the line "tstep t entries..." to statsfolder/tdata.dat (on rank 0),
-    with 8 decimals for t and each entry."""
+    with 8 decimals for t and each entry (append_row)."""
     if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-            tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                tstep, t, *entries))
+        append_row(path.join(statsfolder, "tdata.dat"), tstep,
+                   ("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
+                       tstep, t, *entries))
 
 
 def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, pressure_degree,

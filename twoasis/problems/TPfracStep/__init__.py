@@ -38,8 +38,9 @@ NS_parameters.update(
     theta=None,          # contact angle on the boundaries marked 1 (none if None),
                          # measured through the phase phi = +1
 
-    # Body forces: mean pressure gradient F0 and acceleration (gravity) g0,
-    # one component per dimension; None means zero.
+    # Body forces: the driving force per volume F0 (minus the mean pressure
+    # gradient) and the acceleration (gravity) g0, one component per dimension;
+    # None means zero.
     F0=None,
     g0=None,
 
@@ -150,8 +151,9 @@ def contact_angles(theta, **NS_namespace):
 
 
 def average_pressure_gradient(F0, mesh, **NS_namespace):
-    """Mean pressure gradient F0 driving the flow."""
-    return Constant(tuple(F0) if F0 is not None else (0.,) * mesh.geometry().dim())
+    """The mean pressure gradient, -F0: F0 is the force per volume it drives the
+    flow with."""
+    return Constant(tuple(-f for f in F0) if F0 is not None else (0.,) * mesh.geometry().dim())
 
 
 def acceleration(g0, mesh, **NS_namespace):

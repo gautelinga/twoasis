@@ -161,6 +161,10 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     # include t and tstep); the command line can still change any of them.
     if commandline_kwargs.get("restart_folder") is not None:
         restart_folder = path.abspath(commandline_kwargs["restart_folder"])
+        from twoasis.common.io import recover_checkpoint
+        if MPI.rank(MPI.comm_world) == 0:
+            recover_checkpoint(restart_folder)
+        MPI.barrier(MPI.comm_world)
         with open(path.join(restart_folder, "params.dat"), "rb") as f:
             NS_parameters.update(pickle.load(f))
         # The checkpoint holds the fields in the parallel dof order of the run

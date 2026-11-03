@@ -13,9 +13,8 @@ from dolfin import DirichletBC, Expression
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
-from twoasis.problems.TPfracStep.Porous2D import Walls
 from twoasis.problems.TPfracStep.shared import (
-    centred, Faces, load_mesh, makedirs_on_root, PeriodicBox, setup_stats, standard_stats,
+    centred, Faces, load_mesh, makedirs_on_root, mark_walls, PeriodicBox, setup_stats, standard_stats,
     write_tdata, write_timestamp, write_timestamps_info)
 
 
@@ -69,13 +68,9 @@ def constrained_domain(Ly, **params):
     return PeriodicBox({1: centred(Ly)})
 
 
-def mark_subdomains(subdomains, dim, Lx, Ly, rad, res, **NS_namespace):
-    fname = get_fname(Lx, Ly, rad, res, "dat")
-    obst = np.loadtxt(fname, ndmin=2)
-    x = obst[:, :dim]
-    r = obst[:, dim]
-    wall = Walls(x, r)
-    wall.mark(subdomains, 1)
+def mark_subdomains(subdomains, mesh, Lx, **NS_namespace):
+    """Mark the obstacle's walls 1, the left end 2 and the right end 3."""
+    mark_walls(subdomains, mesh)
     left = Faces(0, -Lx/2)
     left.mark(subdomains, 2)
     right = Faces(0, Lx/2)

@@ -1,6 +1,6 @@
 """Single-phase flow through a periodic hexagonal array of cylinders (mesh from
-Bernaise, see get_fname), driven by a mean pressure gradient F0 along y (the flow goes
-towards -y). The phase field is uniform (phi = 1), so the chemical potential and the
+Bernaise, see get_fname), driven by a force F0 along y (minus the mean pressure
+gradient; the flow goes towards -y). The phase field is uniform (phi = 1), so the chemical potential and the
 capillary force vanish and this is plain Navier-Stokes flow; the velocity and pressure
 written to Timestamps/ serve e.g. particle tracking."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
@@ -16,10 +16,9 @@ from dolfin import assemble, Constant, DirichletBC, dx
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
-from twoasis.problems.TPfracStep.Porous2D import Walls
 from twoasis.problems.TPfracStep.shared import (
-    centred, load_mesh, makedirs_on_root, PeriodicBox, setup_stats, write_tdata, write_timestamp,
-    write_timestamps_info)
+    centred, load_mesh, makedirs_on_root, mark_walls, PeriodicBox, setup_stats, write_tdata,
+    write_timestamp, write_timestamps_info)
 
 
 def get_fname(Lx, rad, res, ext):
@@ -43,7 +42,7 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         dt=0.01,
         rho=[1, 1],
         mu=[1, 1],
-        F0=[0., 10.],
+        F0=[0., -10.],
         g0=[0., 0.],
         velocity_degree=2,
         phase_field_degree=1,  # phi = 1 is represented exactly at any degree
@@ -62,9 +61,9 @@ def constrained_domain(Lx, **params):
     return PeriodicBox({0: centred(Lx), 1: centred(np.sqrt(3) * Lx)})
 
 
-def mark_subdomains(subdomains, dim, Lx, rad, res, **NS_namespace):
-    obstacles = np.loadtxt(get_fname(Lx, rad, res, "dat"), ndmin=2)
-    Walls(obstacles[:, :dim], obstacles[:, dim]).mark(subdomains, 1)
+def mark_subdomains(subdomains, mesh, **NS_namespace):
+    """Mark the cylinders' walls 1."""
+    mark_walls(subdomains, mesh)
 
 
 def create_bcs(V, subdomains, **NS_namespace):

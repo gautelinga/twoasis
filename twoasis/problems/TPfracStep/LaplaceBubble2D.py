@@ -37,7 +37,7 @@ from dolfin import (
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_green
-from twoasis.problems.TPfracStep.shared import rectangle_mesh, setup_stats
+from twoasis.problems.TPfracStep.shared import append_row, rectangle_mesh, setup_stats
 
 
 def mesh(L, res, **params):
@@ -135,9 +135,9 @@ def temporal_hook(q_, tstep, t, dx, u_, p_, phi_, g_, rho_, sigma, R, statsfolde
         if MPI.rank(MPI.comm_world) == 0:
             entries = [P_in - P_out, sigma / R, P_in, P_out, u_max, E_kin, phi_mean,
                        R_eq, phi_in, phi_out]
-            with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.10e}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+            append_row(path.join(statsfolder, "tdata.dat"), tstep,
+                       ("{:d} {:.8f} " + " ".join("{:.10e}" for _ in entries) + "\n").format(
+                           tstep, t, *entries))
 
         dP = P_in - P_out
         laplace_history.append((t, dP, u_max))

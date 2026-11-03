@@ -15,6 +15,7 @@ variants) checking:
     and refuses a checkpoint written by another number of processes.
 """
 import shutil
+from os import path
 
 import numpy as np
 import pytest
@@ -125,8 +126,35 @@ def test_restart_from_a_copied_checkpoint(tmp_path_factory, bubble_bdf):
     shutil.copytree(str(ckpt), str(copied))
     run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(copied), **BUBBLE)
     assert {f.name for f in (wd / "elsewhere").iterdir()} == \
-        {"Checkpoint", "Checkpoint_10", "Stats", "subdomains.h5", "subdomains.xdmf"}
+        {"Checkpoint", "Checkpoint_10", "Stats", "Timeseries", "subdomains.h5", "subdomains.xdmf"}
     assert np.loadtxt(str(wd / "elsewhere" / "Stats" / "tdata.dat")).shape[0] == 10
+
+
+def test_restart_time_series(tmp_path):
+    """The time series and statistics across restarts: a run saves past its last checkpoint
+    (step 10), a restart from that checkpoint replaces the later steps, and a
+    second restart from the same step writes files of its own (_r1) and replaces
+    the first restart's steps. The merged series is one history, and every step
+    in it refers to data that exists."""
+    import h5py
+    from femtools.xdmf import grids
+    params = dict(BUBBLE, solver="BDF", checkpoint=10)
+    restart = dict(params, save_step=1, restart_folder="results/data/1/Checkpoint")
+    run_twoasis(tmp_path, T=0.03, **dict(params, save_step=5))   # saves t = 0, 0.01, 0.02, 0.03
+    run_twoasis(tmp_path, T=0.026, **restart)                     # steps 11-13 from step 10
+    run_twoasis(tmp_path, T=0.024, **restart)                     # steps 11-12 from step 10 again
+    series = tmp_path / "results" / "data" / "1" / "Timeseries"
+    assert sorted(f.name for f in series.glob("u_*.xdmf")) == ["u_from_tstep_0.xdmf"]
+    steps = grids(str(series / "u_from_tstep_0.xdmf"))
+    assert [round(g["time"], 6) for g in steps] == [0., 0.01, 0.02, 0.022, 0.024]
+    assert [path.basename(g["attributes"]["u"][0]) for g in steps] == \
+        ["u_from_tstep_0.h5"] * 3 + ["u_from_tstep_10_r1.h5"] * 2
+    for g in steps:
+        h5file, dataset = g["attributes"]["u"]
+        with h5py.File(h5file, "r") as f:
+            assert dataset in f
+    # The statistics too: one row a step, the last restart's from step 11 on.
+    assert list(load_tdata(tmp_path)[:, 0]) == list(range(1, 13))
 
 
 def test_restart_other_process_count(tmp_path_factory, bubble_bdf):

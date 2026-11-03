@@ -48,19 +48,25 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
             newfolder = path.join(newfolder, str(previous + 1))
 
     MPI.barrier(MPI.comm_world)
+    tstepfolder = path.join(newfolder, "Timeseries")
+    comps = ['p', 'u', 'phi', 'g'] + scalar_components
+    # The series of this run start at tstep. A restart from the same step as an
+    # earlier one gets a name of its own (_r1, _r2, ...), so that it does not
+    # overwrite that run's files.
+    stem = None
     if MPI.rank(MPI.comm_world) == 0:
-        if not restart_folder:
-            makedirs(path.join(newfolder, "Timeseries"))
-            makedirs(path.join(newfolder, "Checkpoint"))
+        makedirs(tstepfolder, exist_ok=True)
+        stem, k = "_from_tstep_{}".format(tstep), 0
+        while any(glob.glob(path.join(tstepfolder, ui + stem + ".*")) for ui in comps):
+            k += 1
+            stem = "_from_tstep_{}_r{}".format(tstep, k)
+    stem = MPI.comm_world.bcast(stem, root=0)
 
     # XDMFFile2 (femtools) writes what dolfin's XDMFFile writes, but keeps the
     # midside nodes of a P2 field and compresses the data.
-    tstepfolder = path.join(newfolder, "Timeseries")
     tstepfiles = {}
-    comps = ['p', 'u', 'phi', 'g'] + scalar_components
     for ui in comps:
-        tstepfiles[ui] = XDMFFile2(MPI.comm_world, path.join(
-            tstepfolder, ui + '_from_tstep_{}.xdmf'.format(tstep)))
+        tstepfiles[ui] = XDMFFile2(MPI.comm_world, path.join(tstepfolder, ui + stem + ".xdmf"))
         tstepfiles[ui].parameters["rewrite_function_mesh"] = False
         tstepfiles[ui].parameters["flush_output"] = True
 
@@ -130,6 +136,7 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     oldfolder = checkpointfolder + ".old"
     NS_parameters["num_processes"] = MPI.size(comm)
     if MPI.rank(comm) == 0:
+        recover_checkpoint(checkpointfolder)
         # Left over if an earlier run stopped while writing.
         for folder in (tmpfolder, oldfolder):
             shutil.rmtree(folder, ignore_errors=True)
@@ -148,6 +155,19 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
         rename(tmpfolder, checkpointfolder)
         shutil.rmtree(oldfolder, ignore_errors=True)
     MPI.barrier(comm)
+
+
+def recover_checkpoint(checkpointfolder):
+    """Put back the last complete checkpoint if a run stopped between the two
+    renames of save_checkpoint_solution_h5: Checkpoint/ is then missing, and
+    Checkpoint.new/ (complete, since the renames start once it is written) or
+    else Checkpoint.old/ holds it."""
+    if path.exists(checkpointfolder) or not path.exists(checkpointfolder + ".old"):
+        return
+    for folder in (checkpointfolder + ".new", checkpointfolder + ".old"):
+        if path.exists(folder):
+            rename(folder, checkpointfolder)
+            return
 
 
 def check_if_kill(folder, killtime, total_timer, key='killtwoasis'):
@@ -212,48 +232,53 @@ def init_from_restart(restart_folder, sys_comp, uc_comp,
                 q_2[ui].vector().apply('insert')
 
 
+def series_files(folder, name):
+    """The time series files of field `name` in folder, in the order they were
+    written: the first run's, then those of the restarts that continued it."""
+    return sorted(glob.glob(path.join(folder, name + "_from_tstep_*.xdmf")),
+                  key=lambda f: (path.getmtime(f), f))
+
+
+def continued(series, time):
+    """Merge per-file lists of steps (each starting with its earliest), taken in
+    the order they were written: a later list replaces the steps from its first
+    time on, as a restart continues a run from a checkpoint and the run's steps
+    after it belong to an abandoned history. `time(step)` gives a step's time."""
+    steps = []
+    for later in (s for s in series if s):
+        t0 = time(later[0])
+        steps = [s for s in steps if time(s) < t0 - 1e-9 * max(1., abs(t0))] + list(later)
+    return steps
+
+
 def merge_visualization_files(newfolder, **namespace):
+    """Merge the time series of each field written by a run and the restarts that
+    continued it into the first run's file (merge_xml_files)."""
     if MPI.rank(MPI.comm_world) == 0:
         timefolder = path.join(newfolder, 'Timeseries')
-        # Gather files
         for name in ["u", "p", "phi", "g"]:
-            files = glob.glob(path.join(timefolder, name + "_from_tstep_*.xdmf"))
+            files = series_files(timefolder, name)
             if len(files) > 1:
                 merge_xml_files(files)
 
 
 def merge_xml_files(files):
-    # Get first timestep and trees
-    first_timesteps = []
-    trees = []
-    for f in files:
-        trees.append(ET.parse(f))
-        root = trees[-1].getroot()
-        first_timesteps.append(float(root[0][0][0][2].attrib["Value"]))
-
-    # Index valued sort (bypass numpy dependency)
-    first_timestep_sorted = sorted(first_timesteps)
-    indexes = [first_timesteps.index(i) for i in first_timestep_sorted]
-
-    # Get last timestep of first tree
-    base_tree = trees[indexes[0]]
-    last_node = base_tree.getroot()[0][0][-1]
-    ind = 1 if len(list(last_node)) == 3 else 2
-    last_timestep = float(last_node[ind].attrib["Value"])
-
-    # Append
-    for index in indexes[1:]:
-        tree = trees[index]
-        for node in list(tree.getroot()[0][0]):
-            ind = 1 if len(list(node)) == 3 else 2
-            if last_timestep < float(node[ind].attrib["Value"]):
-                base_tree.getroot()[0][0].append(node)
-                last_timestep = float(node[ind].attrib["Value"])
-
-    # Write the merged series to the first file in time and delete the others.
-    base_tree.write(files[indexes[0]], xml_declaration=True)
-    for index in indexes[1:]:
-        remove(files[index])
+    """Merge XDMF time series, given in the order they were written, into the
+    first file: each file's steps replace the steps before it from its first time
+    on (continued). The other .xdmf files are deleted; the .h5 files they refer
+    to, which the merged series refers to now, are kept."""
+    ET.register_namespace("xi", "http://www.w3.org/2001/XInclude")
+    trees = [ET.parse(f) for f in files]
+    collections = [tree.getroot().find("Domain").find("Grid") for tree in trees]
+    grids = [[g for g in c if g.tag == "Grid"] for c in collections]
+    merged = continued(grids, lambda g: float(g.find("Time").get("Value")))
+    for g in list(collections[0]):
+        collections[0].remove(g)
+    for g in merged:
+        collections[0].append(g)
+    trees[0].write(files[0], xml_declaration=True)
+    for f in files[1:]:
+        remove(f)
 
 
 def xdmf_time_series(xdmf_file):
@@ -337,13 +362,13 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
     def step(name, t_exact=None):
         """The step of the series name at the requested time, or, given t_exact,
         at exactly that time (so that all fields are read at the same time)."""
-        steps = [s for f in sorted(glob.glob(path.join(folder, name + "_from_tstep_*.xdmf")))
-                 for s in xdmf_time_series(f)]
+        steps = continued([xdmf_time_series(f) for f in series_files(folder, name)],
+                          lambda s: s[0])
         if not steps:
             raise FileNotFoundError("no {}_from_tstep_*.xdmf in {}".format(name, folder))
         if t_exact is None:
             t_target = max(s[0] for s in steps) if time is None else time
-            return min(steps, key=lambda s: abs(s[0] - t_target))
+            return min(reversed(steps), key=lambda s: abs(s[0] - t_target))
         match = [s for s in steps if abs(s[0] - t_exact) <= 1e-9 * max(1., abs(t_exact))]
         if not match:
             raise ValueError("{} has no step at t = {} in {}".format(name, t_exact, folder))

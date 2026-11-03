@@ -1,8 +1,8 @@
 """Small meshes for the problems that read a mesh file, made with gmsh for the
 smoke tests: a box with circular (2D) or spherical (3D) obstacles inside it,
 periodic along the given axes (the opposite faces of the box are meshed alike),
-written in dolfin's HDF5 layout together with the obstacle list each problem
-reads to mark its walls (one line "x y r" or "x y z r" per obstacle).
+written in dolfin's HDF5 layout, and the obstacle list (one line "x y r" or
+"x y z r" per obstacle) for the problems that read one.
 
 The meshes stand in for the ones made with Bernaise (Porous2D, CylArr2D) or
 meshtools (Porous3D, Porous3DFlux, BeadContact3D): coarse, and with obstacles

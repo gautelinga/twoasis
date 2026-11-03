@@ -16,9 +16,9 @@ from twoasis.common.utilities import set_subfunction
 from twoasis.common.io import load_timeseries
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep import Porous2D
-from twoasis.problems.TPfracStep.Porous2D import get_fname, Walls
+from twoasis.problems.TPfracStep.Porous2D import get_fname
 from twoasis.problems.TPfracStep.shared import (
-    centred, Faces, makedirs_on_root, PeriodicBox, read_phase_field, setup_stats,
+    centred, Faces, makedirs_on_root, mark_walls, PeriodicBox, read_phase_field, setup_stats,
     standard_stats, write_tdata, write_timestamp, write_timestamps_info)
 
 # The mesh and its file name are those of Porous2D.
@@ -68,13 +68,9 @@ def constrained_domain(Lx, **params):
     return PeriodicBox({0: centred(Lx)})
 
 
-def mark_subdomains(subdomains, dim, Lx, Ly, rad, R, N, res, **NS_namespace):
-    fname = get_fname(Lx, Ly, rad, R, N, res, "dat")
-    obst = np.loadtxt(fname, ndmin=2)
-    x = obst[:, :dim]
-    r = obst[:, dim]
-    wall = Walls(x, r)
-    wall.mark(subdomains, 1)
+def mark_subdomains(subdomains, mesh, Ly, **NS_namespace):
+    """Mark the obstacles' walls 1, the top 2 and the bottom 3."""
+    mark_walls(subdomains, mesh)
     top = Faces(1, Ly/2)
     top.mark(subdomains, 2)
     btm = Faces(1, -Ly/2)

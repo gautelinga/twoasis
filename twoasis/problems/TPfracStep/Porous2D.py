@@ -19,7 +19,7 @@ from dolfin import (
 
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, interface_energy, load_mesh, load_restart_parameters, makedirs_on_root,
+    centred, interface_energy, load_mesh, makedirs_on_root,
     PeriodicBox, write_timestamp, write_timestamps_info)
 
 
@@ -77,38 +77,37 @@ def mesh(Lx, Ly, rad, R, N, res, **params):
     return load_mesh(get_fname(Lx, Ly, rad, R, N, res, "h5"))
 
 # Override some problem specific parameters
-def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
-    if not load_restart_parameters(NS_parameters, commandline_kwargs):
-        NS_parameters.update(
-            T=100.0,
-            Lx=4,
-            Ly=8,
-            rad=0.5,
-            N=19,
-            res=0.05,
-            R=0.55,
-            dt=0.05,
-            rho=[1, 1],
-            mu=[1, 1],
-            theta=np.pi/3,
-            epsilon=0.05,
-            sigma=5.0,
-            M=0.0001,
-            F0=[0., 10.],
-            g0=[0., 0.],
-            init_state="",
-            checkerboard=[12, 18],
-            phi_target=0.0,
-            velocity_degree=1,
-            folder="porous2d_results",
-            plot_interval=10,
-            stat_interval=10,
-            timestamps_interval=10,
-            save_step=10,
-            checkpoint=10,
-            print_intermediate_info=10,
-            use_krylov_solvers=True,
-            solver="IPCS")
+def problem_parameters(NS_parameters, **NS_namespace):
+    NS_parameters.update(
+        T=100.0,
+        Lx=4,
+        Ly=8,
+        rad=0.5,
+        N=19,
+        res=0.05,
+        R=0.55,
+        dt=0.05,
+        rho=[1, 1],
+        mu=[1, 1],
+        theta=np.pi/3,
+        epsilon=0.05,
+        sigma=5.0,
+        M=0.0001,
+        F0=[0., 10.],
+        g0=[0., 0.],
+        init_state="",
+        checkerboard=[12, 18],
+        phi_target=0.0,
+        velocity_degree=1,
+        folder="porous2d_results",
+        plot_interval=10,
+        stat_interval=10,
+        timestamps_interval=10,
+        save_step=10,
+        checkpoint=10,
+        print_intermediate_info=10,
+        use_krylov_solvers=True,
+        solver="IPCS")
 
 
 def constrained_domain(Lx, Ly, **params):
@@ -134,42 +133,41 @@ def create_bcs(V, subdomains, **NS_namespace):
                 phig=[])
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q, restart_folder,
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, checkerboard, mesh, V, Q,
                phi_target, **NS_namespace):
-    if restart_folder is None:
-        if init_state == "":
-            if checkerboard is None:
-                phi_init = interpolate(Expression(
-                    #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-                    "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-                    epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
-            else:
-                phi_init = Function(VV['phig'].sub(0).collapse(), name="phi")
-                initialize_checkerboard_sat(phi_init, phi_target, checkerboard, [Lx, Ly], epsilon)
-            assign(q_['phig'].sub(0), phi_init)
-            q_1['phig'].vector()[:] = q_['phig'].vector()
+    if init_state == "":
+        if checkerboard is None:
+            phi_init = interpolate(Expression(
+                #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+                "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+                epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
         else:
-            if not path.exists(init_state):
-                raise FileNotFoundError("initial state {} does not exist".format(init_state))
-            phi_init = Function(VV['phig'].sub(0).collapse())
-            Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
-                                    constrained_domain=V.dofmap().constrained_domain)
-            u_init = Function(Vv)
-            with HDF5File(mesh.mpi_comm(), init_state, "r") as h5f:
-                h5f.read(phi_init, "phi")
-                h5f.read(u_init, "u")
-                h5f.read(q_['p'], "p")
-            assign(q_['phig'].sub(0), phi_init)
-            assign(q_['u0'], u_init.sub(0))
-            assign(q_['u1'], u_init.sub(1))
-            for ui in q_:
-                q_1[ui].vector()[:] = q_[ui].vector()[:]
-                q_2[ui].vector()[:] = q_[ui].vector()[:]
+            phi_init = Function(VV['phig'].sub(0).collapse(), name="phi")
+            initialize_checkerboard_sat(phi_init, phi_target, checkerboard, [Lx, Ly], epsilon)
+        assign(q_['phig'].sub(0), phi_init)
+        q_1['phig'].vector()[:] = q_['phig'].vector()
+    else:
+        if not path.exists(init_state):
+            raise FileNotFoundError("initial state {} does not exist".format(init_state))
+        phi_init = Function(VV['phig'].sub(0).collapse())
+        Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
+                                constrained_domain=V.dofmap().constrained_domain)
+        u_init = Function(Vv)
+        with HDF5File(mesh.mpi_comm(), init_state, "r") as h5f:
+            h5f.read(phi_init, "phi")
+            h5f.read(u_init, "u")
+            h5f.read(q_['p'], "p")
+        assign(q_['phig'].sub(0), phi_init)
+        assign(q_['u0'], u_init.sub(0))
+        assign(q_['u1'], u_init.sub(1))
+        for ui in q_:
+            q_1[ui].vector()[:] = q_[ui].vector()[:]
+            q_2[ui].vector()[:] = q_[ui].vector()[:]
 
-        for ui in x_1:
-            [bc.apply(x_1[ui]) for bc in bcs[ui]]
-        for ui in x_2:
-            [bc.apply(x_2[ui]) for bc in bcs[ui]]
+    for ui in x_1:
+        [bc.apply(x_1[ui]) for bc in bcs[ui]]
+    for ui in x_2:
+        [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,

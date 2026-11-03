@@ -8,9 +8,11 @@ import pytest
 
 from conftest import QUIET, run_twoasis
 
-# Problems that build their own mesh.
-PROBLEMS = ["Bubble2D", "BubbleOpen", "LaplaceBubble2D", "OscBubble2D", "PeriodicBubble2D",
-            "PlaneCouette", "RayleighTaylor2D", "TaylorBubble2D", "TaylorGreen2D"]
+# Problems that build their own mesh. PeriodicBubble2D (the bubble fixtures),
+# TaylorBubble2D (test_taylorbubble_smoke) and TaylorGreen2D (test_convergence)
+# run elsewhere with both solvers.
+PROBLEMS = ["Bubble2D", "BubbleOpen", "LaplaceBubble2D", "OscBubble2D", "PlaneCouette",
+            "RayleighTaylor2D"]
 
 # Problems that read a mesh file, which has to be generated first with the
 # scripts in meshes/ (or Bernaise's, for Porous2D, Porous2DFlux and CylArr2D).

@@ -11,18 +11,17 @@ import time
 import glob
 
 import numpy as np
-from dolfin import MPI, Function, FunctionSpace, XDMFFile, HDF5File, assign
+from dolfin import MPI, Function, FunctionAssigner, FunctionSpace, XDMFFile, HDF5File, assign
 from twoasis.problems import info_red
 
 __all__ = ["create_initial_folders", "save_solution", "save_tstep_solution_h5",
-           "save_checkpoint_solution_h5", "check_if_kill", "check_if_reset_statistics",
+           "save_checkpoint_solution_h5", "check_if_kill",
            "init_from_restart", "merge_visualization_files", "merge_xml_files",
            "load_timeseries"]
 
 
 def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
-                           scalar_components, output_timeseries_as_vector,
-                           **NS_namespace):
+                           scalar_components, **NS_namespace):
     """Create necessary folders."""
     info_red("Creating initial folders")
     # To avoid writing over old data create a new folder for each run
@@ -35,7 +34,8 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
     MPI.barrier(MPI.comm_world)
     newfolder = path.join(folder, 'data')
     if restart_folder:
-        newfolder = path.join(newfolder, restart_folder.split('/')[-2])
+        # The run folder that holds the checkpoint (<folder>/data/<n>/Checkpoint).
+        newfolder = path.dirname(path.abspath(restart_folder.rstrip("/")))
     else:
         if not path.exists(newfolder):
             newfolder = path.join(newfolder, '1')
@@ -47,20 +47,12 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
     MPI.barrier(MPI.comm_world)
     if MPI.rank(MPI.comm_world) == 0:
         if not restart_folder:
-            #makedirs(path.join(newfolder, "Voluviz"))
-            #makedirs(path.join(newfolder, "Stats"))
-            #makedirs(path.join(newfolder, "VTK"))
             makedirs(path.join(newfolder, "Timeseries"))
             makedirs(path.join(newfolder, "Checkpoint"))
 
     tstepfolder = path.join(newfolder, "Timeseries")
     tstepfiles = {}
-    comps = sys_comp
-    if output_timeseries_as_vector:
-        #pf_comps = ["phi"]  
-        pf_comps = ['phi', 'g']
-        comps = ['p', 'u'] + pf_comps + scalar_components
-
+    comps = ['p', 'u', 'phi', 'g'] + scalar_components
     for ui in comps:
         tstepfiles[ui] = XDMFFile(MPI.comm_world, path.join(
             tstepfolder, ui + '_from_tstep_{}.xdmf'.format(tstep)))
@@ -72,14 +64,13 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
 
 def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
                   NS_parameters, tstepfiles, u_, u_components, scalar_components,
-                  output_timeseries_as_vector, constrained_domain,
+                  constrained_domain,
                   AssignedVectorFunction, killtime, total_timer, **NS_namespace):
     """Called at end of timestep. Check for kill and save solution if required."""
     NS_parameters.update(t=t, tstep=tstep)
     if tstep % save_step == 0:
-        save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
-                               output_timeseries_as_vector, u_components, AssignedVectorFunction,
-                               scalar_components, NS_parameters)
+        save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction,
+                               NS_parameters)
 
     pauseoasis = check_if_pause(folder)
     while pauseoasis:
@@ -93,48 +84,34 @@ def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
     return killoasis
 
 
-def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, constrained_domain,
-                           output_timeseries_as_vector, u_components, AssignedVectorFunction,
-                           scalar_components, NS_parameters):
-    """Store solution on current timestep to XDMF file."""
-    timefolder = path.join(newfolder, 'Timeseries')
-    if output_timeseries_as_vector:
-        # project or store velocity to vector function space
-        for comp, tstepfile in tstepfiles.items():
-            if comp == "u":
-                # Create vector function and assigners
-                uv = AssignedVectorFunction(u_, name="u")
-
-                # Assign solution to vector
-                uv()
-
-                # Store solution vector
-                tstepfile.write(uv, float(t))
-                #tstepfile.write(u_, float(t))
-            elif comp == "phi":
-                phi__ = Function(q_['phig'].function_space().sub(0).collapse(), name="phi")
-                assign(phi__, q_['phig'].sub(0))
-                tstepfile.write(phi__, float(t))
-            elif comp == "g":
-                # pass
-                # chemical potential has not really been needed
-                g__ = Function(q_['phig'].function_space().sub(1).collapse(), name="g")
-                assign(g__, q_['phig'].sub(1))
-                tstepfile.write(g__, float(t))
-            elif comp in q_:
-                tstepfile.write(q_[comp], float(t))
-            else:
-                tstepfile.write(tstepfile.function, float(t))
-
-    else:
-        for comp, tstepfile in tstepfiles.items():
-            tstepfile << (q_[comp], float(t))
+def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction,
+                           NS_parameters):
+    """Store the velocity (as a vector), pressure, phase field and chemical
+    potential on the current timestep in the XDMF time series. The functions
+    written and the assigners filling them are built on the first call."""
+    out = _TIMESERIES_OUTPUT.get(id(tstepfiles))
+    if out is None:
+        W = q_['phig'].function_space()
+        out = dict(u=AssignedVectorFunction(u_, name="u"))
+        for i, name in enumerate(["phi", "g"]):
+            out[name] = Function(W.sub(i).collapse(), name=name)
+            out[name + "_assigner"] = FunctionAssigner(out[name].function_space(), W.sub(i))
+        _TIMESERIES_OUTPUT[id(tstepfiles)] = out
+    out["u"]()
+    for name in ["phi", "g"]:
+        out[name + "_assigner"].assign(out[name], q_['phig'].sub(["phi", "g"].index(name)))
+    for comp, tstepfile in tstepfiles.items():
+        tstepfile.write(out[comp] if comp in out else q_[comp], float(t))
 
     if MPI.rank(MPI.comm_world) == 0:
-        paramsfilename = path.join(timefolder, "params.dat")
+        paramsfilename = path.join(newfolder, "Timeseries", "params.dat")
         if not path.exists(paramsfilename):
-            f = open(paramsfilename, 'wb')
-            pickle.dump(NS_parameters,  f)
+            with open(paramsfilename, 'wb') as f:
+                pickle.dump(NS_parameters, f)
+
+
+# The output functions of save_tstep_solution_h5, per set of time series files.
+_TIMESERIES_OUTPUT = {}
 
 
 def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
@@ -190,7 +167,8 @@ def check_if_kill(folder, killtime, total_timer, key='killtwoasis'):
             info_red(key+' found! Stopping simulations cleanly...')
         return True
     else:
-        elapsed_time = float(total_timer.elapsed()[0])
+        # The slowest rank decides, so that all ranks stop (and checkpoint) together.
+        elapsed_time = MPI.max(MPI.comm_world, float(total_timer.elapsed()[0]))
         if killtime is not None and killtime <= elapsed_time:
             if MPI.rank(MPI.comm_world) == 0:
                 info_red('Given killtime reached! Stopping simulations cleanly...')
@@ -208,21 +186,6 @@ def check_if_pause(folder, key='pausetwoasis'):
     if collective > 0:
         if MPI.rank(MPI.comm_world) == 0:
             info_red(key+' found! Simulations paused. Remove ' + path.join(folder, key) + ' to resume simulations...')
-        return True
-    else:
-        return False
-
-
-def check_if_reset_statistics(folder, key='resettwoasis'):
-    """Check if user has put a file named resetoasis in folder."""
-    found = 0
-    if key in listdir(folder):
-        found = 1
-    collective = MPI.sum(MPI.comm_world, found)
-    if collective > 0:
-        if MPI.rank(MPI.comm_world) == 0:
-            remove(path.join(folder, key))
-            info_red(key+' found!')
         return True
     else:
         return False
@@ -258,13 +221,8 @@ def merge_visualization_files(newfolder, **namespace):
     if MPI.rank(MPI.comm_world) == 0:
         timefolder = path.join(newfolder, 'Timeseries')
         # Gather files
-        xdmf_files = list(glob.glob(path.join(timefolder, "*.xdmf")))
-        xdmf_velocity = [f for f in xdmf_files if "u_from_tstep" in f.__str__()]
-        xdmf_pressure = [f for f in xdmf_files if "p_from_tstep" in f.__str__()]
-        xdmf_phi = [f for f in xdmf_files if "phi_from_tstep" in f.__str__()]
-
-        # Merge files
-        for files in [xdmf_velocity, xdmf_pressure, xdmf_phi]:
+        for name in ["u", "p", "phi", "g"]:
+            files = glob.glob(path.join(timefolder, name + "_from_tstep_*.xdmf"))
             if len(files) > 1:
                 merge_xml_files(files)
 
@@ -297,15 +255,10 @@ def merge_xml_files(files):
                 base_tree.getroot()[0][0].append(node)
                 last_timestep = float(node[ind].attrib["Value"])
 
-    # Separate xdmf files
-    new_file = [f for f in files if "_0" in f]
-    old_files = [f for f in files if "_" in f and f not in new_file]
-
-    # Write new xdmf file
-    base_tree.write(new_file[0], xml_declaration=True)
-
-    # Delete xdmf file
-    [remove(f) for f in old_files]
+    # Write the merged series to the first file in time and delete the others.
+    base_tree.write(files[indexes[0]], xml_declaration=True)
+    for index in indexes[1:]:
+        remove(files[index])
 
 
 def xdmf_time_series(xdmf_file):
@@ -385,9 +338,9 @@ def match_points(points, queries, tol):
 
 def load_timeseries(folder, q_, VV, constrained_domain, time=None):
     """Set q_ (velocity, pressure, phase field and chemical potential) from the
-    XDMF time series in folder, the Timeseries/ of an earlier run with
-    output_timeseries_as_vector: at the last saved time, or at the saved time
-    closest to `time`. Returns the time read.
+    XDMF time series in folder, the Timeseries/ of an earlier run: at the last
+    saved time of the velocity, or at its saved time closest to `time`; the
+    other fields must have a step at the same time. Returns the time read.
 
     The series hold the values at the mesh vertices. Each process matches the
     coordinates of its own degrees of freedom to the saved ones, so the run may
@@ -401,18 +354,25 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
     tol = 1e-8 * MPI.max(mesh.mpi_comm(), float((x.max(axis=0) - x.min(axis=0)).max()))
     matchers = {}  # each field's file holds the same coordinates; sort them once
 
-    def step(name):
+    def step(name, t_exact=None):
+        """The step of the series name at the requested time, or, given t_exact,
+        at exactly that time (so that all fields are read at the same time)."""
         steps = [s for f in sorted(glob.glob(path.join(folder, name + "_from_tstep_*.xdmf")))
                  for s in xdmf_time_series(f)]
         if not steps:
             raise FileNotFoundError("no {}_from_tstep_*.xdmf in {}".format(name, folder))
-        t_target = max(s[0] for s in steps) if time is None else time
-        return min(steps, key=lambda s: abs(s[0] - t_target))
+        if t_exact is None:
+            t_target = max(s[0] for s in steps) if time is None else time
+            return min(steps, key=lambda s: abs(s[0] - t_target))
+        match = [s for s in steps if abs(s[0] - t_exact) <= 1e-9 * max(1., abs(t_exact))]
+        if not match:
+            raise ValueError("{} has no step at t = {} in {}".format(name, t_exact, folder))
+        return match[-1]
 
-    def read(name):
+    def read(name, t_exact=None):
         """The saved values (one column per component), a matcher for the saved
         coordinates, and the time."""
-        t, (h5name, dataset), (h5geometry, geometry) = step(name)
+        t, (h5name, dataset), (h5geometry, geometry) = step(name, t_exact)
         with h5py.File(h5name, "r") as h5f:
             values = h5f[dataset][:]
         with h5py.File(h5geometry, "r") as h5f:
@@ -448,11 +408,11 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
     u, matcher, t = read("u")
     for i in range(gdim):
         fill(q_['u{}'.format(i)], q_['u{}'.format(i)].function_space(), u[:, i], matcher)
-    p, matcher, _ = read("p")
+    p, matcher, _ = read("p", t)
     fill(q_['p'], q_['p'].function_space(), p[:, 0], matcher)
     W = q_['phig'].function_space()
     for i, name in enumerate(["phi", "g"]):
-        values, matcher, _ = read(name)
+        values, matcher, _ = read(name, t)
         fill(q_['phig'], W.sub(i), values[:, 0], matcher)
     for f in q_.values():
         f.vector().update_ghost_values()

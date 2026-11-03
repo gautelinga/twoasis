@@ -7,27 +7,13 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
 """
-This module implements a generic form of the fractional step method for
-solving the incompressible Navier-Stokes equations. There are several
-possible implementations of the pressure correction and the more low-level
-details are chosen at run-time and imported from any one of:
-
-  solvers/TPfracStep/IPCS_ABCN.py    # Implicit convection
-  solvers/TPfracStep/Chorin.py       # Naive
-
-The naive solvers are very simple and not optimized. They are intended
-for validation of the other optimized versions. The fractional step method
-can be used both non-iteratively or with iterations over the pressure-
-velocity system.
-
-The velocity vector is segregated, and we use three (in 3D) scalar
-velocity components.
-
-Each new problem needs to implement a new problem module to be placed in
-the problems/NSfracStep folder. From the problems module one needs to import
-a mesh and a control dictionary called NS_parameters. See
-problems/NSfracStep/__init__.py for all possible parameters.
-
+The main script of twoasis: it imports the problem (twoasis/problems/TPfracStep/<problem>.py)
+and the solver (twoasis/solvers/TPfracStep/<solver>.py), builds one namespace from their
+parameters and functions, and runs the time loop. Each step solves the Cahn-Hilliard
+equation for the phase field (phi, g), then the Navier-Stokes equations by a fractional
+step (tentative velocity, pressure correction, velocity update), with optional inner
+iterations. Problem hooks (initialize, pre_solve_hook, temporal_hook, ...) are called
+with the whole namespace.
 """
 import importlib
 from os import path
@@ -84,21 +70,16 @@ problem_parameters(**vars())
 # Update current namespace with NS_parameters and commandline_kwargs ++
 vars().update(post_import_problem(**vars()))
 
+if scalar_components:
+    raise NotImplementedError("passive scalars (scalar_components) are not supported by the "
+                              "TPfracStep solvers")
+
 # Use one quadrature degree for all forms. The form compiler's automatic estimate
 # is very high for forms with variable coefficients (density, viscosity, the
 # phase-field potential), which makes assembly slow for little gain in accuracy.
 if quadrature_degree is None:
     quadrature_degree = 2 * velocity_degree + 1
 parameters["form_compiler"]["quadrature_degree"] = quadrature_degree
-
-# Use t and tstep from stored parameters if restarting
-if restart_folder is not None:
-    f = open(path.join(path.abspath(restart_folder), 'params.dat'), 'rb')
-    import pickle
-    params = pickle.load(f)
-    f.close()
-    t = params["t"]
-    tstep = params["tstep"]
 
 # Import chosen functionality from solvers
 # Each name in the solver's __all__ comes from the solver module, or else from
@@ -172,9 +153,6 @@ q_  = dict((ui, Function(VV[ui], name=ui)) for ui in sys_comp)
 q_1 = dict((ui, Function(VV[ui], name=ui + "_1")) for ui in sys_comp)
 q_2 = dict((ui, Function(VV[ui], name=ui + "_2")) for ui in sys_comp)
 
-# Read in previous solution if restarting
-init_from_restart(**vars())
-
 # Create vectors of the segregated velocity components
 u_  = as_vector([q_ [ui] for ui in u_components]) # Velocity vector at t
 u_1 = as_vector([q_1[ui] for ui in u_components]) # Velocity vector at t - dt
@@ -220,25 +198,13 @@ if len(angles) > 0 and isinstance(angles[0][0], Function):
     with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "angles.xdmf")) as xdmff:
         xdmff.write(angles[0][0])
 
-"""
-# LES setup
-lesmodel = importlib.import_module('.'.join(('twoasis.solvers.TPfracStep.LES', les_model)))
-vars().update({name:lesmodel.__dict__[name] for name in lesmodel.__all__})
 
-vars().update(les_setup(**vars()))
-
-# Non-Newtonian setup
-#exec("from oasis.solvers.NSfracStep.NNModel.{} import *".format(nn_model))
-nnmodel = importlib.import_module('.'.join(('twoasis.solvers.TPfracStep.NNModel', nn_model)))
-vars().update({name:nnmodel.__dict__[name] for name in nnmodel.__all__})
-
-vars().update(nn_setup(**vars()))
-"""
-
-# Initialize solution
+# Initialize solution, then, if restarting, overwrite the fields with the checkpoint
+# (t and tstep came with the checkpoint's parameters).
 _vars = initialize(**vars())
 if isinstance(_vars, dict):
     vars().update(_vars)
+init_from_restart(**vars())
 
 #  Fetch linear algebra solvers
 u_sol, p_sol, pf_sol, c_sol = get_solvers(**vars())
@@ -272,7 +238,9 @@ vars().update(pre_solve_hook(**vars()))
 tx = OasisTimer('Timestep timer')
 tx.start()
 total_timer = OasisTimer("Start simulations", True)
-stop = save_solution(**vars())
+# Save the initial state (not on a restart: the checkpoint and the time series
+# already hold it, and saving would overwrite the checkpoint's previous level).
+stop = save_solution(**vars()) if restart_folder is None else False
 while t < (T - tstep * DOLFIN_EPS) and not stop:
     t += dt
     tstep += 1
@@ -295,8 +263,6 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
-            #les_update(**vars())
-            #nn_update(**vars())
             assemble_first_inner_iter(**vars())
         udiff[0] = 0.0
         for i, ui in enumerate(u_components):

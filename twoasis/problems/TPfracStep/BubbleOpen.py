@@ -64,6 +64,10 @@ def problem_parameters(NS_parameters, **NS_namespace):
     )
 
 
+def contact_angles(**NS_namespace):
+    return []  # no walls: the top and bottom are open
+
+
 def mark_subdomains(subdomains, Ly, **NS_namespace):
     Faces(1, Ly/2).mark(subdomains, 1)   # top
     Faces(1, -Ly/2).mark(subdomains, 2)  # bottom

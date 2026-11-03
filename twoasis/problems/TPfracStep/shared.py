@@ -5,14 +5,13 @@ __copyright__ = "Copyright (C) 2026 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from os import makedirs, path
-import pickle
 
 import numpy as np
 from dolfin import (
-    assemble, DOLFIN_EPS_LARGE, grad, HDF5File, inner, Mesh, MPI, Point, RectangleMesh,
+    assemble, DOLFIN_EPS_LARGE, Function, grad, HDF5File, inner, Mesh, MPI, Point, RectangleMesh,
     SpatialCoordinate, SubDomain)
 
-from twoasis.common.utilities import compute_ind
+from twoasis.common.utilities import compute_ind, subfunction
 
 
 def rectangle_mesh(Lx, Ly, res, centred=False):
@@ -119,18 +118,6 @@ def makedirs_on_root(*folders):
                 makedirs(folder)
 
 
-def load_restart_parameters(NS_parameters, commandline_kwargs):
-    """If the command line gives a restart_folder, load the parameters stored
-    there into NS_parameters and return True; otherwise return False."""
-    if "restart_folder" not in commandline_kwargs:
-        return False
-    restart_folder = path.abspath(commandline_kwargs["restart_folder"])
-    with open(path.join(restart_folder, "params.dat"), "rb") as f:
-        NS_parameters.update(pickle.load(f))
-    NS_parameters["restart_folder"] = restart_folder
-    return True
-
-
 def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, pressure_degree,
                           phase_field_degree, constrained_domain):
     """Describe the files that write_timestamp adds to timestampsfolder:
@@ -138,10 +125,10 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
     function spaces and the periodic directions, and mesh.h5 holds the mesh."""
     periodic = getattr(constrained_domain, "periodic", {})
     if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(timestampsfolder, "params.dat"), "a+") as ofile:
+        with open(path.join(timestampsfolder, "params.dat"), "w") as ofile:
             for key, val in params.items():
                 ofile.write("{}={}\n".format(key, val))
-        with open(path.join(timestampsfolder, "dolfin_params.dat"), "a+") as ofile:
+        with open(path.join(timestampsfolder, "dolfin_params.dat"), "w") as ofile:
             ofile.write("velocity_space=P{}\n".format(velocity_degree))
             ofile.write("pressure_space=P{}\n".format(pressure_degree))
             ofile.write("phase_field_space=P{}\n".format(phase_field_degree))
@@ -157,7 +144,7 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
 def read_phase_field(fname, mesh, q_):
     """The phase field stored as "phi" in the HDF5 file fname (e.g. a file
     written by write_timestamp)."""
-    phi__, _ = q_['phig'].split(deepcopy=True)
+    phi__ = Function(subfunction(q_['phig'], 0).function_space())
     with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
         h5f.read(phi__, "phi")
     return phi__
@@ -168,7 +155,7 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     in timestamps.dat."""
     uv()
     h5fname = "up_{}.h5".format(tstep)
-    phi__, _ = q_['phig'].split(deepcopy=True)
+    phi__ = subfunction(q_['phig'], 0)
     phi__.rename("phi", "phi")
     with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
         h5f.write(uv, "u")

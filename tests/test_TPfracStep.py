@@ -14,16 +14,11 @@ variants) checking:
 import numpy as np
 import pytest
 
-from conftest import (BUBBLE, COLS, QUIET, assert_close, assert_mass_conserved,
-                      golden_compare, load_tdata, mpirun_size, run_twoasis)
+from conftest import (BUBBLE, COLS, MASS_TOL, QUIET, assert_close, assert_mass_conserved,
+                      golden_compare, load_tdata, require_mpi, run_twoasis)
 
 # Scalars pinned by the golden tests.
 GOLDEN_COLS = ["u0m", "phim", "E_kin", "E_int", "vol_c"]
-
-# The scheme conserves int(phi) exactly. What drift remains comes from the
-# phase-field Krylov tolerance (1e-8 relative), about 1e-8 per step. A real mass
-# leak is orders of magnitude larger than this bound.
-MASS_TOL = 1e-6
 
 
 @pytest.fixture(params=["bubble_bdf", "bubble_ipcs", "bubble_p1_bdf", "bubble_p1_ipcs"])
@@ -74,8 +69,9 @@ def test_restart_continuation(bubble_bdf_restarted, bubble_bdf_long):
     resumes with its full history. Any remaining difference is at the level of
     the Krylov tolerances.
     """
-    _, td_r = bubble_bdf_restarted
+    _, td_r, stdout = bubble_bdf_restarted
     _, td_l = bubble_bdf_long
+    assert "BDF1 on first timestep: False" in stdout  # the previous level was restored
     assert td_r.shape[0] == 20  # 10 original + 10 appended rows
     for name in GOLDEN_COLS:
         assert_close("restarted " + name, td_r[-1, COLS[name]], td_l[-1, COLS[name]],
@@ -100,10 +96,7 @@ def test_restart_old_format(bubble_bdf_restarted_old_format, bubble_bdf_long):
 
 def test_parallel(tmp_path, bubble_bdf):
     """Two-rank run: completes, conserves mass, agrees with serial."""
-    size = mpirun_size(2)
-    if size != 2:
-        pytest.skip("mpirun -np 2 does not start a two-rank job here (dolfin sees {} "
-                    "rank(s))".format(size))
+    require_mpi(2)
     run_twoasis(tmp_path, nprocs=2, solver="BDF", T=0.02, **BUBBLE)
     td = load_tdata(tmp_path)
     assert np.isfinite(td).all()

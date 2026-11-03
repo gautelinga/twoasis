@@ -10,13 +10,16 @@ name: tests
 # Actions tab.
 on:
   push:
+    branches: [main]
   pull_request:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
 
+# A new push or PR update cancels the previous run of the same kind; the weekly
+# and manual (slow) runs are in their own group, so a push does not cancel them.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -25,6 +28,7 @@ jobs:
     timeout-minutes: 60
     env:
       OMP_NUM_THREADS: "1"
+      TWOASIS_REQUIRE_MPI: "1"  # fail, rather than skip, the parallel tests
     steps:
       - uses: actions/checkout@v4
       - &install
@@ -42,7 +46,9 @@ jobs:
           python3 -m pip install --break-system-packages --no-deps .
       - &check
         name: the interpreter has everything the tests need
-        run: python3 -c "import dolfin, h5py, gmsh, meshio, matplotlib, twoasis; h5py.File; print(dolfin.__version__)"
+        run: |
+          command -v twoasis
+          python3 -c "import dolfin, h5py, gmsh, meshio, matplotlib, twoasis; h5py.File; print(dolfin.__version__)"
       # dijitso keys by a hash of the generated code, so a stale entry is a miss,
       # not a wrong answer. A cold cache pays for every form in the suite.
       - &cache
@@ -62,6 +68,7 @@ jobs:
     timeout-minutes: 120
     env:
       OMP_NUM_THREADS: "1"
+      TWOASIS_REQUIRE_MPI: "1"
     steps:
       - uses: actions/checkout@v4
       - *install

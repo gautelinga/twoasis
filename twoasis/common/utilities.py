@@ -6,14 +6,18 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 from dolfin import (assemble, Function, Constant,
     TrialFunction,TestFunction, dx, Vector, Matrix,
-    FunctionSpace, Timer, div, Form, inner, grad, assign,
+    FunctionSpace, Timer, div, Form, inner, grad,
     VectorFunctionSpace, FunctionAssigner, PETScKrylovSolver,
     PETScPreconditioner, DirichletBC, split)
 
-# Import ufl (fix across installations)
-from ufl_legacy import Coefficient
-from ufl_legacy.tensors import ListTensor
-if not isinstance(Constant(0.), Coefficient):
+# The UFL that dolfin was built with: ufl_legacy in recent installations, ufl in
+# older ones.
+try:
+    from ufl_legacy import Coefficient
+    from ufl_legacy.tensors import ListTensor
+    if not isinstance(Constant(0.), Coefficient):
+        raise ImportError
+except ImportError:
     from ufl import Coefficient
     from ufl.tensors import ListTensor
 
@@ -80,9 +84,9 @@ class OasisFunction(Function):
 
     """
 
-    def __init__(self, form, Space, bcs=[],
+    def __init__(self, form, Space, bcs=(),
                  name="x",
-                 matvec=[None, None],
+                 matvec=None,
                  method="default",
                  solver_type="cg",
                  preconditioner_type="default"):
@@ -90,8 +94,10 @@ class OasisFunction(Function):
         Function.__init__(self, Space, name=name)
         self.form = form
         self.method = method
-        self.bcs = bcs
-        self.matvec = matvec
+        self.bcs = list(bcs)
+        # [matrix, vector] for a right-hand side matrix*vector; a fresh list per
+        # instance (GradFunction fills it in place).
+        self.matvec = list(matvec) if matvec is not None else [None, None]
         self.trial = trial = TrialFunction(Space)
         self.test = test = TestFunction(Space)
         Mass = inner(trial, test) * dx()
@@ -318,59 +324,6 @@ class DivFunction(OasisFunction):
             OasisFunction.__call__(self, assemb_rhs=assemb_rhs)
 
 
-class CG1Function(OasisFunction):
-    """
-    Function used for projecting a CG1 space, possibly using a weighted average.
-
-    Typically used for computing turbulent viscosity in LES.
-
-    """
-
-    def __init__(self, form, mesh, bcs=[], name="CG1", method={}, bounded=False):
-
-        solver_type = method.get('solver_type', 'cg')
-        preconditioner_type = method.get('preconditioner_type', 'default')
-        solver_method = method.get('method', 'default')
-        self.bounded = bounded
-
-        Space = FunctionSpace(mesh, "CG", 1)
-        OasisFunction.__init__(self, form, Space,
-                               bcs=bcs, name=name,
-                               method=solver_method, solver_type=solver_type,
-                               preconditioner_type=preconditioner_type)
-
-        if solver_method.lower() == "weightedaverage":
-            from fenicstools import compiled_gradient_module
-            DG = FunctionSpace(mesh, 'DG', 0)
-            # Cannot use cache. Matrix will be modified
-            self.A = assemble(TrialFunction(DG) * self.test * dx())
-            self.dg = dg = Function(DG)
-            compiled_gradient_module.compute_DG0_to_CG_weight_matrix(
-                self.A, dg)
-            self.bf_dg = inner(form, TestFunction(DG)) * dx()
-
-    def __call__(self):
-
-        if self.method.lower() == "weightedaverage":
-            assemble(self.bf_dg, tensor=self.dg.vector())
-
-            # Compute weighted average on CG1
-            self.vector().zero()
-            self.vector().axpy(1.0, self.A * self.dg.vector())
-            self.vector().apply("insert")
-            [bc.apply(self.vector()) for bc in self.bcs]
-
-        else:
-            OasisFunction.__call__(self)
-
-        if self.bounded:
-            self.bound()
-
-    def bound(self):
-        self.vector().set_local(self.vector().get_local().clip(min=0))
-        self.vector().apply("insert")
-
-
 class AssignedVectorFunction(Function):
     """Vector function used for postprocessing.
 
@@ -395,40 +348,6 @@ class AssignedVectorFunction(Function):
     def __call__(self):
         for i, _u in enumerate(self.u):
             self.fa[i].assign(self.sub(i), _u)
-
-
-class LESsource(Function):
-    """Function used for computing the transposed source to the LES equation."""
-
-    def __init__(self, nut, u, Space, bcs=[], name=""):
-
-        Function.__init__(self, Space, name=name)
-
-        dim = Space.mesh().geometry().dim()
-        test = TestFunction(Space)
-        self.bf = [inner(inner(grad(nut), u.dx(i)), test)
-                   * dx for i in range(dim)]
-
-    def assemble_rhs(self, i=0):
-        """Assemble right hand side."""
-        assemble(self.bf[i], tensor=self.vector())
-
-
-class NNsource(Function):
-    """Function used for computing the transposed source to the non-Newtonian equation."""
-
-    def __init__(self, nunn, u, Space, bcs=[], name=""):
-
-        Function.__init__(self, Space, name=name)
-
-        dim = Space.mesh().geometry().dim()
-        test = TestFunction(Space)
-        self.bf = [inner(inner(grad(nunn), u.dx(i)), test)
-                   * dx for i in range(dim)]
-
-    def assemble_rhs(self, i=0):
-        """Assemble right hand side."""
-        assemble(self.bf[i], tensor=self.vector())
 
 
 class TPsource(Function):
@@ -457,12 +376,31 @@ def homogenize(bcs):
     return b
 
 
+_SUBFUNCTIONS = {}
+
+
+def subfunction(q, i):
+    """Component i of the mixed Function q, copied into a Function on its own
+    (collapsed) space. The space, the Function and the assigner are built once
+    per mixed space and component, and the same Function is returned (with the
+    current values) on every call."""
+    W = q.function_space()
+    key = (W.id(), i)
+    if key not in _SUBFUNCTIONS:
+        f = Function(W.sub(i).collapse())
+        _SUBFUNCTIONS[key] = (f, FunctionAssigner(f.function_space(), W.sub(i)))
+    f, assigner = _SUBFUNCTIONS[key]
+    assigner.assign(f, q.sub(i))
+    return f
+
+
 def compute_ind(q_, phase=-1):
     """Smoothed indicator (0 to 1) of the phase phi = phase (+1 or -1)."""
-    ind_ = Function(q_["phig"].sub(0).function_space().collapse())
-    assign(ind_, q_["phig"].sub(0))
-    c_ = 0.5*(1 + phase * ind_.vector()[:])
+    phi = subfunction(q_["phig"], 0)
+    ind_ = Function(phi.function_space())
+    c_ = 0.5*(1 + phase * phi.vector().get_local())
     c_[c_ < 0] = 0
     c_[c_ > 1] = 1
-    ind_.vector()[:] = 3*c_**2 - 2*c_**3
+    ind_.vector().set_local(3*c_**2 - 2*c_**3)
+    ind_.vector().apply("insert")
     return ind_

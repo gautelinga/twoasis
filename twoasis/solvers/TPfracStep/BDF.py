@@ -177,7 +177,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
 
     if bcs['p'] == []:
         Apt[2] = attach_pressure_nullspace(Apt[0], x_, Q)
-        attach_pressure_nullspace(Apd, x_, Q)
+        as_backend_type(Apd).set_nullspace(Apt[2])
 
     d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
     return d
@@ -283,7 +283,6 @@ def attach_pressure_nullspace(Ap, x_, Q):
     Aa = as_backend_type(Ap)
     null_space = VectorSpaceBasis([null_vec])
     Aa.set_nullspace(null_space)
-    Aa.null_space = null_space
     return null_space
 
 def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, rho_inv_, **NS_namespace):
@@ -322,16 +321,12 @@ def pressure_solve(dp_, x_, Apt, Apd, b, p_sol, bcs, constant_poisson_coefficien
     dp_.vector().zero()
     dp_.vector().axpy(1., x_['p'])
 
+    # With no pressure boundary condition the pressure is defined up to a
+    # constant: make the right-hand side consistent (orthogonal to the null space).
+    if Apt[2] is not None:
+        Apt[2].orthogonalize(b['p'])
     t1 = Timer("Pressure Linear Algebra Solve")
-    if not constant_poisson_coefficient:
-        # KrylovSolvers use nullspace for normalization of pressure
-        if hasattr(Apt[0], 'null_space'):
-            p_sol.null_space.orthogonalize(b['p'])
-        p_sol.solve(Apt[0], x_['p'], b['p'])
-    else:
-        if hasattr(Apd, 'null_space'):
-            p_sol.null_space.orthogonalize(b['p'])
-        p_sol.solve(Apd, x_['p'], b['p'])
+    p_sol.solve(Apd if constant_poisson_coefficient else Apt[0], x_['p'], b['p'])
     t1.stop()
 
     # LUSolver uses normalize directly for normalization of pressure
@@ -411,7 +406,7 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
 
     assemble(Lpft, tensor=b['phig'])
     if bpf:
-        if "t" in fpf._user_parameters:
+        if "t" in getattr(fpf, "_user_parameters", {}):
             fpf.t = t
         assemble(bpf[0] * dx, tensor=bpf[1])
         b['phig'].axpy(1.0, bpf[1])

@@ -19,7 +19,7 @@ NS_parameters.update(
     # Some discretization options
     # Use Adams Bashforth projection as first estimate for pressure on new timestep
     AB_projection_pressure=False,
-    solver="Naive",  # "IPCS", "BDF"
+    solver="BDF",  # or "IPCS"
     bdf_order=2,
     # First BDF step: True = first order, False = second order, None = second order
     # only if initialize() (or the checkpoint) provides the solution at t - 2*dt.
@@ -46,7 +46,7 @@ NS_parameters.update(
     # Parameters used to tweak solver
     max_iter=1,                 # Number of inner pressure velocity iterations on timestep
     max_error=1e-6,             # Tolerance for inner iterations (pressure velocity iterations)
-    iters_on_first_timestep=2,  # Number of iterations on first timestep
+    iters_on_first_timestep=2,  # Number of iterations on each of the first 10 timesteps
     use_krylov_solvers=True,    # Otherwise use LU-solver
     print_intermediate_info=10,
     print_velocity_pressure_convergence=False,
@@ -56,34 +56,9 @@ NS_parameters.update(
     checkpoint=10,       # Overwrite solution in Checkpoint folder each checkpoint
     save_step=10,        # Store solution each save_step
     restart_folder=None, # If restarting solution, set the folder holding the solution to start from here
-    output_timeseries_as_vector=True,  # Store velocity as vector in Timeseries
 
     # Stop simulations cleanly after the given number of seconds
     killtime=None,
-
-    # Choose LES model and set default parameters
-    # NoModel, Smagorinsky, Wale, DynamicLagrangian, ScaleDepDynamicLagrangian
-    les_model='NoModel',
-
-    # LES model parameters
-    Smagorinsky=dict(Cs=0.1677),              # Standard Cs, same as OpenFOAM
-    Wale=dict(Cw=0.325),
-    DynamicSmagorinsky=dict(Cs_comp_step=1),  # Time step interval for Cs to be recomputed
-    KineticEnergySGS=dict(Ck=0.08, Ce=1.05),
-
-    # Choose Non-Newtonian model and set default parameters
-    # NoModel, ModifiedCross
-    nn_model='NoModel',
-
-    # Non-Newtonian model parameters
-    ModifiedCross = dict(
-        lam=3.736,      # s
-        m_param=2.406,  # for Non-Newtonian model
-        a_param=0.34,   # for Non-Newtonian model
-        mu_inf=0.00372, # Pa-s for non-Newtonian model
-        mu_o=0.09,      # Pa-s for non-Newtonian model
-        rho=1085        # kg/m^3
-        ),
 
     # Parameter set when enabling test mode
     testing=False,

@@ -106,7 +106,8 @@ def pre_solve_hook(mesh, newfolder, dt, save_interval, stat_interval, **NS_names
     makedirs_on_root(statsfolder)
     volume = assemble(Constant(1.) * dx(domain=mesh))
     return dict(statsfolder=statsfolder, volume=volume,
-                save_step=round(save_interval / dt), stat_step=round(stat_interval / dt))
+                save_step=max(1, round(save_interval / dt)),
+                stat_step=max(1, round(stat_interval / dt)))
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, statsfolder,

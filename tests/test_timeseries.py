@@ -13,7 +13,7 @@ import sys
 import numpy as np
 import pytest
 
-from conftest import REPO_ROOT, mpirun_size
+from conftest import REPO_ROOT, require_mpi
 
 pytest.importorskip("h5py")
 
@@ -46,15 +46,14 @@ f = lambda name, t: Expression(CODE[name], t=t, degree=4)
 
 if mode == "write":
     newfolder, tstepfiles = create_initial_folders(
-        folder, None, ["u0", "u1", "p", "phig"], 0, lambda s: None, [], True)
+        folder, None, ["u0", "u1", "p", "phig"], 0, lambda s: None, [])
     for t in (0.1, 0.2):
         for k in ("u0", "u1", "p"):
             q_[k].interpolate(f(k, t))
         for i, k in enumerate(("phi", "g")):
             assign(q_["phig"].sub(i), interpolate(f(k, t), W.sub(i).collapse()))
         u_ = as_vector([q_["u0"], q_["u1"]])
-        save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, pb, True, ["u0", "u1"],
-                               AssignedVectorFunction, [], {})
+        save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction, {})
     for file in tstepfiles.values():
         file.close()
 else:
@@ -120,8 +119,7 @@ def test_read_into_other_degrees(tmp_path, series):
 
 def test_read_in_parallel(tmp_path, series):
     """Written in serial, read on two processes (and the other way round)."""
-    if mpirun_size(2) != 2:
-        pytest.skip("mpirun -np 2 does not start a two-rank job here")
+    require_mpi(2)
     _, folder = series
     assert_exact(helper(tmp_path, "read", folder, nprocs=2))
     helper(tmp_path, "write", tmp_path / "results_np2", nprocs=2)

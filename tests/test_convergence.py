@@ -1,4 +1,5 @@
-"""Temporal convergence of the BDF solver (slow; run with `pytest -m slow`).
+"""Temporal convergence of the BDF solver (slow; run with `pytest -m slow`), and a
+quick check that IPCS applies the manufactured phase-field source.
 
 Two studies: self-convergence of the periodic bubble, and errors against the
 exact Taylor-Green solution.
@@ -98,7 +99,6 @@ def test_bdf2_taylor_green_exact(tmp_path):
             {k: [round(p, 2) for p in v] for k, v in orders.items()})
 
 
-@pytest.mark.slow
 def test_ipcs_taylor_green_phase_field(tmp_path):
     """IPCS applies the phase-field source term of the manufactured solution.
     Without it the phase-field error at t = 0.1 is 0.36; with it 0.018 (BDF2:

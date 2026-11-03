@@ -14,6 +14,7 @@ It comes in two variants:
 SimplePore2D (PORE) covers open boundaries with pressure and phase-field
 Dirichlet conditions; its mesh is generated with meshes/lattice_mesh.py.
 """
+import functools
 import importlib.util
 import json
 import os
@@ -30,7 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 # Column layout of Stats/tdata.dat written by PeriodicBubble2D's temporal_hook.
-# (TaylorBubble2D writes more columns, but the shared ones come first.)
+# Columns 0-7 are the same for the other problems that write these statistics;
+# Bubble2D, RayleighTaylor2D and TaylorBubble2D have E_grav at 8, so later
+# columns differ.
 COLS = dict(tstep=0, t=1, u0m=2, u1m=3, phim=4, E_kin=5, E_int=6, E_pot=7,
             vol_c=8, y_cm=9, V_c=10)
 
@@ -74,6 +77,13 @@ def run_twoasis(workdir, nprocs=1, timeout=900, **params):
     return proc
 
 
+# The scheme conserves int(phi) exactly. What drift remains comes from the
+# phase-field Krylov tolerance (1e-8 relative), about 1e-8 per step. A real mass
+# leak is orders of magnitude larger than this bound.
+MASS_TOL = 1e-6
+
+
+@functools.lru_cache(maxsize=None)
 def mpirun_size(nprocs=2):
     """Number of ranks dolfin sees when started with `mpirun -np nprocs`, or 0
     if mpirun is missing or fails. With a launcher that does not match the MPI
@@ -143,8 +153,8 @@ def bubble_bdf_restarted(tmp_path_factory, bubble_bdf):
     path (data/1), so run on a copy to keep the bubble_bdf fixture pristine.
     """
     wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted", bubble_bdf)
-    run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
-    return wd, load_tdata(wd)
+    proc = run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
+    return wd, load_tdata(wd), proc.stdout
 
 
 @pytest.fixture(scope="session")
@@ -234,3 +244,15 @@ def assert_mass_conserved(td, tol):
     """Assert that the mean of phi stays within tol of its initial value."""
     phim = td[:, COLS["phim"]]
     assert np.max(np.abs(phim - phim[0])) < tol
+
+
+def require_mpi(nprocs=2):
+    """Skip the test unless mpirun starts nprocs ranks; with TWOASIS_REQUIRE_MPI
+    set (as in CI), fail instead, so that a broken MPI setup is noticed."""
+    size = mpirun_size(nprocs)
+    if size != nprocs:
+        message = "mpirun -np {} does not start a {}-rank job here (dolfin sees {} rank(s))".format(
+            nprocs, nprocs, size)
+        if os.environ.get("TWOASIS_REQUIRE_MPI"):
+            pytest.fail(message)
+        pytest.skip(message)

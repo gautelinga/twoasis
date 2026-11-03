@@ -11,8 +11,11 @@ from twoasis.problems import info_blue
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
 # Use the UFL that dolfin was built with (ufl_legacy in recent installations).
-import ufl_legacy as ufl
-if not isinstance(Constant(0.), ufl.Coefficient):
+try:
+    import ufl_legacy as ufl
+    if not isinstance(Constant(0.), ufl.Coefficient):
+        raise ImportError
+except ImportError:
     import ufl
 
 
@@ -22,10 +25,9 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "pressure_solve", "velocity_update", "scalar_assemble",
            "scalar_solve", "get_solvers", "setup",
            "print_velocity_pressure_info", "phase_field_solve", "phase_field_assemble",
-           "potential_linear_derivative", "potential_derivative_approx",
+           "potential_linear_derivative",
            "wall_potential_linear_derivative",
-           "weighted_arithmetic_mean", "weighted_geometric_mean", 
-           "weighted_arithmetic_derivative",
+           "weighted_arithmetic_mean", "weighted_geometric_mean",
            "krylov_solver_parameters", "krylov_solver", "krylov_get_solvers",
            "phase_field_fieldsplit_solver"]
 
@@ -236,12 +238,6 @@ def add_contact_angles(F, angles, sigma, fwprime, eta, ds):
         F += sigma * costheta * fwprime * eta * ds(mark)
     return F
 
-def potential_derivative_approx(phi_, phi_1, phi_2):
-    phi_ab = 1.5 * phi_1 - 0.5 * phi_2
-    phi_cn = 0.5 * (phi_ + phi_1)
-    return 0.5 * (phi_**2 + phi_1**2) * phi_cn - phi_ab
-
-
 def weighted_arithmetic_mean(a, phi):
     phi_bar = ufl.min_value(ufl.max_value(phi, -1.0), 1.0)
     #phi_mod = ufl.sin(math.pi/2 * phi_bar)
@@ -252,11 +248,3 @@ def weighted_geometric_mean(a, phi):
     phi_bar = ufl.min_value(ufl.max_value(phi, -1.0), 1.0)
     chi = 0.5*(1 + ufl.sin(math.pi/2 * phi_bar))
     return a[0]**chi * a[1]**(1-chi)
-
-def weighted_harmonic_mean(a, phi):
-    return 1./weighted_arithmetic_mean([1./a[0], 1./a[1]], phi)
-
-def weighted_arithmetic_derivative(a, phi):
-    phi_bar = ufl.min_value(ufl.max_value(phi, -1.0), 1.0)
-    dphi_mod = math.pi/2 * ufl.cos(math.pi/2 * phi_bar)
-    return 0.5*(a[0]-a[1]) * dphi_mod

@@ -95,14 +95,13 @@ def create_bcs(V, subdomains, **NS_namespace):
     return dict(u0=[bc_u], u1=[bc_u], p=[], phig=[])
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, L, R, restart_folder, **NS_namespace):
-    if restart_folder is None:
-        phi_init = interpolate(Expression(
-            "tanh((sqrt(pow(x[0]-L/2, 2)+pow(x[1]-L/2, 2))-R)/(sqrt(2)*epsilon))",
-            epsilon=epsilon, L=L, R=R, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phi_init)
-        q_1['phig'].vector()[:] = q_['phig'].vector()
-        q_2['phig'].vector()[:] = q_['phig'].vector()
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, L, R, **NS_namespace):
+    phi_init = interpolate(Expression(
+        "tanh((sqrt(pow(x[0]-L/2, 2)+pow(x[1]-L/2, 2))-R)/(sqrt(2)*epsilon))",
+        epsilon=epsilon, L=L, R=R, degree=2), VV['phig'].sub(0).collapse())
+    assign(q_['phig'].sub(0), phi_init)
+    q_1['phig'].vector()[:] = q_['phig'].vector()
+    q_2['phig'].vector()[:] = q_['phig'].vector()
 
 
 def pre_solve_hook(mesh, newfolder, L, R, epsilon, **NS_namespace):

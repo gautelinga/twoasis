@@ -4,8 +4,9 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import Constant, grad, inner, Mesh, MPI, parameters, Timer, XDMFFile
+from dolfin import Constant, Mesh, MPI, parameters, Timer
 import inspect
+import pickle
 import subprocess
 from os import getpid, path
 from collections import defaultdict
@@ -107,59 +108,6 @@ oasis_memory = OasisMemoryUsage('Start')
 
 
 # Convenience functions
-def strain(u):
-    return 0.5 * (grad(u) + grad(u).T)
-
-
-def omega(u):
-    return 0.5 * (grad(u) - grad(u).T)
-
-
-def Omega(u):
-    return inner(omega(u), omega(u))
-
-
-def Strain(u):
-    return inner(strain(u), strain(u))
-
-
-def QC(u):
-    return Omega(u) - Strain(u)
-
-
-def recursive_update(dst, src):
-    """Update dict dst with items from src deeply ("deep update")."""
-    for key, val in src.items():
-        if key in dst and isinstance(val, dict) and isinstance(dst[key], dict):
-            dst[key] = recursive_update(dst[key], val)
-        else:
-            dst[key] = val
-    return dst
-
-class OasisXDMFFile(XDMFFile, object):
-    def __init__(self, comm, filename):
-        XDMFFile.__init__(self, comm, filename)
-
-def add_function_to_tstepfiles(function, newfolder, tstepfiles, tstep):
-    name = function.name()
-    tstepfolder = path.join(newfolder, "Timeseries")
-    tstepfiles[name] = OasisXDMFFile(MPI.comm_world,
-                                path.join(tstepfolder,
-                                          '{}_from_tstep_{}.xdmf'.format(name, tstep)))
-    tstepfiles[name].function = function
-    tstepfiles[name].parameters["rewrite_function_mesh"] = False
-
-
-def average_pressure_gradient(mesh, **NS_namespace):
-    """Specify body force"""
-    return Constant((0,) * mesh.geometry().dim())
-
-
-def acceleration(mesh, **NS_namespace):
-    """Specify body force"""
-    return Constant((0,) * mesh.geometry().dim())
-
-
 def initialize(**NS_namespace):
     """Initialize solution."""
     pass
@@ -208,6 +156,14 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     that e.g. a domain length given on the command line sets both the mesh and
     its periodicity. constrained_domain is also called with the mesh.
     """
+
+    # On a restart, start from the parameters stored with the checkpoint (they
+    # include t and tstep); the command line can still change any of them.
+    if commandline_kwargs.get("restart_folder") is not None:
+        restart_folder = path.abspath(commandline_kwargs["restart_folder"])
+        with open(path.join(restart_folder, "params.dat"), "rb") as f:
+            NS_parameters.update(pickle.load(f))
+        commandline_kwargs = dict(commandline_kwargs, restart_folder=restart_folder)
 
     # Update NS_parameters with all parameters modified through command line
     for key, val in commandline_kwargs.items():

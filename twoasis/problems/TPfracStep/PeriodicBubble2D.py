@@ -15,7 +15,7 @@ from dolfin import assemble, assign, DirichletBC, dx, Expression, interpolate, M
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep import Bubble2D
 from twoasis.problems.TPfracStep.shared import (
-    interface_energy, load_restart_parameters, phase_moments)
+    interface_energy, phase_moments)
 
 
 # Periodic along the channel, walls at top and bottom and statistics set up as
@@ -27,65 +27,63 @@ mark_subdomains = Bubble2D.mark_subdomains
 pre_solve_hook = Bubble2D.pre_solve_hook
 
 
-def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
-    if not load_restart_parameters(NS_parameters, commandline_kwargs):
-        NS_parameters.update(
-            T=3.0,
-            Lx=2,
-            Ly=1,
-            res=1./64,
-            R=0.4,
-            dt=0.002,
-            rho=[1., 1.],
-            mu=[1., 1.],
-            theta=np.pi/2,
-            epsilon=0.02,
-            sigma=10.0,
-            M=0.00002,
-            u0=0.0,
-            F0=[0., 0.],
-            g0=[1.0, 0],
-            velocity_degree=2,
-            folder="periodicbubble2d_results",
-            plot_interval=10,
-            stat_interval=10,
-            timestamps_interval=10,
-            save_step=10,
-            checkpoint=10,
-            print_intermediate_info=10,
-            use_krylov_solvers=True,
-            solver="BDF",
-            max_iter=100,                 # Number of inner pressure velocity iterations on timestep
-            max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
-            iters_on_first_timestep=200  # Number of iterations on first timestep
-        )
+def problem_parameters(NS_parameters, **NS_namespace):
+    NS_parameters.update(
+        T=3.0,
+        Lx=2,
+        Ly=1,
+        res=1./64,
+        R=0.4,
+        dt=0.002,
+        rho=[1., 1.],
+        mu=[1., 1.],
+        theta=np.pi/2,
+        epsilon=0.02,
+        sigma=10.0,
+        M=0.00002,
+        u0=0.0,
+        F0=[0., 0.],
+        g0=[1.0, 0],
+        velocity_degree=2,
+        folder="periodicbubble2d_results",
+        plot_interval=10,
+        stat_interval=10,
+        timestamps_interval=10,
+        save_step=10,
+        checkpoint=10,
+        print_intermediate_info=10,
+        use_krylov_solvers=True,
+        solver="BDF",
+        max_iter=100,                 # Number of inner pressure velocity iterations on timestep
+        max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
+        iters_on_first_timestep=200  # Number of iterations on first timestep
+    )
 
 
 # Specify boundary conditions
 def create_bcs(V, subdomains, u0, **NS_namespace):
-    bc_u_tb = DirichletBC(V, u0, subdomains, 2)
-    return dict(u0=[bc_u_tb],
-                u1=[bc_u_tb],
+    # The walls move along the channel at u0 (no flow through them).
+    return dict(u0=[DirichletBC(V, u0, subdomains, 2)],
+                u1=[DirichletBC(V, 0, subdomains, 2)],
                 p=[],
                 phig=[])
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, u0, VV, Lx, Ly, R, restart_folder, **NS_namespace):
-    if restart_folder is None:
-        # Uniform flow
-        q_['u0'].vector()[:] = u0
-        q_['u1'].vector()[:] = 0.
-        # Centered
-        phig_init = interpolate(Expression(
-            "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",
-            epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phig_init)
-        q_1['phig'].vector()[:] = q_['phig'].vector()
-        q_2['phig'].vector()[:] = q_['phig'].vector()
-        for ui in x_1:
-            [bc.apply(x_1[ui]) for bc in bcs[ui]]
-        for ui in x_2:
-            [bc.apply(x_2[ui]) for bc in bcs[ui]]
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, u0, VV, Lx, Ly, R, **NS_namespace):
+    # Uniform flow
+    q_['u0'].vector()[:] = u0
+    q_['u1'].vector()[:] = 0.
+    # Centered
+    phig_init = interpolate(Expression(
+        "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",
+        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
+    assign(q_['phig'].sub(0), phig_init)
+    q_1['phig'].vector()[:] = q_['phig'].vector()
+    q_2['phig'].vector()[:] = q_['phig'].vector()
+    for ui in x_1:
+        [bc.apply(x_1[ui]) for bc in bcs[ui]]
+    for ui in x_2:
+        [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfolder,

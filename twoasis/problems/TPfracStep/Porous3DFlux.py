@@ -24,7 +24,7 @@ from dolfin import (
 
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    Faces, interface_energy, load_mesh, load_restart_parameters, makedirs_on_root,
+    Faces, interface_energy, load_mesh, makedirs_on_root,
     mesh_extrema, PeriodicBox, write_timestamp, write_timestamps_info)
 
 class SideWalls(SubDomain):
@@ -47,38 +47,37 @@ def mesh(meshfile, **params):
     return load_mesh(meshfile)
 
 # Override some problem specific parameters
-def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
-    if not load_restart_parameters(NS_parameters, commandline_kwargs):
-        NS_parameters.update(
-            T=100.0,
-            meshfile="meshes/test_4x4x8_out.h5",  # with the obstacles in test_4x4x8_out.obst
-            dt=0.1,
-            rho=[1, 1],
-            mu=[1, 1],
-            theta=np.pi/2,
-            epsilon=0.05,
-            sigma=1.0,
-            M=0.0001,
-            u0=0.01,
-            injected_phase=-1,
-            zfrac=0.1,
-            F0=[0., 0., 0],
-            g0=[0., 0., 0.],
-            velocity_degree=1,
-            folder="porous3dflux_results",
-            stat_interval=10,
-            timestamps_interval=10,
-            save_step=10,
-            checkpoint=10,
-            print_intermediate_info=10,
-            use_krylov_solvers=True,
-            solver="BDF",  # solver="IPCS",
-            bdf_order=1,
-            AB_projection_pressure=False,
-            max_iter=5,                 # Number of inner pressure velocity iterations on timestep
-            max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
-            iters_on_first_timestep=10,  # Number of iterations on first timestep
-        )
+def problem_parameters(NS_parameters, **NS_namespace):
+    NS_parameters.update(
+        T=100.0,
+        meshfile="meshes/test_4x4x8_out.h5",  # with the obstacles in test_4x4x8_out.obst
+        dt=0.1,
+        rho=[1, 1],
+        mu=[1, 1],
+        theta=np.pi/2,
+        epsilon=0.05,
+        sigma=1.0,
+        M=0.0001,
+        u0=0.01,
+        injected_phase=-1,
+        zfrac=0.1,
+        F0=[0., 0., 0],
+        g0=[0., 0., 0.],
+        velocity_degree=1,
+        folder="porous3dflux_results",
+        stat_interval=10,
+        timestamps_interval=10,
+        save_step=10,
+        checkpoint=10,
+        print_intermediate_info=10,
+        use_krylov_solvers=True,
+        solver="BDF",  # solver="IPCS",
+        bdf_order=1,
+        AB_projection_pressure=False,
+        max_iter=5,                 # Number of inner pressure velocity iterations on timestep
+        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+        iters_on_first_timestep=10,  # Number of iterations on first timestep
+    )
 
 
 def constrained_domain(mesh, **params):
@@ -153,26 +152,25 @@ def create_bcs(V, W, subdomains, u0, injected_phase, zfrac, **NS_namespace):
                 phig=[bc_phig_btm, bc_phig_top])
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, restart_folder, zfrac, **NS_namespace):
-    if restart_folder is None:
-        #zfrac = 0.1
-        z0 = zfrac*x_max[2]+(1-zfrac)*x_min[2]
-        phig_init = interpolate(Expression(
-            "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
-            epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phig_init)
-        q_1['phig'].vector()[:] = q_['phig'].vector()
-        q_2['phig'].vector()[:] = q_['phig'].vector()
-        for ui in x_1:
-            [bc.apply(x_1[ui]) for bc in bcs[ui]]
-        for ui in x_2:
-            [bc.apply(x_2[ui]) for bc in bcs[ui]]
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, zfrac, **NS_namespace):
+    #zfrac = 0.1
+    z0 = zfrac*x_max[2]+(1-zfrac)*x_min[2]
+    phig_init = interpolate(Expression(
+        "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
+        epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
+    assign(q_['phig'].sub(0), phig_init)
+    q_1['phig'].vector()[:] = q_['phig'].vector()
+    q_2['phig'].vector()[:] = q_['phig'].vector()
+    for ui in x_1:
+        [bc.apply(x_1[ui]) for bc in bcs[ui]]
+    for ui in x_2:
+        [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
                    phase_field_degree, AssignedVectorFunction, constrained_domain, ds, **NS_namespace):
     volume = assemble(Constant(1.) * dx(domain=mesh))
-    area = assemble(Constant(1.) * ds(2))
+    area = [assemble(Constant(1.) * ds(i)) for i in (2, 3)]  # bottom, top
     statsfolder = path.join(newfolder, "Stats")
     timestampsfolder = path.join(newfolder, "Timestamps")
     uv = AssignedVectorFunction(u_, name="u")
@@ -190,7 +188,9 @@ def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, area
                   stat_interval, ds, angles, mesh, **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, u2m, phim, the energies per
     volume (kinetic, interface gradient and double-well parts), the wall energy
-    E_surf and the mean pressure drop dp from bottom to top."""
+    E_surf (sigma*cos(theta)*(phi^3 - 3*phi + 2)/4 on the obstacles: the energy whose
+    derivative the solver's wall term is, zero for phi = 1) and the mean pressure
+    drop dp from bottom to top."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         dX = dx(domain=mesh)
@@ -199,8 +199,8 @@ def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, area
         E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2 + u_[2]**2) * dX) / volume
         E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
         costheta, mark = angles[0]
-        E_surf = 0.25 * sigma * assemble(costheta * (-phi_**3 + 3 * phi_ + 2) * ds(mark))
-        dp = (assemble(p_ * ds(2)) - assemble(p_ * ds(3))) / area
+        E_surf = 0.25 * sigma * assemble(costheta * (phi_**3 - 3 * phi_ + 2) * ds(mark))
+        dp = assemble(p_ * ds(2)) / area[0] - assemble(p_ * ds(3)) / area[1]
         if MPI.rank(MPI.comm_world) == 0:
             with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
                 entries = um + [phim, E_kin, E_int, E_pot, E_surf, dp]

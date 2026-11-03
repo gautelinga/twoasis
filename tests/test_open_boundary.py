@@ -29,4 +29,5 @@ def test_bdf_ipcs_agree(pore_bdf, pore_ipcs):
     _, td_b = pore_bdf
     _, td_i = pore_ipcs
     for name in ["u0m", "phim", "E_kin", "E_int"]:
-        assert_close("IPCS " + name, td_i[-1, COLS[name]], td_b[-1, COLS[name]], 1e-6, 1e-10)
+        # atol: tdata.dat holds 8 decimals
+        assert_close("IPCS " + name, td_i[-1, COLS[name]], td_b[-1, COLS[name]], 1e-6, 2e-8)

@@ -15,7 +15,7 @@ from dolfin import (
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.Porous2D import Walls
 from twoasis.problems.TPfracStep.shared import (
-    centred, Faces, interface_energy, load_mesh, load_restart_parameters,
+    centred, Faces, interface_energy, load_mesh,
     makedirs_on_root, PeriodicBox, write_timestamp, write_timestamps_info)
 
 
@@ -29,41 +29,40 @@ def mesh(Lx, Ly, rad, res, **params):
     return load_mesh(get_fname(Lx, Ly, rad, res, "h5"))
 
 # Override some problem specific parameters
-def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
-    if not load_restart_parameters(NS_parameters, commandline_kwargs):
-        NS_parameters.update(
-            T=100.0,
-            Lx=4.0,
-            Ly=2.0,
-            rad=0.5,
-            res=0.05,
-            dt=0.02,
-            rho=[1, 1],
-            mu=[1, 1],
-            Dp0=-5.0,
-            theta=np.pi/2,
-            epsilon=0.05,
-            sigma=5.0,
-            M=0.0001,
-            F0=[0., 0.],
-            g0=[0., 0.],
-            velocity_degree=1,
-            folder="simplepore2d_results",
-            plot_interval=10,
-            stat_interval=10,
-            timestamps_interval=10,
-            save_step=20,
-            checkpoint=10000,
-            print_intermediate_info=10,
-            use_krylov_solvers=True,
-            solver="BDF",
-            bdf_order=1,
-            AB_projection_pressure=False,
-            max_iter=10,                  # Number of inner pressure velocity iterations on timestep
-            max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
-            iters_on_first_timestep=20,  # Number of iterations on first timestep
-            injected_phase=-1,
-        )
+def problem_parameters(NS_parameters, **NS_namespace):
+    NS_parameters.update(
+        T=100.0,
+        Lx=4.0,
+        Ly=2.0,
+        rad=0.5,
+        res=0.05,
+        dt=0.02,
+        rho=[1, 1],
+        mu=[1, 1],
+        Dp0=-5.0,
+        theta=np.pi/2,
+        epsilon=0.05,
+        sigma=5.0,
+        M=0.0001,
+        F0=[0., 0.],
+        g0=[0., 0.],
+        velocity_degree=1,
+        folder="simplepore2d_results",
+        plot_interval=10,
+        stat_interval=10,
+        timestamps_interval=10,
+        save_step=20,
+        checkpoint=10000,
+        print_intermediate_info=10,
+        use_krylov_solvers=True,
+        solver="BDF",
+        bdf_order=1,
+        AB_projection_pressure=False,
+        max_iter=10,                  # Number of inner pressure velocity iterations on timestep
+        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+        iters_on_first_timestep=20,  # Number of iterations on first timestep
+        injected_phase=-1,
+    )
 
 
 def constrained_domain(Ly, **params):
@@ -88,10 +87,6 @@ def mark_subdomains(subdomains, dim, Lx, Ly, rad, res, **NS_namespace):
 def create_bcs(V, Q, W, subdomains, injected_phase, **NS_namespace):
     bc_ux_wall = DirichletBC(V, 0, subdomains, 1)
     bc_uy_wall = DirichletBC(V, 0, subdomains, 1)
-    #bc_ux_top = DirichletBC(V, 0, subdomains, 2)
-    #bc_uy_top = DirichletBC(V, u0, subdomains, 2)
-    #bc_ux_btm = DirichletBC(V, 0, subdomains, 3)
-    #bc_uy_btm = DirichletBC(V, u0, subdomains, 3)
     bc_p_left = DirichletBC(Q, 0, subdomains, 2)
     bc_p_right = DirichletBC(Q, 0, subdomains, 3)
     bc_phig_left = DirichletBC(W.sub(0), -1 * injected_phase, subdomains, 2)
@@ -102,25 +97,28 @@ def create_bcs(V, Q, W, subdomains, injected_phase, **NS_namespace):
                 phig=[bc_phig_left, bc_phig_right])
 
 
-def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, Dp0, sigma, rad, restart_folder, mesh, **NS_namespace):
-    if restart_folder is None:
-        R = abs(sigma/Dp0)
-        eta = np.sign(Dp0)*np.sqrt(R**2 + rad**2 - (Ly/2)**2)
+def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, Dp0, sigma, rad, injected_phase,
+               mesh, **NS_namespace):
+    R = abs(sigma/Dp0)
+    eta = np.sign(Dp0)*np.sqrt(R**2 + rad**2 - (Ly/2)**2)
 
-        phi_init = interpolate(Expression(
-            #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
-            #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-            #"-tanh((x[0]-x0)/(sqrt(2)*epsilon))",
-            "eta * x[0] > 0 ? tanh((sqrt(pow(x[0]+eta, 2) + pow(x[1], 2))-R)/(sqrt(2)*epsilon)) : -1",
-            epsilon=epsilon, eta=eta, R=R, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phi_init)
+    phi_init = interpolate(Expression(
+        #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
+        #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
+        #"-tanh((x[0]-x0)/(sqrt(2)*epsilon))",
+        # s flips the phases so that the ends match the boundary values
+        # (-injected_phase on the left, injected_phase on the right).
+        "s * (eta * x[0] > 0 ? tanh((sqrt(pow(x[0]+eta, 2) + pow(x[1], 2))-R)/(sqrt(2)*epsilon)) : -1)",
+        epsilon=epsilon, eta=eta, R=R, s=float(injected_phase * np.sign(Dp0)), degree=2),
+        VV['phig'].sub(0).collapse())
+    assign(q_['phig'].sub(0), phi_init)
 
-        q_1['phig'].vector()[:] = q_['phig'].vector()
-        q_2['phig'].vector()[:] = q_['phig'].vector()
-        for ui in x_1:
-            [bc.apply(x_1[ui]) for bc in bcs[ui]]
-        for ui in x_2:
-            [bc.apply(x_2[ui]) for bc in bcs[ui]]
+    q_1['phig'].vector()[:] = q_['phig'].vector()
+    q_2['phig'].vector()[:] = q_['phig'].vector()
+    for ui in x_1:
+        [bc.apply(x_1[ui]) for bc in bcs[ui]]
+    for ui in x_2:
+        [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,

@@ -9,7 +9,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 import math
 
 from dolfin import (
-    as_backend_type, as_vector, assemble, dot, dx, Expression, Function, grad,
+    as_backend_type, as_vector, assemble, Constant, dot, dx, Function, grad,
     inner, lhs, Matrix, nabla_grad, normalize, rhs, Timer, Vector, VectorSpaceBasis)
 
 from twoasis.problems import info_blue
@@ -150,7 +150,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, scalar_components,
         # start with (gravitational) acceleration
         assemble(rho_ * bg0[ui] * dx, tensor=b_tmp[ui])
         # add average pressure gradient
-        if isinstance(gradp_avg, Expression):
+        if not isinstance(gradp_avg, Constant):  # may change during the run
             b0[ui].zero()
             assemble(bgp0[ui] * dx, tensor=b0[ui])
         b_tmp[ui].axpy(-1., b0[ui])
@@ -195,7 +195,6 @@ def attach_pressure_nullspace(Apt, x_, Q):
     Aa = as_backend_type(Apt[0])
     null_space = VectorSpaceBasis([null_vec])
     Aa.set_nullspace(null_space)
-    Aa.null_space = null_space
     Apt[2] = null_space
 
 def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, **NS_namespace):
@@ -223,9 +222,10 @@ def pressure_solve(dp_, x_, Apt, b, p_sol, bcs, inner_iter, **NS_namespace):
     [bc.apply(b['p']) for bc in bcs['p']]
     dp_.vector().zero()
     dp_.vector().axpy(1., x_['p'])
-    # KrylovSolvers use nullspace for normalization of pressure
-    if hasattr(Apt[0], 'null_space'):
-        p_sol.null_space.orthogonalize(b['p'])
+    # With no pressure boundary condition the pressure is defined up to a
+    # constant: make the right-hand side consistent (orthogonal to the null space).
+    if Apt[2] is not None:
+        Apt[2].orthogonalize(b['p'])
 
     t1 = Timer("Pressure Linear Algebra Solve")
     p_sol.solve(Apt[0], x_['p'], b['p'])
@@ -294,7 +294,7 @@ def phase_field_assemble(dt, M, sigma_bar, epsilon, Apf, Kpf, Mpf, Fpft, a_pf, b
     assemble(Fpft[2], tensor=b['phig'])
     # Source term (used by manufactured solutions)
     if bpf:
-        if "t" in fpf._user_parameters:
+        if "t" in getattr(fpf, "_user_parameters", {}):
             fpf.t = t
         assemble(bpf[0] * dx, tensor=bpf[1])
         b['phig'].axpy(1.0, bpf[1])

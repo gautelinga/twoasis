@@ -3,16 +3,16 @@ corresponding default run, so that an option that stops working is noticed."""
 import numpy as np
 import pytest
 
-from conftest import (BUBBLE, BUBBLE_P1, COLS, assert_close, assert_mass_conserved,
+from conftest import (BUBBLE, BUBBLE_P1, COLS, MASS_TOL, assert_close, assert_mass_conserved,
                       load_tdata, run_twoasis)
-from test_TPfracStep import MASS_TOL
 
 
 def compare(td, td_ref, rtols, label):
     assert td.shape == td_ref.shape
     assert np.isfinite(td).all()
     for name, rtol in rtols:
-        assert_close(label + " " + name, td[-1, COLS[name]], td_ref[-1, COLS[name]], rtol, 1e-10)
+        # atol: tdata.dat holds 8 decimals
+        assert_close(label + " " + name, td[-1, COLS[name]], td_ref[-1, COLS[name]], rtol, 2e-8)
 
 
 def test_phase_field_fieldsplit(tmp_path, bubble_bdf):

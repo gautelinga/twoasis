@@ -12,14 +12,10 @@ def main():
 
 def _main():
     assert len(sys.argv) > 1
-    assert sys.argv[1] in ('TPfracStep',) #, 'NSfracStep', 'NSCoupled')
+    assert sys.argv[1] in ('TPfracStep',)
     solver = sys.argv.pop(1)
     if solver == 'TPfracStep':
         from twoasis import TPfracStep
-    #elif solver == 'NSfracStep':
-    #    from twoasis import NSfracStep
-    #elif solver == 'NSCoupled':
-    #    from twoasis import NSCoupled
     else:
         raise NotImplementedError
 

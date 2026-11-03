@@ -18,7 +18,8 @@ classifiers = [
 ]
 # dolfin (legacy 2019.2), mpi4py and h5py come from apt, and femtools, partractools
 # and meshtools (the mesh scripts) from GitHub (see README.md): install with --no-deps.
-# femtools >= 587f494, partractools >= 1bca415.
+# femtools 2026.2.0, partractools 2026.2.1 and meshtools 2026.2.0, which README.md
+# and CI pin.
 dependencies = ["numpy", "h5py"]
 
 [project.urls]

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "twoasis"
+version = "2026.2.0.dev0"
+description = "Two-phase flow (Cahn-Hilliard-Navier-Stokes) solvers in legacy FEniCS"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "LGPL-3.0-or-later"}
+authors = [{name = "Gaute Linga", email = "gaute.linga@ntnu.no"}]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU Lesser General Public License v3 or later (LGPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+# dolfin (legacy 2019.2), mpi4py and h5py come from apt, and femtools, partractools
+# and meshtools (the mesh scripts) from GitHub (see README.md): install with --no-deps.
+dependencies = ["numpy", "h5py"]
+
+[project.urls]
+Homepage = "https://github.com/gautelinga/twoasis"
+
+[project.scripts]
+twoasis = "twoasis.run_twoasis:main"
+quickstats = "twoasis.quickstats:main"
+merge_xdmf = "twoasis.merge_xdmf:main"
+
+[tool.setuptools.packages.find]
+include = ["twoasis*"]

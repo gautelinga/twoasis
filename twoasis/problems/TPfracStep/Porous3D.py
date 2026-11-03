@@ -103,7 +103,7 @@ def constrained_domain(L, **params):
 
 def mark_subdomains(subdomains, L, R, reps, res, **NS_namespace):
     fname = get_fname(L, R, reps, res, "obst")
-    xyzr_ = np.loadtxt(fname)
+    xyzr_ = np.loadtxt(fname, ndmin=2)
     wall = Walls(xyzr_)
     wall.mark(subdomains, 1)
     return dict()

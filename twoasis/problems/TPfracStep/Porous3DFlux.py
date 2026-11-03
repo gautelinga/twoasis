@@ -97,7 +97,7 @@ def mark_subdomains(subdomains, mesh, **NS_namespace):
     return dict(x_min=x_min, x_max=x_max)
 
 def contact_angles(theta, V, meshfile, sigma, x_min, x_max, **NS_namespace):
-    obst = np.loadtxt(meshfile[:-2] + "obst")
+    obst = np.loadtxt(meshfile[:-2] + "obst", ndmin=2)
     s = Function(V, name="costheta")
     xx = np.vstack([interpolate(Expression(f"x[{d}]", degree=0), V).vector()[:] for d in range(3)]).T
 

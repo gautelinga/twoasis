@@ -63,7 +63,7 @@ def constrained_domain(Lx, **params):
 
 
 def mark_subdomains(subdomains, dim, Lx, rad, res, **NS_namespace):
-    obstacles = np.loadtxt(get_fname(Lx, rad, res, "dat"))
+    obstacles = np.loadtxt(get_fname(Lx, rad, res, "dat"), ndmin=2)
     Walls(obstacles[:, :dim], obstacles[:, dim]).mark(subdomains, 1)
 
 

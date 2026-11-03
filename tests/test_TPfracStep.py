@@ -14,6 +14,8 @@ variants) checking:
     that lacks the previous time level, leaves no temporary checkpoint folders,
     and refuses a checkpoint written by another number of processes.
 """
+import shutil
+
 import numpy as np
 import pytest
 
@@ -112,6 +114,19 @@ def test_checkpoint_folder(bubble_bdf_restarted):
     assert {f.name for f in (run / "Checkpoint").iterdir()} == \
         {"params.dat", "p.h5", "phig.h5", "u0.h5", "u1.h5"}
     assert not (run / "Checkpoint.new").exists() and not (run / "Checkpoint.old").exists()
+
+
+def test_restart_from_a_copied_checkpoint(tmp_path_factory, bubble_bdf):
+    """A checkpoint copied away from its run, under another name: the restart
+    writes next to it, its own checkpoint at step 20 into a new Checkpoint/,
+    and leaves the copy alone."""
+    wd, ckpt = copy_run(tmp_path_factory, "restart_copied", bubble_bdf)
+    copied = wd / "elsewhere" / "Checkpoint_10"
+    shutil.copytree(str(ckpt), str(copied))
+    run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(copied), **BUBBLE)
+    assert {f.name for f in (wd / "elsewhere").iterdir()} == \
+        {"Checkpoint", "Checkpoint_10", "Stats", "subdomains.h5", "subdomains.xdmf"}
+    assert np.loadtxt(str(wd / "elsewhere" / "Stats" / "tdata.dat")).shape[0] == 10
 
 
 def test_restart_other_process_count(tmp_path_factory, bubble_bdf):

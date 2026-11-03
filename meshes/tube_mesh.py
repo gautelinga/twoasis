@@ -1,5 +1,6 @@
 import argparse
 import os
+import gmsh
 import meshio
 from meshtools.io import numpy_to_dolfin
 import numpy as np
@@ -59,13 +60,18 @@ if __name__ == "__main__":
         code = gmsh_code_tube_header.format(L=args.L, R=args.R, res=args.res) + gmesh_code_tube_body
         ofile.write(code)
 
-    os.system(f"gmsh {tmpname}.geo -3")
+    # gmsh's Python API, which needs no gmsh executable on the path.
+    gmsh.initialize()
+    gmsh.option.setNumber("General.Terminal", 0)
+    gmsh.open(f"{tmpname}.geo")
+    gmsh.model.mesh.generate(3)
+    gmsh.write(f"{tmpname}.msh")
+    gmsh.finalize()
 
     mesh = meshio.read(f"{tmpname}.msh")
-    
+
     os.remove(f"{tmpname}.geo")
     os.remove(f"{tmpname}.msh")
-    #os.remove(f"{tmpname}.geo.msh")
 
     print(mesh)
     nodes = mesh.points

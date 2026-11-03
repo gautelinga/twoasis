@@ -146,7 +146,7 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
         if path.exists(checkpointfolder):
             rename(checkpointfolder, oldfolder)
         rename(tmpfolder, checkpointfolder)
-        shutil.rmtree(oldfolder)
+        shutil.rmtree(oldfolder, ignore_errors=True)
     MPI.barrier(comm)
 
 

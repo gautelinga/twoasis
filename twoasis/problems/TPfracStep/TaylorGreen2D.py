@@ -11,7 +11,7 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, dx, errornorm, Expression, interpolate, MPI, Point, RectangleMesh)
+    assemble, dx, Expression, interpolate, MPI, Point, RectangleMesh)
 
 from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_red
@@ -27,16 +27,12 @@ ccode = dict(
 )
 
 def compute_errors(t, exprs, q_):
+    """The L2 errors of u0, u1, p and phi against the exact solution at t (the
+    Expressions are of degree 6). Assembled directly, which builds no new space."""
     for expr in exprs.values():
         expr.t = t
-    errs = dict()
-    for key in ['u0', 'u1', 'p']:
-        #ue_ = interpolate(exprs[key], q_[key].function_space())
-        errs[key] = errornorm(exprs[key], q_[key])
-        #errs[key] = errornorm(ue_, q_[key])
-    errs['phi'] = errornorm(exprs['phi'], q_['phig'].sub(0))
-    #errs['phi'] = errornorm(ue_, q_['phig'].sub(0))
-    return errs
+    fields = dict(u0=q_['u0'], u1=q_['u1'], p=q_['p'], phi=q_['phig'].sub(0))
+    return {key: np.sqrt(assemble((u - exprs[key])**2 * dx)) for key, u in fields.items()}
 
 def dump_stats(sigma, epsilon, rho_, u_, phi_, statsfolder, tstep, t, q_, exprs, mesh, **namespace):
     E_kin = 0.5*assemble(rho_ * (u_[0]**2 + u_[1]**2) * dx(domain=mesh))

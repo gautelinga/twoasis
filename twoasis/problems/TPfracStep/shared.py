@@ -4,7 +4,7 @@ __date__ = "2026-11-02"
 __copyright__ = "Copyright (C) 2026 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import makedirs, path
+from os import makedirs, path, remove
 
 import numpy as np
 from dolfin import (
@@ -201,7 +201,12 @@ def read_phase_field(fname, mesh, q_):
 
 def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     """Write velocity, pressure and phase field to up_<tstep>.h5 and list the file
-    in timestamps.dat."""
+    in timestamps.dat, as its last step.
+
+    A restart writes the step it starts from again, and an earlier run may have
+    listed later steps (a restart from an older checkpoint). Those steps belong
+    to the other history: they are dropped from the list and their files
+    deleted, so that the list is always one run's history."""
     uv()
     h5fname = "up_{}.h5".format(tstep)
     phi__ = subfunction(q_['phig'], 0)
@@ -209,5 +214,18 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     from partractools import case
     case.write_fields(path.join(timestampsfolder, h5fname), {"u": uv, "p": p_, "phi": phi__})
     if MPI.rank(MPI.comm_world) == 0:
-        case.write_stamps(path.join(timestampsfolder, "timestamps.dat"),
-                          [("{:.6f}".format(t), h5fname)], mode="a+")
+        stamps = path.join(timestampsfolder, "timestamps.dat")
+        listed = case.read_stamps(stamps) if path.exists(stamps) else []
+        keep = [(nums, f) for nums, f in listed if _stamp_step(f) < tstep]
+        if len(keep) == len(listed):
+            case.write_stamps(stamps, [("{:.6f}".format(t), h5fname)], mode="a")
+        else:
+            for _, f in listed:
+                if _stamp_step(f) > tstep and path.exists(path.join(timestampsfolder, f)):
+                    remove(path.join(timestampsfolder, f))
+            case.write_stamps(stamps, keep + [("{:.6f}".format(t), h5fname)], mode="w")
+
+
+def _stamp_step(fname):
+    """The time step of a file up_<tstep>.h5 that write_timestamp wrote."""
+    return int(path.splitext(fname)[0].split("_")[-1])

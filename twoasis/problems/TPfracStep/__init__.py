@@ -46,7 +46,11 @@ NS_parameters.update(
 
     # Parameters used to tweak solver
     max_iter=1,                 # Number of inner pressure velocity iterations on timestep
-    max_error=1e-6,             # Tolerance for inner iterations (pressure velocity iterations)
+    max_error=1e-6,             # Tolerance for inner iterations (pressure velocity iterations):
+                                # stop when the velocity changes by less than this (l2 norm
+    max_error_rel=0.,           # of the dofs), or by less than max_error_rel times its norm
+                                # (e.g. 1e-3: integral statistics change by ~1e-5 or less;
+                                # not for small velocities measured pointwise)
     iters_on_first_timestep=2,  # Number of iterations on each of the first 10 timesteps
     use_krylov_solvers=True,    # Otherwise use LU-solver
     print_intermediate_info=10,
@@ -54,6 +58,8 @@ NS_parameters.update(
 
     # Parameters used to tweak output
     plot_interval=10,
+    stat_interval=10,       # Write statistics (Stats/) each stat_interval timesteps
+    timestamps_interval=10, # ... and fields to Timestamps/, in problems that write them
     checkpoint=10,       # Overwrite solution in Checkpoint folder each checkpoint
     save_step=10,        # Store solution each save_step
     restart_folder=None, # If restarting solution, set the folder holding the solution to start from here

@@ -16,7 +16,8 @@ from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     assemble_phase_field_system, attach_pressure_nullspace, krylov_get_solvers,
-    phase_field_system, PhaseFieldOnVelocitySpace, set_mixed_fields, velocity_matrices)
+    phase_field_system, PhaseFieldOnVelocitySpace, projection_solver, set_mixed_fields,
+    velocity_matrices)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -27,7 +28,7 @@ def setup(u_components, u, v, p, q, bcs,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
           angles, ds, normal,
           velocity_update_solver, assemble_matrix, homogenize,
-          GradFunction, PhiGradFunction, DivFunction, TPsource, **NS_namespace):
+          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
 
@@ -54,7 +55,7 @@ def setup(u_components, u, v, p, q, bcs,
     A, Ai = velocity_matrices(Md, bcs, u_components)
 
     # Allocate Function for holding and computing the velocity divergence on Q
-    divu = DivFunction(u_, Q, name='divu', method=velocity_update_solver)
+    divu = DivRHS(u_, Q, low_memory=velocity_update_solver.get('low_memory_version', False))
 
     # Convecting velocity, set every timestep; used for both phase-field and momentum advection.
     u_adv = as_vector([Function(V) for _ in range(len(u_components))])
@@ -66,18 +67,21 @@ def setup(u_components, u, v, p, q, bcs,
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
-                              bcs=homogenize(bcs[ui]),
-                              method=velocity_update_solver)
+                              bcs=homogenize(bcs[ui]), method=velocity_update_solver,
+                              solver=projection_solver(velocity_update_solver,
+                                                       krylov_solvers))
              for i, ui in enumerate(u_components)}
 
-    phigradg = {ui: PhiGradFunction(q_['phig'], V, i=i, name='phi_dgd' + ('x', 'y', 'z')[i],
-                              bcs=homogenize(bcs[ui]),
-                              method=velocity_update_solver)
+    phigradg = {ui: PhiGradRHS(q_['phig'], V, i)
              for i, ui in enumerate(u_components)}
 
     # Create dictionary to be returned into global NS namespace
+    # A Constant mean pressure gradient has a right-hand side equal to a scaled
+    # copy of assemble(v*dx); its value is read every timestep, so a hook may
+    # change it.
+    Fv = assemble(v * dx)
     d = dict(A=A, Ai=Ai, Md=Md, Apt=Apt, Mt=Mt, Kt=Kt, divu=divu, gradp=gradp,
-             phigradg=phigradg, **pf)
+             phigradg=phigradg, Fv=Fv, **pf)
 
     # Convection form
     a_conv = inner(v, rho_ * dot(u_adv, nabla_grad(u))) * dx
@@ -118,7 +122,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, Md, scalar_components,
                               b_tmp, bg0, b0, x_1, bcs, TPT, rho, mu,
                               rho_, mu_, rho_inv_, phi_V, q_, acc, gradp_avg, bgp0,
                               phigradg, Apt, matched_mu, matched_rho, matched_properties,
-                              **NS_namespace):
+                              Fv, **NS_namespace):
     """Called on the first inner iteration of each timestep.
 
     Assembles everything that stays fixed during the inner iterations: the
@@ -149,10 +153,12 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Mt, Md, scalar_components,
             b_tmp[ui].axpy(acc_vals[i], b_rho)
         else:
             assemble(rho_ * bg0[ui] * dx, tensor=b_tmp[ui])
-        # add average pressure gradient
-        if not isinstance(gradp_avg, Constant):  # may change during the run
+        # add the mean pressure gradient (a hook may change it during the run)
+        if isinstance(gradp_avg, Constant):
+            b_tmp[ui].axpy(-gradp_avg.values()[i], Fv)
+        else:
             assemble(bgp0[ui] * dx, tensor=b0[ui])
-        b_tmp[ui].axpy(-1., b0[ui])
+            b_tmp[ui].axpy(-1., b0[ui])
 
         # Add transient, convection and diffusion
         b_tmp[ui].axpy(1. / dt, Mt[0] * x_1[ui])

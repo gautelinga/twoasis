@@ -31,7 +31,7 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "potential_linear_derivative",
            "wall_potential_linear_derivative",
            "weighted_arithmetic_mean", "weighted_geometric_mean",
-           "krylov_solver_parameters", "krylov_solver", "krylov_get_solvers",
+           "krylov_solver_parameters", "krylov_solver", "krylov_get_solvers", "projection_solver",
            "phase_field_fieldsplit_solver"]
 
 
@@ -62,14 +62,25 @@ def krylov_solver(name, cfg, krylov_solvers):
     return sol
 
 
+def projection_solver(velocity_update_solver, krylov_solvers):
+    """A Krylov solver for a velocity-update projection (the velocity_update_solver
+    settings), started from zero: it projects the gradient of the pressure
+    change, which the last result says nothing about, and as the inner
+    iterations converge its right-hand side tends to zero, where a nonzero first
+    guess stops PETSc at once (DIVERGED_DTOL)."""
+    sol = krylov_solver("velocity_update_solver", velocity_update_solver, krylov_solvers)
+    sol.parameters["nonzero_initial_guess"] = False
+    return sol
+
+
 def krylov_get_solvers(krylov_solvers, q_, velocity_krylov_solver, velocity_update_solver,
                        pressure_krylov_solver, phase_field_krylov_solver,
                        phase_field_fieldsplit, **NS_namespace):
-    """Linear solvers for the BDF and IPCS schemes, in the order
-    (tentative velocity, velocity update), pressure, phase field, scalar.
-    Scalars are not supported, so the scalar solver is None."""
-    u_sol = (krylov_solver("velocity_krylov_solver", velocity_krylov_solver, krylov_solvers),
-             krylov_solver("velocity_update_solver", velocity_update_solver, krylov_solvers))
+    """Linear solvers for the BDF and IPCS schemes, in the order tentative
+    velocity, pressure, phase field, scalar. Scalars are not supported, so the
+    scalar solver is None. The velocity update's solvers belong to the
+    projections (GradFunction, made in setup)."""
+    u_sol = krylov_solver("velocity_krylov_solver", velocity_krylov_solver, krylov_solvers)
     p_sol = krylov_solver("pressure_krylov_solver", pressure_krylov_solver, krylov_solvers)
     if phase_field_fieldsplit:
         pf_sol = phase_field_fieldsplit_solver(q_['phig'].function_space(),
@@ -147,7 +158,7 @@ def velocity_matrices(Md, bcs, u_components):
     return Matrix(Md), {ui: Matrix(Md) for ui in u_components}
 
 
-def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
+def velocity_tentative_solve(ui, A, Ai, bcs, x_, du_, u_sol, b, udiff, unorm,
                              u_components, inner_iter, **NS_namespace):
     """Solve for one component of the tentative velocity."""
     # When all components share the matrix A (Ai is None), it only changes at the
@@ -155,18 +166,17 @@ def velocity_tentative_solve(ui, A, Ai, bcs, x_, x_2, u_sol, b, udiff,
     # the timestep and reused after that. With one matrix per component (Ai), the
     # solver switches matrices between solves and must rebuild each time.
     if Ai is None:
-        u_sol[0].set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
+        u_sol.set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
 
     [bc.apply(b[ui]) for bc in bcs[ui]]
-    # x_2 is only needed on the first inner iteration, so use it as a work
-    # vector for the change in velocity.
-    x_2[ui].zero()
-    x_2[ui].axpy(1., x_[ui])
+    du_[ui].zero()
+    du_[ui].axpy(1., x_[ui])
     t1 = Timer("Tentative Linear Algebra Solve")
-    u_sol[0].solve(Ai[ui] if Ai else A, x_[ui], b[ui])
+    u_sol.solve(Ai[ui] if Ai else A, x_[ui], b[ui])
     t1.stop()
-    x_2[ui].axpy(-1., x_[ui])
-    udiff[0] += x_2[ui].norm('l2')
+    du_[ui].axpy(-1., x_[ui])
+    udiff[0] += du_[ui].norm('l2')
+    unorm[0] += x_[ui].norm('l2')
 
 
 def velocity_tentative_assemble(**NS_namespace):
@@ -188,13 +198,13 @@ def velocity_update(**NS_namespace):
     pass
 
 def print_velocity_pressure_info(num_iter, print_velocity_pressure_convergence,
-                                 inner_iter, udiff, dp_, **NS_namespace):
+                                 inner_iter, udiff, unorm, dp_, **NS_namespace):
     if num_iter > 1 and print_velocity_pressure_convergence:
         if inner_iter == 1:
             info_blue('  Inner iterations velocity pressure:')
-            info_blue('                 error u  error p')
-        info_blue('    Iter = {0:4d}, {1:2.2e} {2:2.2e}'.format(
-            inner_iter, udiff[0], norm(dp_.vector())))
+            info_blue('                 error u  rel. u   error p')
+        info_blue('    Iter = {0:4d}, {1:2.2e} {2:2.2e} {3:2.2e}'.format(
+            inner_iter, udiff[0], udiff[0] / max(unorm[0], 1e-300), norm(dp_.vector())))
 
 def phase_field_assemble(**NS_namespace):
     """Solve scalar equation."""

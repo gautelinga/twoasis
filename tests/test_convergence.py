@@ -106,3 +106,46 @@ def test_ipcs_taylor_green_phase_field(tmp_path):
     run_twoasis(tmp_path, T=0.1, dt=0.01, stat_interval=10,
                 **dict(TAYLOR_GREEN, solver="IPCS", N=32))
     assert load_tdata(tmp_path)[-1, TG_ERR_COLS["phi"]] < 0.05
+
+
+# TaylorGreen2D with steps of 0.5*h and 1.5*h in turn, the step set for the next
+# step by temporal_hook (the driver takes a returned dt).
+ALTERNATING = '''
+from twoasis.problems.TPfracStep import TaylorGreen2D as base
+from twoasis.problems.TPfracStep.TaylorGreen2D import *
+
+
+def problem_parameters(NS_parameters, **NS_namespace):
+    base.problem_parameters(NS_parameters=NS_parameters, **NS_namespace)
+    NS_parameters.update(h=0.02)
+
+
+def temporal_hook(tstep, h, **NS_namespace):
+    base.temporal_hook(tstep=tstep, h=h, **NS_namespace)
+    return dict(dt=(1.5 if tstep % 2 else 0.5) * h)
+'''
+
+
+@pytest.mark.slow
+def test_bdf2_variable_step(tmp_path):
+    """BDF2 with steps alternating between 0.5*h and 1.5*h: the errors against
+    the exact solution still decrease as h^2, which takes the coefficients for
+    the actual ratio of successive steps. T is an even number of steps of h."""
+    T = 0.24
+    errors = []
+    for h in [0.04, 0.02, 0.01]:
+        wd = tmp_path / "h_{}".format(h)
+        wd.mkdir()
+        (wd / "Alternating.py").write_text(ALTERNATING)
+        run_twoasis(wd, T=T, h=h, dt=0.5 * h, stat_interval=round(T / h),
+                    **dict(TAYLOR_GREEN, problem="Alternating"), **TIGHT)
+        row = load_tdata(wd)[-1]
+        assert abs(row[1] - T) < 1e-12
+        errors.append(row)
+    orders = {}
+    for name in ["u0", "phi"]:
+        e = [row[TG_ERR_COLS[name]] for row in errors]
+        orders[name] = [math.log2(e[i] / e[i + 1]) for i in range(len(e) - 1)]
+    assert all(1.8 < p < 2.3 for ps in orders.values() for p in ps), \
+        "observed orders with a variable step not ~2: {}".format(
+            {k: [round(p, 2) for p in v] for k, v in orders.items()})

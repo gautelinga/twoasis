@@ -157,6 +157,39 @@ def test_restart_time_series(tmp_path):
     assert list(load_tdata(tmp_path)[:, 0]) == list(range(1, 13))
 
 
+@pytest.mark.parametrize("nprocs", [1, 2])
+def test_kill_file(tmp_path, nprocs):
+    """A file killtwoasis in the output folder stops the run cleanly where it
+    is seen (here at once: the initial state is saved before the first step),
+    with a checkpoint there, and is removed."""
+    import pickle
+    if nprocs > 1:
+        require_mpi(nprocs)
+    (tmp_path / "results").mkdir()
+    (tmp_path / "results" / "killtwoasis").touch()
+    run_twoasis(tmp_path, nprocs=nprocs, solver="BDF", T=1.0, **BUBBLE)
+    run = tmp_path / "results" / "data" / "1"
+    with open(str(run / "Checkpoint" / "params.dat"), "rb") as f:
+        assert pickle.load(f)["tstep"] == 0
+    assert not (run / "Stats" / "tdata.dat").exists()
+    assert not (tmp_path / "results" / "killtwoasis").exists()
+
+
+def test_unknown_parameter_is_refused(tmp_path):
+    """A misspelt parameter stops the run, with the name it was meant to be."""
+    with pytest.raises(AssertionError, match="unknown parameter chekpoint.*did you mean checkpoint"):
+        run_twoasis(tmp_path, solver="BDF", T=0.004, chekpoint=5, **BUBBLE)
+
+
+def test_restart_takes_the_problem_from_the_checkpoint(tmp_path_factory, bubble_bdf):
+    """A restart without problem= continues the checkpoint's problem."""
+    wd, ckpt = copy_run(tmp_path_factory, "restart_no_problem", bubble_bdf)
+    params = {k: v for k, v in BUBBLE.items() if k != "problem"}
+    proc = run_twoasis(wd, solver="BDF", T=0.024, restart_folder=str(ckpt), **params)
+    assert "PeriodicBubble2D" in proc.stdout
+    assert load_tdata(wd).shape[0] == 12
+
+
 def test_restart_other_process_count(tmp_path_factory, bubble_bdf):
     """A checkpoint written in serial cannot be read on two processes (the dof
     order differs), so the restart stops with a clear error."""

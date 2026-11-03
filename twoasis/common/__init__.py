@@ -6,9 +6,9 @@ from .io import (
     merge_visualization_files, merge_xml_files, save_checkpoint_solution_h5, save_solution,
     save_tstep_solution_h5)
 from .utilities import (
-    A_cache, assemble_matrix, AssignedVectorFunction, compute_ind, DivFunction,
+    A_cache, assemble_matrix, AssignedVectorFunction, compute_ind, DivRHS,
     GradFunction, homogenize, Mat_cache_dict, OasisFunction,
-    PhiGradFunction, Solver_cache, Solver_cache_dict, TPsource)
+    PhiGradRHS, TPsource)
 import sys
 import ast
 import json
@@ -21,20 +21,18 @@ __all__ = [
     "save_tstep_solution_h5",
     # utilities
     "A_cache", "assemble_matrix", "AssignedVectorFunction", "compute_ind",
-    "DivFunction", "GradFunction", "homogenize", "Mat_cache_dict",
-    "OasisFunction", "PhiGradFunction", "Solver_cache", "Solver_cache_dict", "TPsource"]
+    "DivRHS", "GradFunction", "homogenize", "Mat_cache_dict",
+    "OasisFunction", "PhiGradRHS", "TPsource"]
 
 # Parse command-line keyword arguments
 def parse_command_line():
     commandline_kwargs = {}
     for s in sys.argv[1:]:
-        if s.count('=') == 1:
-            key, value = s.split('=', 1)
-        else:
-            raise TypeError((s + " Only kwargs separated with '=' sign " +
-                            "allowed. See NSdefault_hooks for a range of " +
-                            "parameters. Your problem file should contain " +
-                            "problem specific parameters."))
+        if '=' not in s:
+            raise TypeError("{}: arguments are key=value; the parameters are the defaults in "
+                            "twoasis/problems/TPfracStep/__init__.py and those of the "
+                            "problem file".format(s))
+        key, value = s.split('=', 1)
         # JSON first (numbers, lists, dicts, true/false), then Python literals
         # (True/False, tuples); anything else stays a string.
         try:
@@ -48,5 +46,5 @@ def parse_command_line():
         commandline_kwargs[key] = value
     return commandline_kwargs
 
-# Note to self. To change a dictionary variable through commandline do, e.g.,
-# run NSfracStep velocity_update_solver='{"method":"gradient_matrix"}'
+# A dict on the command line updates a default dict, e.g.
+#   twoasis TPfracStep velocity_update_solver='{"method": "gradient_matrix"}'

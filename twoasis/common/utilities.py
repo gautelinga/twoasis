@@ -7,8 +7,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from dolfin import (assemble, Function, Constant,
     TrialFunction,TestFunction, dx, Vector, Matrix,
     FunctionSpace, Timer, div, Form, inner, grad,
-    VectorFunctionSpace, FunctionAssigner, PETScKrylovSolver,
-    PETScPreconditioner, DirichletBC, split)
+    VectorFunctionSpace, FunctionAssigner, DirichletBC, split)
 
 # The UFL that dolfin was built with: ufl_legacy in recent installations, ufl in
 # older ones.
@@ -35,29 +34,7 @@ class Mat_cache_dict(dict):
         return self[key]
 
 
-# Create some dictionaries to hold solvers used for projection
-class Solver_cache_dict(dict):
-    """Items in dictionary are Linear algebra solvers stored for efficient reuse.
-    """
-
-    def __missing__(self, key):
-        assert len(key) == 4
-        form, bcs, solver_type, preconditioner_type = key
-        prec = PETScPreconditioner(preconditioner_type)
-        sol = PETScKrylovSolver(solver_type, prec)
-        #sol.prec = prec
-        #sol = KrylovSolver(solver_type, preconditioner_type)
-
-        #sol.parameters["preconditioner"]["structure"] = "same"
-        sol.parameters["error_on_nonconvergence"] = False
-        sol.parameters["monitor_convergence"] = False
-        sol.parameters["report"] = False
-        self[key] = sol
-        return self[key]
-
-
 A_cache = Mat_cache_dict()
-Solver_cache = Solver_cache_dict()
 
 
 def assemble_matrix(form, bcs=[]):
@@ -76,8 +53,8 @@ class OasisFunction(Function):
     and the Coefficient of the required vector must be provided.
 
       method = "default"
-        Solve projection with regular linear algebra using solver_type
-        and preconditioner_type
+        Solve the projection with `solver`, a Krylov solver (configured by the
+        caller: the velocity_update_solver settings)
 
       method = "lumping"
         Solve through lumping of mass matrix
@@ -88,8 +65,7 @@ class OasisFunction(Function):
                  name="x",
                  matvec=None,
                  method="default",
-                 solver_type="cg",
-                 preconditioner_type="default"):
+                 solver=None):
 
         Function.__init__(self, Space, name=name)
         self.form = form
@@ -104,10 +80,9 @@ class OasisFunction(Function):
         self.bf = inner(form, test) * dx()
         self.rhs = Vector(self.vector())
 
+        self.sol = solver
         if method.lower() == "default":
             self.A = A_cache[(Mass, tuple(bcs))]
-            self.sol = Solver_cache[(Mass, tuple(
-                bcs), solver_type, preconditioner_type)]
 
         elif method.lower() == "lumping":
             self.A = A_cache[(Mass, tuple(bcs))]
@@ -115,8 +90,6 @@ class OasisFunction(Function):
                 # Mass lumping is only accurate for P1; use the consistent mass
                 # matrix for higher degrees.
                 self.method = "default"
-                self.sol = Solver_cache[(Mass, tuple(
-                    bcs), solver_type, preconditioner_type)]
             else:
                 ones = Function(Space)
                 ones.vector()[:] = 1.
@@ -164,19 +137,16 @@ class GradFunction(OasisFunction):
 
     """
 
-    def __init__(self, p_, Space, i=0, bcs=[], name="grad", method={}):
+    def __init__(self, p_, Space, i=0, bcs=[], name="grad", method={}, solver=None):
 
         assert len(p_.ufl_shape) == 0
         assert i >= 0 and i < Space.mesh().geometry().dim()
 
-        solver_type = method.get('solver_type', 'cg')
-        preconditioner_type = method.get('preconditioner_type', 'default')
         solver_method = method.get('method', 'default')
         low_memory_version = method.get('low_memory_version', False)
 
         OasisFunction.__init__(self, p_.dx(i), Space, bcs=bcs, name=name,
-                               method=solver_method, solver_type=solver_type,
-                               preconditioner_type=preconditioner_type)
+                               method=solver_method, solver=solver)
 
         self.i = i
         Source = p_.function_space()
@@ -226,102 +196,41 @@ class GradFunction(OasisFunction):
             OasisFunction.__call__(self, assemb_rhs=assemb_rhs)
 
 
-class PhiGradFunction(OasisFunction):
-    """
-    Function used for projecting gradients.
+class DivRHS:
+    """The right-hand side of the pressure equation, the integral of div(u_)*q
+    over the domain (q a test function on Q), as a Vector `rhs` that
+    assemble_rhs fills: by products of the velocity components with the cached
+    matrices of q*v.dx(i)*dx, or, with low_memory, by assembling the form."""
 
-    Typically used for computing pressure gradient on velocity function space.
-
-    """
-
-    def __init__(self, phig_, Space, i=0, bcs=[], name="phigrad", method={}):
-
-        assert len(phig_.ufl_shape) == 1 and phig_.ufl_shape[0] == 2
-        assert i >= 0 and i < Space.mesh().geometry().dim()
-
-        solver_type = method.get('solver_type', 'cg')
-        preconditioner_type = method.get('preconditioner_type', 'default')
-        solver_method = method.get('method', 'default')
-        low_memory_version = method.get('low_memory_version', False) # !!!
-
-        phi_, g_ = split(phig_)
-
-        OasisFunction.__init__(self, phi_ * g_.dx(i), Space, bcs=bcs, name=name,
-                               method=solver_method, solver_type=solver_type,
-                               preconditioner_type=preconditioner_type)
-        self.i = i
+    def __init__(self, u_, Q, low_memory=False):
+        q = TestFunction(Q)
+        self.form = div(u_) * q * dx
+        self.rhs = assemble(self.form)
+        V = u_[0].function_space()
+        self.matvec = None if low_memory else [
+            (A_cache[(q * TrialFunction(V).dx(i) * dx, ())], u_[i])
+            for i in range(Q.mesh().geometry().dim())]
 
     def assemble_rhs(self):
-        """
-        Assemble right hand side trial.dx(i)*test*dx.
-        """
-        assemble(self.bf, tensor=self.rhs)
-
-    def __call__(self):
-        OasisFunction.__call__(self)
-
-
-class DivFunction(OasisFunction):
-    """
-    Function used for projecting divergence of vector.
-
-    Typically used for computing divergence of velocity on pressure function space.
-
-    """
-
-    def __init__(self, u_, Space, bcs=[], name="div", method={}):
-
-        solver_type = method.get('solver_type', 'cg')
-        preconditioner_type = method.get('preconditioner_type', 'default')
-        solver_method = method.get('method', 'default')
-        low_memory_version = method.get('low_memory_version', False)
-
-        OasisFunction.__init__(self, div(u_), Space, bcs=bcs, name=name,
-                               method=solver_method, solver_type=solver_type,
-                               preconditioner_type=preconditioner_type)
-
-        Source = u_[0].function_space()
-        if not low_memory_version:
-            self.matvec = [[A_cache[(self.test * TrialFunction(Source).dx(i) * dx, ())], u_[i]]
-                           for i in range(Space.mesh().geometry().dim())]
-
-        if solver_method.lower() == "gradient_matrix":
-            from femtools.gradient import compiled_gradient_module
-            DG = FunctionSpace(Space.mesh(), 'DG', 0)
-            G = assemble(TrialFunction(DG) * self.test * dx())
-            dg = Function(DG)
-            self.WGM = []
-            st = TrialFunction(Source)
-            for i in range(Space.mesh().geometry().dim()):
-                dP = assemble(st.dx(i) * TestFunction(DG) * dx)
-                A = Matrix(G)
-                self.WGM.append(compiled_gradient_module.compute_weighted_gradient_matrix(A, dP, dg))
-
-    def assemble_rhs(self):
-        """
-        Assemble right hand side (form*test*dx) in projection
-        """
-        if not self.matvec[0] is None:
+        if self.matvec is None:
+            assemble(self.form, tensor=self.rhs)
+        else:
             self.rhs.zero()
-            for mat, vec in self.matvec:
-                self.rhs.axpy(1.0, mat * vec.vector())
+            for mat, u in self.matvec:
+                self.rhs.axpy(1.0, mat * u.vector())
 
-        else:
-            assemble(self.bf, tensor=self.rhs)
 
-    def __call__(self, assemb_rhs=True):
+class PhiGradRHS:
+    """The capillary force's component i, the integral of phi*g.dx(i)*v over the
+    domain (v a test function on V), as a Vector `rhs` that assemble_rhs fills."""
 
-        if self.method.lower() == "gradient_matrix":
-            # Note that assembling rhs is not necessary using gradient_matrix
-            if assemb_rhs:
-                self.assemble_rhs()
-            self.vector().zero()
-            for i in range(self.function_space().mesh().geometry().dim()):
-                self.vector().axpy(
-                    1., self.WGM[i] * self.matvec[i][1].vector())
+    def __init__(self, phig_, V, i):
+        phi_, g_ = split(phig_)
+        self.form = phi_ * g_.dx(i) * TestFunction(V) * dx
+        self.rhs = assemble(self.form)
 
-        else:
-            OasisFunction.__call__(self, assemb_rhs=assemb_rhs)
+    def assemble_rhs(self):
+        assemble(self.form, tensor=self.rhs)
 
 
 class AssignedVectorFunction(Function):

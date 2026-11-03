@@ -53,3 +53,28 @@ def test_lower_degree_phase_field(tmp_path, bubble_p1_bdf, solver):
     assert np.isfinite(td).all()
     assert_mass_conserved(td, MASS_TOL)
     compare(td, bubble_p1_bdf[1], [("E_int", 2e-3)], "P1 phase field")
+
+
+SET_FORCING = '''
+from dolfin import Constant
+from twoasis.problems.TPfracStep.PeriodicBubble2D import *
+
+
+def start_timestep_hook(tstep, gradp_avg, **NS_namespace):
+    """Set the mean pressure gradient (-F0) on the first step."""
+    if tstep == 1:
+        gradp_avg.assign(Constant((-1., 0.)))
+'''
+
+
+@pytest.mark.parametrize("solver", ["BDF", "IPCS"])
+def test_forcing_changed_by_a_hook(tmp_path, solver):
+    """A Constant mean pressure gradient that a hook changes is used from then
+    on: the same as F0 given from the start."""
+    (tmp_path / "hook").mkdir()
+    (tmp_path / "hook" / "SetForcing.py").write_text(SET_FORCING)
+    (tmp_path / "given").mkdir()
+    run_twoasis(tmp_path / "hook", solver=solver, T=0.006, **dict(BUBBLE, problem="SetForcing"))
+    run_twoasis(tmp_path / "given", solver=solver, T=0.006, F0="[1, 0]", **BUBBLE)
+    compare(load_tdata(tmp_path / "hook"), load_tdata(tmp_path / "given"),
+            [("u0m", 1e-10), ("E_kin", 1e-10)], "forcing set by a hook")

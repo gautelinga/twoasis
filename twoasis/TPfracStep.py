@@ -42,8 +42,15 @@ def public_names(module):
 commandline_kwargs = parse_command_line()
 
 # Find the problem module
-default_problem = "TaylorBubble2D"  # 'CylArr2D'
-problemname = commandline_kwargs.get('problem', default_problem)
+# The problem named on the command line, or on a restart the checkpoint's.
+default_problem = "TaylorBubble2D"
+problemname = commandline_kwargs.get('problem')
+if problemname is None and commandline_kwargs.get('restart_folder') is not None:
+    from twoasis.problems import checkpoint_parameters
+    problemname = checkpoint_parameters(
+        path.abspath(commandline_kwargs['restart_folder'])).get('problem')
+if problemname is None:
+    problemname = default_problem
 problemspec = importlib.util.find_spec('.'.join(('twoasis.problems.TPfracStep', problemname)))
 if problemspec is None:
     problemspec = importlib.util.find_spec(problemname)
@@ -170,6 +177,7 @@ U_AB = 1.5 * u_1 - 0.5 * u_2
 x_ = dict((ui, q_[ui].vector()) for ui in sys_comp)        # Solution vectors t
 x_1 = dict((ui, q_1[ui].vector()) for ui in sys_comp)      # Solution vectors t - dt
 x_2 = dict((ui, q_2[ui].vector()) for ui in sys_comp)  # Solution vectors t - 2*dt
+du_ = dict((ui, x_[ui].copy()) for ui in u_components)  # Velocity change in an inner iteration
 
 # Create vectors to hold rhs of equations
 b = dict((ui, Vector(x_[ui])) for ui in sys_comp)      # rhs vectors (final)
@@ -248,6 +256,7 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     tstep += 1
     inner_iter = 0
     udiff = array([1e8])  # Norm of velocity change over last inner iter
+    unorm = array([0.])   # ... and of the velocity
     num_iter = max(iters_on_first_timestep, max_iter) if tstep <= 10 else max_iter
 
     start_timestep_hook(**vars())
@@ -259,14 +268,17 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     phase_field_solve(**vars())
     t0.stop()
 
-    while udiff[0] > max_error and inner_iter < num_iter:
-        #print("iteration:", inner_iter, udiff[0], max_error, num_iter)
+    # Iterate until the velocity changes by less than max_error, or by less than
+    # max_error_rel relative to its norm; the absolute test decides for a fluid
+    # (nearly) at rest.
+    while (udiff[0] > max(max_error, max_error_rel * unorm[0])
+           and inner_iter < num_iter):
         inner_iter += 1
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
             assemble_first_inner_iter(**vars())
-        udiff[0] = 0.0
+        udiff[0] = unorm[0] = 0.0
         for i, ui in enumerate(u_components):
             t1 = OasisTimer('Solving tentative velocity ' + ui, print_solve_info)
             velocity_tentative_assemble(**vars())

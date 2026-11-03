@@ -17,7 +17,8 @@ from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     assemble_phase_field_system, attach_pressure_nullspace, krylov_get_solvers,
-    phase_field_system, PhaseFieldOnVelocitySpace, set_mixed_fields, velocity_matrices)
+    phase_field_system, PhaseFieldOnVelocitySpace, projection_solver, set_mixed_fields,
+    velocity_matrices)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -44,7 +45,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
           angles, ds, bdf_order, constant_poisson_coefficient, normal,
           initial_step_1st_order, tstep,
           velocity_update_solver, assemble_matrix, homogenize, acc, gradp_avg,
-          GradFunction, PhiGradFunction, DivFunction, TPsource, **NS_namespace):
+          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
 
@@ -72,7 +73,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     A, Ai = velocity_matrices(Md, bcs, u_components)
 
     # Allocate Function for holding and computing the velocity divergence on Q
-    divu = DivFunction(u_, Q, name='divu', method=velocity_update_solver)
+    divu = DivRHS(u_, Q, low_memory=velocity_update_solver.get('low_memory_version', False))
 
     # Setup for solving convection
     u_adv = as_vector([Function(V) for _ in range(len(u_components))])
@@ -87,13 +88,12 @@ def setup(u_components, u, v, p, q, bcs, #dt,
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
-                              bcs=homogenize(bcs[ui]),
-                              method=velocity_update_solver)
+                              bcs=homogenize(bcs[ui]), method=velocity_update_solver,
+                              solver=projection_solver(velocity_update_solver,
+                                                       krylov_solvers))
              for i, ui in enumerate(u_components)}
 
-    phigradg = {ui: PhiGradFunction(q_['phig'], V, i=i, name='phi_dgd' + ('x', 'y', 'z')[i],
-                              bcs=homogenize(bcs[ui]),
-                              method=velocity_update_solver)
+    phigradg = {ui: PhiGradRHS(q_['phig'], V, i)
              for i, ui in enumerate(u_components)}
 
     # Decide whether the first step of this run is first order (BDF1).
@@ -323,15 +323,20 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
 
 def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha,
                          b, x_1, x_2, u_adv, u_components, alpha,
-                         beta, bdf_order, bdf1_tstep, fpf, bpf,
+                         beta, bdf_order, bdf1_tstep, fpf, bpf, NS_parameters,
                          **NS_namespace):
     """Assemble phase field equation."""
     #info_blue("Assembling PF")
     # BDF2 needs the solution at t - 2*dt. On the step where setup found none
     # (bdf1_tstep), take a BDF1 step instead, since BDF2 with a wrong t - 2*dt
     # level does not conserve mass.
+    # The coefficients for a step dt after a step dt_1 (BDF2 with a variable
+    # step). dt_1 is kept in NS_parameters, so that it is also saved with the
+    # checkpoint: a restart with another dt continues with the right ratio.
+    dt_1 = NS_parameters.get("dt_1") or dt
+    NS_parameters["dt_1"] = dt
     if bdf_order == 2 and tstep != bdf1_tstep:
-        w_n = 1. # dt / dt_1
+        w_n = dt / dt_1
 
         alpha[0] = (1. + 2.*w_n)/(1. + w_n) / dt  # 3.0 / (2. * dt)
         alpha[1] = -(1. + w_n) / dt               # - 4.0 / (2 * dt)

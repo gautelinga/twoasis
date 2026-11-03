@@ -1,55 +1,67 @@
 #!/usr/bin/env python
 
-import sys, os
+import ast
+import os
+import sys
+
 import numpy as np
 
-def main():
-    assert len(sys.argv) > 1
-    statsfolder = os.path.join(sys.argv[1], "Stats")
-    timestampsfolder = os.path.join(sys.argv[1], "Timestamps")
-    tdatafile = os.path.join(statsfolder, "tdata.dat")
-    paramsfile = os.path.join(timestampsfolder, "params.dat")
+def read_params(paramsfile):
+    """key=value lines, the values as Python literals where they are."""
+    params = dict()
+    with open(paramsfile) as infile:
+        for line in infile:
+            if "=" in line:
+                key, val = line.strip().split("=", 1)
+                try:
+                    params[key] = ast.literal_eval(val)
+                except (ValueError, SyntaxError):
+                    params[key] = val
+    return params
 
-    if os.path.exists(statsfolder) and os.path.exists(tdatafile) and os.path.exists(timestampsfolder) and os.path.exists(paramsfile):
-        data = np.loadtxt(tdatafile)
-        params = dict()
-        with open(paramsfile, "r") as infile:
-            text = infile.read().split("\n")[:-1]
-            for line in text:
-                key, val = line.split("=")
-                params[key] = eval(val)
-        print(params)
-    else:
-        print("Could not find folder: {}".format(statsfolder))
-        exit()
+
+def main():
+    """Dimensionless numbers of a porous-medium run, from its Stats/tdata.dat
+    and Timestamps/params.dat: those whose parameters the run wrote."""
+    assert len(sys.argv) > 1
+    tdatafile = os.path.join(sys.argv[1], "Stats", "tdata.dat")
+    paramsfile = os.path.join(sys.argv[1], "Timestamps", "params.dat")
+    for f in (tdatafile, paramsfile):
+        if not os.path.exists(f):
+            sys.exit("Could not find {}".format(f))
+    data = np.loadtxt(tdatafile, ndmin=2)
+    params = read_params(paramsfile)
+    print(params)
 
     d = 2*params["rad"]
     mu = np.mean(params["mu"])
     rho = np.mean(params["rho"])
     nu = mu/rho
-    sigma = params["sigma"]
+    sigma = params.get("sigma")
     fy = abs(params["F0"][1])
-    res = params["res"]
-    M = params["M"]
-    epsilon = params["epsilon"]
+    M = params.get("M")
+    epsilon = params.get("epsilon")
 
     t = data[:, 1]
     uy = data[:, 3]
     uy_mean = uy.mean()
 
     t_adv = d / uy_mean
-    
+
     numbers = dict(
         fy = fy,
         uy_mean = uy_mean,
         t_adv = t_adv,
-        Ca = mu * uy_mean / sigma,
-        Oh = mu / np.sqrt(rho * sigma * d),
         Re = uy_mean * d / nu,
-        Bo = fy * d**2 / sigma,
-        Cn = epsilon / d,
-        PePF = uy_mean * epsilon * d / (M * sigma) 
     )
+    # The two-phase numbers, for a run that has a surface tension.
+    if sigma is not None:
+        numbers.update(Ca = mu * uy_mean / sigma, Oh = mu / np.sqrt(rho * sigma * d),
+                       Bo = fy * d**2 / sigma)
+    if epsilon is not None:
+        numbers.update(Cn = epsilon / d)
+    if None not in (sigma, epsilon, M):
+        numbers.update(PePF = uy_mean * epsilon * d / (M * sigma))
 
     string = "\n".join([a + " = {" + a + "}" for a in numbers.keys()])
     print(string.format(**numbers))

@@ -124,12 +124,13 @@ def assemble_first_inner_iter(phi_V, rho_, rho_inv_, mu_, q_, rho, mu, **NS_name
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
 
-def velocity_tentative_solve(ui, Fu, q_, x_, bcs, udiff, **NS_namespace):
+def velocity_tentative_solve(ui, Fu, q_, x_, bcs, udiff, unorm, **NS_namespace):
     """Solve for one component of the tentative velocity."""
     change = x_[ui].copy()
     solve(Fu[ui][0] == Fu[ui][1], q_[ui], bcs[ui])
     change.axpy(-1., x_[ui])
     udiff[0] += change.norm('l2')
+    unorm[0] += x_[ui].norm('l2')
 
 
 def pressure_solve(Fp, p_, dp_, bcs, p_sol, null_space, **NS_namespace):

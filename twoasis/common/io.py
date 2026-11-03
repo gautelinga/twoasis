@@ -83,12 +83,10 @@ def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
         save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction,
                                NS_parameters)
 
-    pauseoasis = check_if_pause(folder)
-    while pauseoasis:
+    while check_if_pause(folder, newfolder):
         time.sleep(5)
-        pauseoasis = check_if_pause(folder)
 
-    killoasis = check_if_kill(folder, killtime, total_timer)
+    killoasis = check_if_kill(folder, killtime, total_timer, newfolder=newfolder)
     if tstep % checkpoint == 0 or killoasis:
         save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters)
 
@@ -170,40 +168,43 @@ def recover_checkpoint(checkpointfolder):
             return
 
 
-def check_if_kill(folder, killtime, total_timer, key='killtwoasis'):
-    """Check if user has put a file named {key} in folder or if given killtime has been reached."""
-    found = 0
-    if key in listdir(folder):
-        found = 1
-    collective = MPI.sum(MPI.comm_world, found)
-    if collective > 0:
-        if MPI.rank(MPI.comm_world) == 0:
-            remove(path.join(folder, key))
-            info_red(key+' found! Stopping simulations cleanly...')
-        return True
-    else:
-        # The slowest rank decides, so that all ranks stop (and checkpoint) together.
-        elapsed_time = MPI.max(MPI.comm_world, float(total_timer.elapsed()[0]))
-        if killtime is not None and killtime <= elapsed_time:
-            if MPI.rank(MPI.comm_world) == 0:
-                info_red('Given killtime reached! Stopping simulations cleanly...')
-            return True
+def _control_file(key, folder, newfolder):
+    """The control file `key` the user has put in the run's folder (newfolder)
+    or in folder, or None. Checked on rank 0 only."""
+    for where in (newfolder, folder):
+        if where is not None and path.exists(path.join(where, key)):
+            return path.join(where, key)
+    return None
+
+
+def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=None):
+    """Whether to stop the run cleanly: a file named key in the run's folder or
+    in folder (a file in folder stops the first run to see it), or killtime
+    reached. Rank 0 decides, and every rank gets its answer in one broadcast."""
+    stop = None
+    if MPI.rank(MPI.comm_world) == 0:
+        found = _control_file(key, folder, newfolder)
+        if found:
+            remove(found)
+            info_red(key + ' found! Stopping simulations cleanly...')
+            stop = True
+        elif killtime is not None and killtime <= total_timer.elapsed()[0]:
+            info_red('Given killtime reached! Stopping simulations cleanly...')
+            stop = True
         else:
-            return False
+            stop = False
+    return MPI.comm_world.bcast(stop, root=0)
 
 
-def check_if_pause(folder, key='pausetwoasis'):
-    """Check if user has put a file named pausetwoasis in folder."""
-    found = 0
-    if key in listdir(folder):
-        found = 1
-    collective = MPI.sum(MPI.comm_world, found)
-    if collective > 0:
-        if MPI.rank(MPI.comm_world) == 0:
-            info_red(key+' found! Simulations paused. Remove ' + path.join(folder, key) + ' to resume simulations...')
-        return True
-    else:
-        return False
+def check_if_pause(folder, newfolder=None, key='pausetwoasis'):
+    """Whether a file named key (pausetwoasis) in the run's folder or in folder
+    pauses the run. Rank 0 decides; one broadcast."""
+    found = None
+    if MPI.rank(MPI.comm_world) == 0:
+        found = _control_file(key, folder, newfolder)
+        if found:
+            info_red(key + ' found! Simulations paused. Remove ' + found + ' to resume simulations...')
+    return MPI.comm_world.bcast(found, root=0) is not None
 
 
 def init_from_restart(restart_folder, sys_comp, uc_comp,
@@ -346,18 +347,21 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
 
     The series hold the values at the mesh vertices, and for a P2 field also at
     the edge midpoints (series written by dolfin's XDMFFile hold only the
-    vertices). Each process matches the
-    coordinates of its own degrees of freedom to the saved ones, so the run may
-    use a different number of processes from the one that wrote the files.
-    Fields of higher degree than the saved values are interpolated from the
-    vertex values."""
+    vertices). Each process reads, in chunks, the saved nodes inside its part of
+    the mesh and matches the coordinates of its own degrees of freedom to them,
+    so the run may use a different number of processes from the one that wrote
+    the files. Fields of higher degree than the saved values are interpolated
+    from the vertex values."""
     import h5py
 
     mesh = VV['p'].mesh()
     gdim = mesh.geometry().dim()
     x = mesh.coordinates()
     tol = 1e-8 * MPI.max(mesh.mpi_comm(), float((x.max(axis=0) - x.min(axis=0)).max()))
-    matchers = {}  # each field's file holds the same coordinates; sort them once
+    # This process's part of the mesh: every dof of a Lagrange space lies in it.
+    lo, hi = x.min(axis=0) - tol, x.max(axis=0) + tol
+    nodes_of = {}  # geometry dataset -> (rows here, matcher), shared by the fields
+    CHUNK = 1 << 20
 
     def step(name, t_exact=None):
         """The step of the series name at the requested time, or, given t_exact,
@@ -378,16 +382,30 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
         """The saved values (one column per component), a matcher for the saved
         coordinates, and the time."""
         t, (h5name, dataset), (h5geometry, geometry) = step(name, t_exact)
-        with h5py.File(h5name, "r") as h5f:
-            values = h5f[dataset][:]
-        with h5py.File(h5geometry, "r") as h5f:
-            nodes = h5f[geometry][:, :gdim]
-        key = hash(nodes.tobytes())
-        if key not in matchers:
-            matchers[key] = PointMatcher(nodes, tol)
+        key = (h5geometry, geometry)
+        if key not in nodes_of:
+            rows, nodes = [], []
+            with h5py.File(h5geometry, "r") as h5f:
+                ds = h5f[geometry]
+                n = ds.shape[0]
+                for start in range(0, n, CHUNK):
+                    block = ds[start:start + CHUNK, :gdim]
+                    here = np.flatnonzero(((block >= lo) & (block <= hi)).all(axis=1))
+                    rows.append(start + here)
+                    nodes.append(block[here])
+            matcher = PointMatcher(np.concatenate(nodes), tol)
             # More nodes than vertices: the edge midpoints of a P2 field too.
-            matchers[key].degree = 2 if len(nodes) > mesh.num_entities_global(0) else 1
-        return values.reshape(len(values), -1), matchers[key], t
+            matcher.degree = 2 if n > mesh.num_entities_global(0) else 1
+            nodes_of[key] = (np.concatenate(rows), matcher)
+        rows, matcher = nodes_of[key]
+        values = []
+        with h5py.File(h5name, "r") as h5f:
+            ds = h5f[dataset]
+            for start in range(0, ds.shape[0], CHUNK):
+                block = ds[start:start + CHUNK]
+                values.append(block[rows[(rows >= start) & (rows < start + CHUNK)] - start])
+        values = np.concatenate(values)
+        return values.reshape(len(values), -1), matcher, t
 
     def fill(function, space, values, matcher):
         """Set the dofs of space (function's space, or a subspace of it) from

@@ -7,19 +7,20 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from dolfin import Constant, Mesh, MPI, parameters, Timer
 import inspect
 import pickle
-import subprocess
-from os import getpid, path
+import difflib
+from os import path, sysconf
 from collections import defaultdict
 
 
 def getMemoryUsage(rss=True):
-    mypid = str(getpid())
-    rss = "rss" if rss else "vsz"
-    process = subprocess.Popen(['ps', '-o', rss, mypid],
-                                stdout=subprocess.PIPE)
-    out, _ = process.communicate()
-    mymemory = out.split()[1]
-    return eval(mymemory) / 1024
+    """This process's resident (rss) or virtual memory in MB, from /proc (Linux;
+    0 elsewhere), without starting a process under MPI."""
+    try:
+        with open("/proc/self/statm") as f:
+            size, resident = (int(v) for v in f.read().split()[:2])
+    except OSError:
+        return 0.
+    return (resident if rss else size) * sysconf("SC_PAGE_SIZE") / 2**20
 
 
 parameters["linear_algebra_backend"] = "PETSc"
@@ -147,6 +148,17 @@ def problem_parameters(**NS_namespace):
     pass
 
 
+def checkpoint_parameters(restart_folder):
+    """The parameters stored with the checkpoint in restart_folder (params.dat),
+    after putting back the checkpoint of an interrupted swap (recover_checkpoint)."""
+    from twoasis.common.io import recover_checkpoint
+    if MPI.rank(MPI.comm_world) == 0:
+        recover_checkpoint(restart_folder)
+    MPI.barrier(MPI.comm_world)
+    with open(path.join(restart_folder, "params.dat"), "rb") as f:
+        return pickle.load(f)
+
+
 def post_import_problem(NS_parameters, mesh, commandline_kwargs,
                         NS_expressions, constrained_domain=None, **NS_namespace):
     """Called after importing from problem.
@@ -161,12 +173,7 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     # include t and tstep); the command line can still change any of them.
     if commandline_kwargs.get("restart_folder") is not None:
         restart_folder = path.abspath(commandline_kwargs["restart_folder"])
-        from twoasis.common.io import recover_checkpoint
-        if MPI.rank(MPI.comm_world) == 0:
-            recover_checkpoint(restart_folder)
-        MPI.barrier(MPI.comm_world)
-        with open(path.join(restart_folder, "params.dat"), "rb") as f:
-            NS_parameters.update(pickle.load(f))
+        NS_parameters.update(checkpoint_parameters(restart_folder))
         # The checkpoint holds the fields in the parallel dof order of the run
         # that wrote it, which depends on the number of processes.
         nprocs = NS_parameters.get("num_processes", MPI.size(MPI.comm_world))
@@ -176,9 +183,19 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
                                  restart_folder, nprocs, MPI.size(MPI.comm_world)))
         commandline_kwargs = dict(commandline_kwargs, restart_folder=restart_folder)
 
-    # Update NS_parameters with all parameters modified through command line
+    # A key that is neither a default nor set by the problem is a mistake (a
+    # misspelt name would otherwise leave the default in place, silently).
+    unknown = sorted(k for k in commandline_kwargs if k not in NS_parameters and k != "problem")
+    if unknown:
+        raise ValueError("unknown parameter{} {}: not a default nor set by the problem{}".format(
+            "s" if len(unknown) > 1 else "", ", ".join(unknown),
+            "".join(" ({}: did you mean {}?)".format(k, " or ".join(m))
+                    for k in unknown for m in [difflib.get_close_matches(k, NS_parameters)] if m)))
+
+    # Update NS_parameters with all parameters modified through command line; a
+    # dict updates the default dict (a solver's settings, say).
     for key, val in commandline_kwargs.items():
-        if isinstance(val, dict):
+        if isinstance(val, dict) and isinstance(NS_parameters.get(key), dict):
             NS_parameters[key].update(val)
         else:
             NS_parameters[key] = val

@@ -49,7 +49,7 @@ def get_fname(Lx, Ly, H, R, res, ext):
 
 # Create a mesh
 def mesh(Lx, Ly, H, R, res, **params):
-    return load_mesh(get_fname(Lx, Ly, H, R, res, "h5"))
+    return load_mesh(get_fname(Lx, Ly, H, R, res, "h5"), periodic=(True, True, False))
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):

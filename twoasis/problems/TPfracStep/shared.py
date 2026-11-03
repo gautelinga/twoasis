@@ -11,6 +11,8 @@ from dolfin import (
     assemble, Constant, DOLFIN_EPS_LARGE, dx, Function, grad, HDF5File, inner, Mesh, MPI, Point,
     RectangleMesh, SpatialCoordinate, SubDomain)
 
+from femtools.periodic import periodic_box
+
 from twoasis.common.utilities import compute_ind, subfunction
 
 
@@ -27,38 +29,44 @@ def centred(L):
     return (-L / 2, L / 2)
 
 
-def load_mesh(fname):
-    """Read the mesh stored as "mesh" in the HDF5 file fname."""
+def load_mesh(fname, periodic=None):
+    """Read the mesh stored as "mesh" in the HDF5 file fname.
+
+    `periodic` gives the axes (x, y, z) the problem identifies. Under MPI the mesh
+    is then read in blocks and partitioned with femtools.periodic_partition, so that
+    no process holds a vertex of a periodic face without knowing that it is periodic
+    (dolfin's periodic dofmap would give that vertex a wrong dof). Without it, the
+    mesh is read by dolfin and post_import_problem repairs the partition, which
+    costs another build of the mesh when cells have to move.
+    """
+    if periodic is not None and MPI.size(MPI.comm_world) > 1:
+        from femtools.periodic_partition import read_mesh
+        # L=None: the upper faces are at the largest coordinates, which is all the
+        # partition needs.
+        return read_mesh(fname, None, periodic, MPI.comm_world, log=_info)
     mesh = Mesh()
     with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
         h5f.read(mesh, "mesh", False)
     return mesh
 
 
-class PeriodicBox(SubDomain):
-    """Periodic boundary conditions on a box.
+def _info(s):
+    if MPI.rank(MPI.comm_world) == 0:
+        print(s)
+
+
+def PeriodicBox(periodic):
+    """Periodic boundary conditions on a box (femtools.periodic.periodic_box).
 
     `periodic` maps each periodic axis to its (lower, upper) bounds, e.g.
     {0: (0, Lx)} for periodicity in x. The face at the upper bound is identified
-    with the face at the lower bound.
+    with the face at the lower bound. The box carries `lower`, `upper` and
+    `periodic` (one entry per axis x, y, z).
     """
-
-    def __init__(self, periodic):
-        self.periodic = dict(periodic)
-        super().__init__()
-
-    def inside(self, x, on_boundary):
-        # On a lower face, but not on an upper face (those are mapped).
-        return bool(on_boundary
-                    and any(abs(x[i] - lo) < DOLFIN_EPS_LARGE for i, (lo, hi) in self.periodic.items())
-                    and not any(abs(x[i] - hi) < DOLFIN_EPS_LARGE for i, (lo, hi) in self.periodic.items()))
-
-    def map(self, x, y):
-        for i in range(len(x)):
-            y[i] = x[i]
-        for i, (lo, hi) in self.periodic.items():
-            if abs(x[i] - hi) < DOLFIN_EPS_LARGE:
-                y[i] = x[i] - (hi - lo)
+    lower, upper = ([periodic[i][k] if i in periodic else 0. for i in range(3)] for k in (0, 1))
+    # map_tol: dolfin's default for a SubDomain.
+    return periodic_box(upper, DOLFIN_EPS_LARGE, [i in periodic for i in range(3)], lower,
+                        map_tol=1e-10)
 
 
 class Faces(SubDomain):
@@ -166,22 +174,20 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
     """Describe the files that write_timestamp adds to timestampsfolder:
     params.dat lists the given parameters (a dict), dolfin_params.dat the
     function spaces and the periodic directions, and mesh.h5 holds the mesh."""
-    periodic = getattr(constrained_domain, "periodic", {})
+    from partractools import case
+    periodic = getattr(constrained_domain, "periodic", [False] * 3)
     if MPI.rank(MPI.comm_world) == 0:
         with open(path.join(timestampsfolder, "params.dat"), "w") as ofile:
             for key, val in params.items():
                 ofile.write("{}={}\n".format(key, val))
-        with open(path.join(timestampsfolder, "dolfin_params.dat"), "w") as ofile:
-            ofile.write("velocity_space=P{}\n".format(velocity_degree))
-            ofile.write("pressure_space=P{}\n".format(pressure_degree))
-            ofile.write("phase_field_space=P{}\n".format(phase_field_degree))
-            ofile.write("timestamps=timestamps.dat\n")
-            ofile.write("mesh=mesh.h5\n")
-            for i, axis in enumerate("xyz"):
-                ofile.write("periodic_{}={}\n".format(axis, str(i in periodic).lower()))
-            ofile.write("rho=1.0\n")
-    with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, "mesh.h5"), "w") as h5f:
-        h5f.write(mesh, "mesh")
+        case.write_params(path.join(timestampsfolder, "dolfin_params.dat"), dict(
+            velocity_space="P{}".format(velocity_degree),
+            pressure_space="P{}".format(pressure_degree),
+            phase_field_space="P{}".format(phase_field_degree),
+            timestamps="timestamps.dat", mesh="mesh.h5",
+            **{"periodic_" + axis: periodic[i] for i, axis in enumerate("xyz")},
+            rho=1.0))
+    case.write_mesh(path.join(timestampsfolder, "mesh.h5"), mesh)
 
 
 def read_phase_field(fname, mesh, q_):
@@ -200,10 +206,8 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     h5fname = "up_{}.h5".format(tstep)
     phi__ = subfunction(q_['phig'], 0)
     phi__.rename("phi", "phi")
-    with HDF5File(mesh.mpi_comm(), path.join(timestampsfolder, h5fname), "w") as h5f:
-        h5f.write(uv, "u")
-        h5f.write(p_, "p")
-        h5f.write(phi__, "phi")
+    from partractools import case
+    case.write_fields(path.join(timestampsfolder, h5fname), {"u": uv, "p": p_, "phi": phi__})
     if MPI.rank(MPI.comm_world) == 0:
-        with open(path.join(timestampsfolder, "timestamps.dat"), "a+") as ofile:
-            ofile.write("{:.6f} {}\n".format(t, h5fname))
+        case.write_stamps(path.join(timestampsfolder, "timestamps.dat"),
+                          [("{:.6f}".format(t), h5fname)], mode="a+")

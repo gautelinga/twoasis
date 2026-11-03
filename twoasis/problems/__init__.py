@@ -189,6 +189,15 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     if inspect.isfunction(constrained_domain):
         constrained_domain = constrained_domain(mesh=mesh, **NS_parameters)
 
+    # dolfin's partition can leave a process holding a vertex of a periodic face
+    # without knowing that it is periodic, and the periodic dofmap then gives it a
+    # wrong dof. femtools moves the few cells concerned to another process (most
+    # partitions need no move, and the mesh is then used as it is).
+    if MPI.size(mesh.mpi_comm()) > 1 and hasattr(constrained_domain, "upper"):
+        from femtools.periodic_partition import repaired
+        mesh = repaired(mesh, constrained_domain.upper, constrained_domain.periodic,
+                        mesh.mpi_comm(), log=info_blue)
+
     # Returned dictionary to be updated in the NS namespace
     d = dict(mesh=mesh, constrained_domain=constrained_domain)
     d.update(NS_parameters)

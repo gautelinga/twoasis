@@ -19,6 +19,24 @@ cd twoasis
 python3 -m pip install --user --break-system-packages --no-deps -e .
 ```
 
+twoasis also needs [femtools](https://github.com/gautelinga/femtools) (the periodic
+boundary conditions, the output on 3D meshes, and the partition of periodic 3D meshes
+in parallel), [partractools](https://github.com/gautelinga/partractools) (the files in
+`Timestamps/`) and, for the mesh scripts in `meshes/`,
+[meshtools](https://github.com/gautelinga/meshtools), installed the same way:
+
+```
+sudo apt-get install python3-scipy python3-skimage
+python3 -m pip install --user --break-system-packages --no-deps meshpy
+for repo in femtools partractools meshtools; do
+    git clone https://github.com/gautelinga/$repo.git
+    python3 -m pip install --user --break-system-packages --no-deps -e $repo
+done
+```
+
+`velocity_update_solver={"method": "gradient_matrix"}` also needs `python3-cppimport` and
+`python3-pybind11`: femtools compiles its gradient matrix on first use.
+
 `-e` (editable) means changes you make to the code take effect without
 reinstalling. This is the setup the tests run on (`.github/workflows/tests.yml`).
 

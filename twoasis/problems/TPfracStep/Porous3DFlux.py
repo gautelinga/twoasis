@@ -44,7 +44,7 @@ class Boundary(SubDomain):
 
 
 def mesh(meshfile, **params):
-    return load_mesh(meshfile)
+    return load_mesh(meshfile, periodic=(True, True, False))
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, **NS_namespace):

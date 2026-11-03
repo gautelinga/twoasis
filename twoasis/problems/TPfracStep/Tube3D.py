@@ -30,7 +30,7 @@ class Walls(SubDomain):
 
 
 def mesh(meshfile, **params):
-    return load_mesh(meshfile)
+    return load_mesh(meshfile, periodic=(False, False, True))
 
 
 def problem_parameters(NS_parameters, **NS_namespace):

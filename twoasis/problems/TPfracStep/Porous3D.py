@@ -60,7 +60,7 @@ def ccode_expr(checkerboard):
 
 # Create a mesh
 def mesh(L, R, reps, res, **params):
-    return load_mesh(get_fname(L, R, reps, res, "h5"))
+    return load_mesh(get_fname(L, R, reps, res, "h5"), periodic=(True, True, True))
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):

@@ -31,7 +31,7 @@ import twoasis.solvers.TPfracStep
 from twoasis.common import (
     create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
     save_solution)
-from twoasis.common.utilities import Coefficient
+from twoasis.common.utilities import check_periodic_pairing, Coefficient
 from twoasis.problems import info_green, info_red, initial_memory_use, oasis_memory, OasisTimer
 
 
@@ -117,6 +117,8 @@ g_el = FiniteElement('CG', mesh.ufl_cell(), chemical_potential_degree)
 W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),
                   constrained_domain=constrained_domain)
 S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)
+check_periodic_pairing(constrained_domain, [V, Q] + (
+    [W] if phase_field_degree == chemical_potential_degree else [W.sub(0), W.sub(1)]))
 
 subdomains = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
 subdomains.set_all(0)
@@ -342,6 +344,8 @@ info_red('Memory use for importing dolfin = {} MB (RSS)'.format(
 info_red('Total memory use of solver = ' +
          str(oasis_memory.memory - total_initial_dolfin_memory) + " MB (RSS)")
 
+for tstepfile in tstepfiles.values():
+    tstepfile.close()
 if restart_folder is not None:
     merge_visualization_files(**vars())
 

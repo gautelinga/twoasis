@@ -12,7 +12,8 @@ import time
 import glob
 
 import numpy as np
-from dolfin import MPI, Function, FunctionAssigner, FunctionSpace, XDMFFile, HDF5File, assign
+from dolfin import MPI, Function, FunctionAssigner, FunctionSpace, HDF5File, assign
+from femtools.xdmf import XDMFFile2
 from twoasis.problems import info_red
 
 __all__ = ["create_initial_folders", "save_solution", "save_tstep_solution_h5",
@@ -51,11 +52,13 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
             makedirs(path.join(newfolder, "Timeseries"))
             makedirs(path.join(newfolder, "Checkpoint"))
 
+    # XDMFFile2 (femtools) writes what dolfin's XDMFFile writes, but keeps the
+    # midside nodes of a P2 field and compresses the data.
     tstepfolder = path.join(newfolder, "Timeseries")
     tstepfiles = {}
     comps = ['p', 'u', 'phi', 'g'] + scalar_components
     for ui in comps:
-        tstepfiles[ui] = XDMFFile(MPI.comm_world, path.join(
+        tstepfiles[ui] = XDMFFile2(MPI.comm_world, path.join(
             tstepfolder, ui + '_from_tstep_{}.xdmf'.format(tstep)))
         tstepfiles[ui].parameters["rewrite_function_mesh"] = False
         tstepfiles[ui].parameters["flush_output"] = True
@@ -259,28 +262,10 @@ def merge_xml_files(files):
 def xdmf_time_series(xdmf_file):
     """The steps of a dolfin XDMF time series: a list of (time, data, geometry),
     where data and geometry are (HDF5 file, dataset) of the step's values and of
-    the mesh coordinates they belong to."""
-    basedir = path.dirname(xdmf_file)
-
-    def address(item):
-        h5file, dataset = item.text.strip().split(":")
-        return path.join(basedir, h5file), dataset
-
-    steps, times, geometry = [], [], None
-    for i, step in enumerate(ET.parse(xdmf_file).getroot()[0][0]):
-        if step.tag == "Time":  # all times in one list (older dolfin)
-            times = [float(t) for t in step[0].text.split()]
-        elif step.tag == "Grid":
-            t, data = None, None
-            for prop in step:
-                if prop.tag == "Time":
-                    t = float(prop.attrib["Value"])
-                elif prop.tag == "Attribute":
-                    data = address(prop[0])
-                elif prop.tag == "Geometry" and len(prop) and prop[0].text and ":" in prop[0].text:
-                    geometry = address(prop[0])
-            steps.append((times[i - 1] if t is None else t, data, geometry))
-    return steps
+    the mesh coordinates they belong to (`femtools.xdmf.grids`)."""
+    from femtools.xdmf import grids
+    return [(g["time"], list(g["attributes"].values())[-1] if g["attributes"] else None,
+             g["geometry"]) for g in grids(xdmf_file)]
 
 
 class PointMatcher:
@@ -337,10 +322,13 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
     saved time of the velocity, or at its saved time closest to `time`; the
     other fields must have a step at the same time. Returns the time read.
 
-    The series hold the values at the mesh vertices. Each process matches the
+    The series hold the values at the mesh vertices, and for a P2 field also at
+    the edge midpoints (series written by dolfin's XDMFFile hold only the
+    vertices). Each process matches the
     coordinates of its own degrees of freedom to the saved ones, so the run may
     use a different number of processes from the one that wrote the files.
-    Fields of degree higher than one are interpolated from the vertex values."""
+    Fields of higher degree than the saved values are interpolated from the
+    vertex values."""
     import h5py
 
     mesh = VV['p'].mesh()
@@ -375,12 +363,14 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
         key = hash(nodes.tobytes())
         if key not in matchers:
             matchers[key] = PointMatcher(nodes, tol)
+            # More nodes than vertices: the edge midpoints of a P2 field too.
+            matchers[key].degree = 2 if len(nodes) > mesh.num_entities_global(0) else 1
         return values.reshape(len(values), -1), matchers[key], t
 
     def fill(function, space, values, matcher):
         """Set the dofs of space (function's space, or a subspace of it) from
-        the vertex values."""
-        if space.ufl_element().degree() == 1:
+        the saved values."""
+        if space.ufl_element().degree() <= matcher.degree:
             first = space.dofmap().ownership_range()[0]
             dofs = np.asarray(space.dofmap().dofs()) - first
             coordinates = function.function_space().tabulate_dof_coordinates().reshape(-1, gdim)

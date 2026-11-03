@@ -185,7 +185,7 @@ class GradFunction(OasisFunction):
                 A_cache[(self.test * TrialFunction(Source).dx(i) * dx, ())], p_]
 
         if solver_method.lower() == "gradient_matrix":
-            from fenicstools import compiled_gradient_module
+            from femtools.gradient import compiled_gradient_module
             DG = FunctionSpace(Space.mesh(), 'DG', 0)
             G = assemble(TrialFunction(DG) * self.test * dx())
             dg = Function(DG)
@@ -286,7 +286,7 @@ class DivFunction(OasisFunction):
                            for i in range(Space.mesh().geometry().dim())]
 
         if solver_method.lower() == "gradient_matrix":
-            from fenicstools import compiled_gradient_module
+            from femtools.gradient import compiled_gradient_module
             DG = FunctionSpace(Space.mesh(), 'DG', 0)
             G = assemble(TrialFunction(DG) * self.test * dx())
             dg = Function(DG)
@@ -404,3 +404,22 @@ def compute_ind(q_, phase=-1):
     ind_.vector().set_local(3*c_**2 - 2*c_**3)
     ind_.vector().apply("insert")
     return ind_
+
+
+def check_periodic_pairing(constrained_domain, spaces):
+    """Stop a parallel run if dolfin's periodic dofmap has given a node on a
+    periodic face a dof of its own instead of its partner's (it can, depending on
+    the partition; post_import_problem repairs the partition to avoid it). The box
+    must come from PeriodicBox, which carries its bounds. Spaces of degree 1 and 2
+    are checked (a mixed space when its parts have one degree);
+    femtools.periodic_partition.check_space_pairing raises PairingError.
+    """
+    from dolfin import MPI
+    mesh = spaces[0].mesh()
+    if MPI.size(mesh.mpi_comm()) == 1 or not hasattr(constrained_domain, "upper"):
+        return
+    from femtools.periodic_partition import check_space_pairing
+    for V in (V for V in spaces if V.ufl_element().degree() <= 2):
+        check_space_pairing(V, constrained_domain.upper, constrained_domain.periodic,
+                            mesh.mpi_comm(), what=str(V.ufl_element()),
+                            lower=constrained_domain.lower)

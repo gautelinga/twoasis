@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "twoasis"
-version = "2026.2.0"
+version = "2026.3.0.dev0"
 description = "Two-phase flow (Cahn-Hilliard-Navier-Stokes) solvers in legacy FEniCS"
 readme = "README.md"
 requires-python = ">=3.10"

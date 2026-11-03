@@ -13,7 +13,7 @@ PROBLEMS = ["Bubble2D", "BubbleOpen", "LaplaceBubble2D", "OscBubble2D", "Periodi
             "PlaneCouette", "RayleighTaylor2D", "TaylorBubble2D", "TaylorGreen2D"]
 
 # Problems that read a mesh file, which has to be generated first with the
-# scripts in meshes/.
+# scripts in meshes/ (or Bernaise's, for Porous2D, Porous2DFlux and CylArr2D).
 MESH_PROBLEMS = ["BeadContact3D", "CylArr2D", "Porous2D", "Porous2DFlux", "Porous3D",
                  "Porous3DFlux", "SimplePore2D", "Tube3D"]
 

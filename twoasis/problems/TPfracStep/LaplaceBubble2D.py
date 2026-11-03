@@ -16,6 +16,11 @@ Stats/steady.dat:  t dP sigma/R dP/(sigma/R)-1 max|u| R_eq dP/(sigma/R_eq)-1
   steady_window. M sets only how fast this is reached.
 - Time step: dt < sqrt(rho*h**3/(2*pi*sigma)) (explicit surface tension); a very
   viscous bubble needs dt ~ 1/(mu_in - mu_out).
+
+The same test (a bubble in the unit square, rho = mu = sigma = 1, dP against
+sigma/R) is the static bubble of A. Lovrić, W. G. Dettmer and D. Perić, Low order
+finite element methods for the Navier-Stokes-Cahn-Hilliard equations,
+arXiv:1911.06718 (2019).
 """
 __author__ = "Gaute Linga <gaute.linga@ntnu.no>"
 __date__ = "2026-11-02"

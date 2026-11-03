@@ -1,5 +1,12 @@
 """A bubble rising in a liquid column, test case 1 of the benchmark of Hysing et al.
-(2009), with no-slip walls at top and bottom and periodic sides."""
+(2009), with no-slip walls at top and bottom and periodic sides.
+
+S. Hysing, S. Turek, D. Kuzmin, N. Parolini, E. Burman, S. Ganesan and L. Tobiska,
+Quantitative benchmark computations of two-dimensional bubble dynamics, Int. J. Numer.
+Meth. Fluids 60, 1259-1288 (2009), doi:10.1002/fld.1934. The same case with
+diffuse-interface (Cahn-Hilliard) models: S. Aland and A. Voigt, Benchmark computations
+of diffuse interface models for two-dimensional bubble dynamics, Int. J. Numer. Meth.
+Fluids 69, 747-761 (2012), doi:10.1002/fld.2611."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-08-19"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "

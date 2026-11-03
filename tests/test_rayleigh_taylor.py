@@ -127,7 +127,8 @@ def test_refinement(tmp_path, rt):
     """Halving epsilon and h halves the deficit 1 - gamma/theory (first order),
     and the extrapolation to epsilon = 0 matches theory within 1%."""
     _, coarse = rt
-    _, fine = run_rt(tmp_path, **dict(RT, res=0.015625, epsilon=0.02, dt=0.0025, stat_interval=10))
+    # The coarse level's dt: halving it changes the rate by less than 0.1%.
+    _, fine = run_rt(tmp_path, **dict(RT, res=0.015625, epsilon=0.02))
     r_coarse, r_fine = measured_rate(coarse), measured_rate(fine)
     ratio = (GAMMA - r_coarse) / (GAMMA - r_fine)
     assert 1.7 < ratio < 2.3, "deficit ratio {:.2f}, expected ~2 (first order)".format(ratio)

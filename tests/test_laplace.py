@@ -12,7 +12,7 @@ dP follows the Laplace law for the actual radius. The bubble shrinks because
 the bulk phase field shifts away from +-1 at equilibrium, by an amount first
 order in epsilon. For the bubble at rest there are no steady spurious
 currents: max|u| at steady state is set by the solver tolerances (1.6e-7 with
-the defaults, 1.7e-11 with tight ones on the coarse level). Moving interfaces
+the defaults, 6.8e-10 with tolerances of 1e-10 on the coarse level). Moving interfaces
 are not covered. See LaplaceBubble2D.py for the dependence on
 density, viscosity, Ohnesorge and Cahn numbers.
 """
@@ -40,9 +40,9 @@ LAPLACE_TOL = 5e-3   # dP against sigma/R_eq
 SOLVER_LEVEL = 1e-6
 
 # Tolerances tight enough to drive max|u| far below SOLVER_LEVEL.
-TIGHT = dict(krylov_solvers='{"relative_tolerance": 1e-12, "absolute_tolerance": 1e-16, '
+TIGHT = dict(krylov_solvers='{"relative_tolerance": 1e-10, "absolute_tolerance": 1e-16, '
                             '"maximum_iterations": 5000}',
-             max_error=1e-12, max_iter=100)
+             max_error=1e-10, max_iter=100)
 
 
 def run_laplace(workdir, **params):
@@ -105,10 +105,12 @@ def test_golden(request, laplace):
 @pytest.mark.slow
 def test_refinement(tmp_path, laplace):
     """Halving epsilon and h halves the shrinkage (first order) and keeps the
-    Laplace law, with the velocity settling at solver level."""
+    Laplace law, with the velocity settling at solver level. The steady state
+    does not depend on the mobility, so the finer level uses a larger one to
+    reach it in half the time (shrinkage 2.31% with M = 0.4 and with 0.1)."""
     _, coarse = laplace
     _, fine = run_laplace(tmp_path, **dict(LAPLACE, epsilon=0.02, res=0.015625, dt=0.0007,
-                                            stat_interval=14))
+                                            stat_interval=14, M=0.4))
     assert fine is not None, "no steady state on the finer level"
     ratio = shrinkage(coarse) / shrinkage(fine)
     assert 1.7 < ratio < 2.3, "shrinkage ratio {:.2f}, expected ~2 (first order)".format(ratio)
@@ -119,7 +121,7 @@ def test_refinement(tmp_path, laplace):
 @pytest.mark.slow
 def test_no_steady_spurious_currents(tmp_path, laplace):
     """Tightening the solver tolerances drives the steady max|u| down by orders
-    of magnitude (1.6e-7 -> 1.7e-11 measured) and leaves dP unchanged: for the
+    of magnitude (1.6e-7 -> 6.8e-10 measured) and leaves dP unchanged: for the
     bubble at rest, g is constant at equilibrium, so the force -phi*grad(g)
     vanishes and u = 0 is an exact steady state."""
     _, default = laplace

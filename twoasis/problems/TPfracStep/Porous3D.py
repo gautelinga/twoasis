@@ -1,5 +1,8 @@
-"""Two-phase flow through a periodic three-dimensional porous medium (mesh from
-meshes/), driven by a mean pressure gradient and starting from a checkerboard of the two phases."""
+"""Two-phase flow through a periodic three-dimensional porous medium, driven by a mean
+pressure gradient and starting from a checkerboard of the two phases. The medium
+(meshes/porous3d_rcp01) is a random close packing of spheres of radius 0.1 in the unit
+cube, made with yade_rcp.py (run with yade) and meshed with pore_mesh.py, both in
+rcp_beads/ of meshtools (https://github.com/gautelinga/meshtools)."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-11-25"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "

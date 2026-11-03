@@ -1,5 +1,18 @@
 """The Rayleigh-Taylor instability: a heavy fluid above a light one under gravity, with
-a cosine perturbation of the interface, periodic sides and no-slip top and bottom."""
+a cosine perturbation of the interface, periodic sides and no-slip top and bottom.
+
+The setup (a 1 x 4 box, density ratio 3, a perturbation of amplitude 0.1) is that of
+G. Tryggvason, Numerical simulations of the Rayleigh-Taylor instability, J. Comput.
+Phys. 75, 253-282 (1988), doi:10.1016/0021-9991(88)90112-X. The same setup, with equal
+viscosities, is a test case in M. Shadkhah et al., MPFBench: A large scale dataset for
+SciML of multi-phase-flows: droplet and bubble dynamics, arXiv:2502.07080 (2025).
+As a phase-field problem, with a surface tension that is small but not zero so that the
+Cahn-Hilliard equation does not reduce to pure transport, it is posed by B. S. Hosseini,
+S. Turek, M. Möller and C. Palmes, Isogeometric analysis of the Navier-Stokes-Cahn-
+Hilliard equations with application to incompressible two-phase flows, J. Comput. Phys.
+348, 171-194 (2017), doi:10.1016/j.jcp.2017.07.029, and computed with the same initial
+interface by A. Lovrić, W. G. Dettmer and D. Perić, arXiv:1911.06718 (2019), with equal
+viscosities 0.0031316 and g = 9.80665."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-09-08"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "

@@ -1,5 +1,8 @@
-"""Two-phase flow through a periodic hexagonal array of cylinders, driven by a mean
-pressure gradient F0 along y (the flow goes towards -y): a stripe of the second phase along y, with a set contact angle on the cylinders."""
+"""Single-phase flow through a periodic hexagonal array of cylinders (mesh from
+Bernaise, see get_fname), driven by a mean pressure gradient F0 along y (the flow goes
+towards -y). The phase field is uniform (phi = 1), so the chemical potential and the
+capillary force vanish and this is plain Navier-Stokes flow; the velocity and pressure
+written to Timestamps/ serve e.g. particle tracking."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-03-22"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
@@ -9,56 +12,38 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
-    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
-    interpolate, MPI, SubDomain)
+from dolfin import assemble, assign, Constant, DirichletBC, dx, Function, MPI
 
 from twoasis.problems import info_red
-from twoasis.problems.TPfracStep.shared import (
-    centred, interface_energy, load_mesh, makedirs_on_root, PeriodicBox,
-    write_timestamp, write_timestamps_info)
+from twoasis.problems.TPfracStep.Porous2D import Walls
+from twoasis.problems.TPfracStep.shared import centred, load_mesh, makedirs_on_root, PeriodicBox, write_timestamp, write_timestamps_info
 
 
-class Walls(SubDomain):
-    def __init__(self, Lx, Ly, rad):
-        self.Lx = Lx
-        self.Ly = Ly
-        self.rad = rad
-        SubDomain.__init__(self)
-
-    def inside(self, x, on_bnd):
-        r_ = [
-            np.sqrt(x[0]**2 + x[1]**2),
-            np.sqrt((x[0] - self.Lx / 2)**2 + (x[1] - self.Ly / 2)**2),
-            np.sqrt((x[0] - self.Lx / 2)**2 + (x[1] + self.Ly / 2)**2),
-            np.sqrt((x[0] + self.Lx / 2)**2 + (x[1] - self.Ly / 2)**2),
-            np.sqrt((x[0] + self.Lx / 2)**2 + (x[1] + self.Ly / 2)**2)
-        ]
-        return any([r < self.rad + DOLFIN_EPS_LARGE for r in r_])
+def get_fname(Lx, rad, res, ext):
+    """The mesh (.h5) and the cylinders' centres and radii (.dat), made with
+    Bernaise: python3 generate_mesh.py mesh=cyl_arr_2d Lx=1.0 rad=0.33 dx=0.02,
+    run in its utilities/ folder. The cell is Lx wide and sqrt(3)*Lx high."""
+    return "meshes/cyl_arr_Lx{}_rad{}_dx{}.{}".format(Lx, rad, res, ext)
 
 
-# Create a mesh
-def mesh(Lx, Ly, rad, res, **params):
-    return load_mesh("meshes/cyl_arr_Lx{}_Ly{}_rad{}_dx{}.h5".format(Lx, Ly, rad, res))
+def mesh(Lx, rad, res, **params):
+    return load_mesh(get_fname(Lx, rad, res, "h5"))
+
 
 # Override some problem specific parameters
 def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
         T=1000.0,
         Lx=1.,
-        Ly=np.sqrt(3),
         rad=0.33,
         res=0.02,
         dt=0.01,
         rho=[1, 1],
         mu=[1, 1],
-        epsilon=0.02,
-        sigma=1.0,
-        theta=np.pi/4,
-        M=0.00001,
         F0=[0., 10.],
         g0=[0., 0.],
         velocity_degree=2,
+        phase_field_degree=1,  # phi = 1 is represented exactly at any degree
         folder="cylarr2d_results",
         plot_interval=10,
         stat_interval=10,
@@ -70,17 +55,15 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         solver="IPCS")
 
 
-def constrained_domain(Lx, Ly, **params):
-    return PeriodicBox({0: centred(Lx), 1: centred(Ly)})
+def constrained_domain(Lx, **params):
+    return PeriodicBox({0: centred(Lx), 1: centred(np.sqrt(3) * Lx)})
 
 
-def mark_subdomains(subdomains, Lx, Ly, rad, **NS_namespace):
-    wall = Walls(Lx, Ly, rad)
-    wall.mark(subdomains, 1)
-    return dict()
+def mark_subdomains(subdomains, dim, Lx, rad, res, **NS_namespace):
+    obstacles = np.loadtxt(get_fname(Lx, rad, res, "dat"))
+    Walls(obstacles[:, :dim], obstacles[:, dim]).mark(subdomains, 1)
 
 
-# Specify boundary conditions
 def create_bcs(V, subdomains, **NS_namespace):
     bc_u_wall = DirichletBC(V, 0, subdomains, 1)
     return dict(u0=[bc_u_wall],
@@ -89,18 +72,11 @@ def create_bcs(V, subdomains, **NS_namespace):
                 phig=[])
 
 
-def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, **NS_namespace):
-    # A stripe of the second phase (phi = -1) along y, for -(alpha + 1/4)*Lx < x <
-    # -(alpha - 1/4)*Lx, i.e. half the width of the cell.
-    phig_init = interpolate(Expression(
-        "tanh((x[0]+(alpha-0.25)*Lx)/(sqrt(2)*epsilon))-tanh((x[0]+(alpha+0.25)*Lx)/(sqrt(2)*epsilon))+1",
-        epsilon=epsilon, Lx=Lx, alpha=0.2, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+def initialize(q_, q_1, VV, **NS_namespace):
+    phi = Function(VV['phig'].sub(0).collapse())
+    phi.vector()[:] = 1.
+    assign(q_['phig'].sub(0), phi)
     q_1['phig'].vector()[:] = q_['phig'].vector()
-    for ui in x_1:
-        [bc.apply(x_1[ui]) for bc in bcs[ui]]
-    for ui in x_2:
-        [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
 def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
@@ -112,29 +88,26 @@ def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, press
     makedirs_on_root(statsfolder, timestampsfolder)
     write_timestamps_info(timestampsfolder, mesh,
                           {key: NS_namespace[key] for key in
-                           ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"]},
+                           ["F0", "g0", "mu", "rho", "rad", "res", "dt"]},
                           velocity_degree, pressure_degree, phase_field_degree,
                           constrained_domain)
     write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
     return dict(uv=uv, statsfolder=statsfolder, timestampsfolder=timestampsfolder, volume=volume)
 
 
-def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,
-                  timestampsfolder, stat_interval, timestamps_interval, uv, mesh, **NS_namespace):
-    """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim and the energies per
-    volume (kinetic, interface gradient and double-well parts); and u, p and phi
-    to Timestamps/ every timestamps_interval steps."""
+def temporal_hook(q_, tstep, t, u_, p_, rho_, volume, statsfolder, timestampsfolder,
+                  stat_interval, timestamps_interval, uv, mesh, **NS_namespace):
+    """Write to Stats/tdata.dat: tstep, t, the mean velocity (u0m, u1m) and the
+    kinetic energy per volume; and u, p and phi to Timestamps/ every
+    timestamps_interval steps."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         dX = dx(domain=mesh)
-        um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(2)]
-        phim = assemble(phi_ * dX) / volume
+        u0m = assemble(q_['u0'] * dX) / volume
+        u1m = assemble(q_['u1'] * dX) / volume
         E_kin = 0.5 * assemble(rho_ * (u_[0]**2 + u_[1]**2) * dX) / volume
-        E_int, E_pot = (E / volume for E in interface_energy(phi_, sigma, epsilon, dX))
         if MPI.rank(MPI.comm_world) == 0:
             with open(path.join(statsfolder, "tdata.dat"), "a") as tfile:
-                entries = um + [phim, E_kin, E_int, E_pot]
-                tfile.write(("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
-                    tstep, t, *entries))
+                tfile.write("{:d} {:.8f} {:.8f} {:.8f} {:.8f}\n".format(tstep, t, u0m, u1m, E_kin))
     if tstep % timestamps_interval == 0:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)

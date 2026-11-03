@@ -1,6 +1,9 @@
 """Two-phase flow through a periodic two-dimensional porous medium of disks (mesh from
-meshes/), driven by a mean pressure gradient and starting from a band, a checkerboard
-or a saved state."""
+meshes/, made with periodic_porous_2d in Bernaise), driven by a mean pressure gradient
+and starting from a band, a checkerboard or a saved state.
+
+Used in G. Linga et al., Dynamic multiphase flow triggers chaotic mixing in porous
+media, PNAS 123, e2612884123 (2026), doi:10.1073/pnas.2612884123."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-03-18"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "

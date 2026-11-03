@@ -1,6 +1,22 @@
 """A water drop in air (CGS units) whose circular shape is perturbed by a mode-3
-cosine, oscillating as it relaxes, in a box with no-slip walls. The viscosities are
-ten times those of water and air."""
+cosine, oscillating as it relaxes, in a box with no-slip walls.
+
+For small amplitudes, mode n oscillates at the frequency
+    omega_n^2 = (n^3 - n) sigma / ((rho_drop + rho_out) R^3),
+Rayleigh's frequency for a cylindrical jet (Lord Rayleigh, On the capillary phenomena
+of jets, Proc. R. Soc. Lond. 29, 71-97 (1879), doi:10.1098/rspl.1879.0015) extended to
+an outer fluid by D. E. Fyfe, E. S. Oran and M. J. Fritts, Surface tension and
+viscosity with Lagrangian hydrodynamics on a triangular mesh, J. Comput. Phys. 76,
+349-384 (1988), doi:10.1016/0021-9991(88)90147-7. Here the period is 0.210, so the
+kinetic energy has a minimum every 0.105.
+
+Adapted from the oscillating 2D water drop of A. Lovrić, W. G. Dettmer and D. Perić,
+Low order finite element methods for the Navier-Stokes-Cahn-Hilliard equations,
+arXiv:1911.06718 (2019), which has the same densities and surface tension, a drop of
+radius 0.0125 cm and modes n = 2, 3, 4.
+A similar case, a water drop oscillating in air in 3D, is in the benchmark of
+A. Lippert, T. Tolle, A. Dörr and T. Marić, A benchmark for surface-tension-driven
+incompressible two-phase flows, arXiv:2212.02904 (2022)."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2022-09-18"
 __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
@@ -34,7 +50,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         R=1.25,
         dt=0.0005,
         rho=[0.998, 0.0012],
-        mu=[0.101, 0.00182],
+        mu=[0.0101, 0.000182],
         theta=np.pi/2,
         epsilon=0.06,
         sigma=73.0,

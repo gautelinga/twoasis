@@ -1,6 +1,14 @@
-"""Displacement in a three-dimensional porous medium (mesh from meshes/): one phase
-enters at a prescribed velocity at the bottom and leaves through the top, starting
-from a flat interface at a given height."""
+"""Displacement in a three-dimensional porous medium: one phase enters at a prescribed
+velocity at the bottom and leaves through the top, starting from a flat interface at a
+given height. The medium is a random close packing of spheres, made and meshed with
+the scripts in rcp_beads/ of meshtools (https://github.com/gautelinga/meshtools):
+yade_rcp.py (run with yade) for the packing, and msp_mesh.py, which meshes its pore
+space with Chris Knight's mesh-sphere-packing
+(https://github.com/chrisk314/mesh-sphere-packing), changed in one line to make the
+mesh uniform in the bulk, and writes the mesh (.h5) and the spheres (.obst).
+
+Used in G. Linga et al., Dynamic multiphase flow triggers chaotic mixing in porous
+media, PNAS 123, e2612884123 (2026), doi:10.1073/pnas.2612884123."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2024-02-28"
 __copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "

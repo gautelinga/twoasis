@@ -33,7 +33,7 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
             N=88,
             res=0.05,
             R=0.6,
-            dt=0.1,
+            dt=0.02,  # 0.1 diverges
             rho=[1, 1],
             mu=[10, 1],
             u0=0.001,

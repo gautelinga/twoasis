@@ -38,7 +38,8 @@ jobs:
         run: |
           sudo add-apt-repository -y ppa:fenics-packages/fenics
           sudo apt-get update -qq
-          # libdolfin-dev, pybind11-dev and g++: dolfin compiles every form at run time.
+          # libdolfin-dev, pybind11-dev and g++: dolfin compiles every form at run time;
+          # libparmetis-dev: femtools compiles its ParMETIS partitioner the same way.
           # gmsh, meshio and meshtools (with scipy, skimage and meshpy): the SimplePore2D
           # mesh. h5py: the checkpoint tests; python3-h5py is the wrapper that makes
           # `import h5py` load the MPI build.
@@ -46,7 +47,7 @@ jobs:
             python3-dolfin python3-mpi4py python3-h5py python3-h5py-mpi python3-matplotlib \
             python3-gmsh python3-meshio python3-pytest python3-pip \
             python3-scipy python3-skimage \
-            libdolfin-dev pybind11-dev g++ pkg-config
+            libdolfin-dev libparmetis-dev pybind11-dev g++ pkg-config
           # --no-deps throughout: a pip numpy or mpi4py would not be the one dolfin uses.
           python3 -m pip install --break-system-packages --no-deps meshpy \
             git+https://github.com/gautelinga/femtools.git@2026.2.0 \

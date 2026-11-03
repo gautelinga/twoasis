@@ -11,7 +11,7 @@ On Ubuntu 24.04, install legacy dolfin from the FEniCS PPA, then twoasis:
 ```
 sudo add-apt-repository ppa:fenics-packages/fenics
 sudo apt-get install python3-dolfin python3-mpi4py python3-h5py \
-    python3-h5py-mpi python3-cppimport python3-pybind11 \
+    python3-h5py-mpi python3-cppimport python3-pybind11 libparmetis-dev \
     python3-matplotlib python3-gmsh python3-meshio python3-pytest
 git clone https://github.com/gautelinga/twoasis.git
 cd twoasis

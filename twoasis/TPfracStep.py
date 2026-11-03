@@ -21,8 +21,10 @@ from os import path
 from numpy import array
 from dolfin import (
     as_vector, assemble, DOLFIN_EPS, dx, FacetNormal, FiniteElement, Function, FunctionSpace,
-    list_timings, Measure, MeshFunction, MixedElement, MPI, parameters, split, TestFunction,
+    list_timings, Measure, MixedElement, MPI, parameters, split, TestFunction,
     TestFunctions, TimingClear, TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
+
+from femtools.boundaries import BoundaryMarkers
 
 import twoasis.common
 import twoasis.problems
@@ -127,7 +129,8 @@ S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)
 check_periodic_pairing(constrained_domain, [V, Q] + (
     [W] if phase_field_degree == chemical_potential_degree else [W.sub(0), W.sub(1)]))
 
-subdomains = MeshFunction("size_t", mesh, mesh.topology().dim()-1)
+# Facet markers; also written as Timestamps/boundaries.xdmf for partrac
+subdomains = BoundaryMarkers(mesh)
 subdomains.set_all(0)
 # mark_subdomains may return a dict of values to add to the namespace.
 vars().update(mark_subdomains(**vars()) or {})

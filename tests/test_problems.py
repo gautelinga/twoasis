@@ -156,3 +156,38 @@ def test_timestamps_across_a_restart(tmp_path):
     assert not (run / "Timestamps" / "up_6.h5").exists()
     run_twoasis(tmp_path, T=8e-4, **restart)     # from step 4 again, on to 8
     assert listed() == ["up_{}.h5".format(n) for n in (0, 2, 4, 6, 8)], stamps.read_text()
+
+
+def test_partrac_case_walls(tmp_path):
+    """CylArr2D's partrac case: Timestamps/boundaries.xdmf holds exactly the
+    exterior facets marked 1 (the no-slip walls), dolfin_params.dat names them
+    for wall_upgrade, and 1 and 3 processes write the same facets."""
+    import shutil
+    import dolfin
+    from femtools.boundaries import read
+    from partractools.case import read_params
+    from twoasis.problems.TPfracStep.CylArr2D import get_fname
+    from twoasis.problems.TPfracStep.shared import load_mesh, mark_walls
+    require_mpi(3)
+    params = with_mesh(tmp_path, "CylArr2D")
+    mesh = load_mesh(str(tmp_path / get_fname(ext="h5", **params)))
+    marked = dolfin.MeshFunction("size_t", mesh, 1, 0)
+    mark_walls(marked, mesh)
+    exterior = dolfin.MeshFunction("size_t", mesh, 1, 0)
+    dolfin.DomainBoundary().mark(exterior, 1)
+    expected = int(((marked.array() == 1) & (exterior.array() == 1)).sum())
+    facets = {}
+    for nprocs in (1, 3):
+        wd = tmp_path / "np{}".format(nprocs)
+        shutil.copytree(str(tmp_path / "meshes"), str(wd / "meshes"))
+        run_twoasis(wd, nprocs=nprocs, problem="CylArr2D", dt=1e-4, T=2e-4, **QUIET, **params)
+        case = wd / "results" / "data" / "1" / "Timestamps"
+        prm = read_params(str(case / "dolfin_params.dat"))
+        assert (prm["wall_upgrade"], prm["wall_facets"], prm["wall_markers"]) == \
+            ("true", "boundaries.xdmf", "1")
+        points, cells, markers = read(str(case / "boundaries.xdmf"))
+        assert len(cells) == expected and (markers == 1).all()
+        facets[nprocs] = sorted(tuple(sorted(tuple(np.round(points[i], 10)) for i in cell))
+                                for cell in cells)
+    assert facets[1] == facets[3]
+    print("wall facets:", expected)

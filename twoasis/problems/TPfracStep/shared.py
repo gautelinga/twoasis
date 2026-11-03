@@ -210,10 +210,14 @@ def write_tdata(statsfolder, tstep, t, entries):
 
 
 def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, pressure_degree,
-                          phase_field_degree, constrained_domain):
+                          phase_field_degree, constrained_domain, subdomains,
+                          wall_markers=(1,)):
     """Describe the files that write_timestamp adds to timestampsfolder:
     params.dat lists the given parameters (a dict), dolfin_params.dat the
-    function spaces and the periodic directions, and mesh.h5 holds the mesh."""
+    function spaces and the periodic directions, and mesh.h5 holds the mesh.
+    boundaries.xdmf holds the marked boundary facets (subdomains, a
+    BoundaryMarkers); dolfin_params.dat names those with wall_markers as the
+    walls partrac's wall_upgrade uses."""
     from partractools import case
     periodic = getattr(constrained_domain, "periodic", [False] * 3)
     if MPI.rank(MPI.comm_world) == 0:
@@ -228,6 +232,11 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
             **{"periodic_" + axis: periodic[i] for i, axis in enumerate("xyz")},
             rho=1.0))
     case.write_mesh(path.join(timestampsfolder, "mesh.h5"), mesh)
+    # Collective
+    subdomains.write(path.join(timestampsfolder, "boundaries.xdmf"))
+    if MPI.rank(MPI.comm_world) == 0:
+        case.set_walls(path.join(timestampsfolder, "dolfin_params.dat"), "boundaries.xdmf",
+                       wall_markers)
 
 
 def read_phase_field(fname, mesh, q_):

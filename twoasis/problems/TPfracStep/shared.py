@@ -13,7 +13,7 @@ from dolfin import (
 
 from femtools.periodic import periodic_box
 
-from twoasis.common.utilities import compute_ind, subfunction
+from twoasis.common.utilities import compute_ind, subfunction, subspace
 
 
 def rectangle_mesh(Lx, Ly, res, centred=False):
@@ -193,7 +193,7 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
 def read_phase_field(fname, mesh, q_):
     """The phase field stored as "phi" in the HDF5 file fname (e.g. a file
     written by write_timestamp)."""
-    phi__ = Function(subfunction(q_['phig'], 0).function_space())
+    phi__ = Function(subspace(q_['phig'].function_space(), 0))
     with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
         h5f.read(phi__, "phi")
     return phi__

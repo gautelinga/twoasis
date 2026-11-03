@@ -11,9 +11,9 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, dx, errornorm, Expression, Function, interpolate, MPI, norm,
-    Point, RectangleMesh)
+    assemble, dx, errornorm, Expression, interpolate, MPI, Point, RectangleMesh)
 
+from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
     centred, interface_energy, makedirs_on_root, PeriodicBox, write_tdata)
@@ -26,18 +26,6 @@ ccode = dict(
     q = "4*pow(M_PI, 2)*M*phi0*sigma*(-pow(L, 2)*beta*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)) - 6*pow(L, 2)*pow(phi0, 2)*pow(sin(2*x[0]*M_PI/L), 2)*pow(cos(2*x[1]*M_PI/L), 2) - 6*pow(L, 2)*pow(phi0, 2)*pow(sin(2*x[1]*M_PI/L), 2)*pow(cos(2*x[0]*M_PI/L), 2) + 6*pow(L, 2)*pow(phi0, 2)*pow(cos(2*x[0]*M_PI/L), 2)*pow(cos(2*x[1]*M_PI/L), 2) - 2*pow(L, 2)*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)) + 16*pow(M_PI, 2)*pow(epsilon, 2)*exp(8*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon)))*exp(-12*pow(M_PI, 2)*M*beta*sigma*t/(pow(L, 2)*epsilon))*cos(2*x[0]*M_PI/L)*cos(2*x[1]*M_PI/L)/(pow(L, 4)*epsilon)",
 )
 
-def error_norm(expr, u, norm_type='l2'):
-    S = u.function_space()
-    is_subspace = len(S.component())
-    ue_ = interpolate(expr, S.collapse() if is_subspace else S)
-    if is_subspace:
-        u_ = Function(S.collapse())
-        assign(u_, u)
-        ue_.vector()[:] -= u_.vector()
-    else:
-        ue_.vector()[:] -= u.vector()
-    return norm(ue_, norm_type=norm_type)
-
 def compute_errors(t, exprs, q_):
     for expr in exprs.values():
         expr.t = t
@@ -46,7 +34,6 @@ def compute_errors(t, exprs, q_):
         #ue_ = interpolate(exprs[key], q_[key].function_space())
         errs[key] = errornorm(exprs[key], q_[key])
         #errs[key] = errornorm(ue_, q_[key])
-    #ue_ = interpolate(exprs['phi'], q_['phig'].sub(0).function_space().collapse())
     errs['phi'] = errornorm(exprs['phi'], q_['phig'].sub(0))
     #errs['phi'] = errornorm(ue_, q_['phig'].sub(0))
     return errs
@@ -124,7 +111,7 @@ def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, be
         u0=VV['u0'],
         u1=VV['u0'],
         p=VV['p'],
-        phi=VV['phig'].sub(0).collapse())
+        phi=subspace(VV['phig'], 0))
     
     # Initialize time derivatives for 2nd order accuracy
     for expr in exprs.values():
@@ -134,22 +121,13 @@ def initialize(q_, q_1, q_2, VV, t, dt, u0, phi0, rho, mu, sigma, M, epsilon, be
         expr.t = t
     q_init_ = dict([(key, interpolate(exprs[key], space)) for key, space in function_spaces.items()])
 
-    #u0_ = interpolate(expr["u0"], VV['u0'])
-    #u1_ = interpolate(expr["u1"], VV['u0'])
-    #p_ = interpolate(expr["p"], VV['p'])
-    #phig_ = interpolate(expr["phi"], VV['phig'].sub(0).collapse())
-    
-    #q_['u0'].vector()[:] = u0_.vector()
-    #q_['u1'].vector()[:] = u1_.vector()
-    #q_['p'].vector()[:] = p_.vector()
-    
     for key in ['u0', 'u1', 'p']:
         q_[key].vector()[:] = q_init_[key].vector()
         q_1[key].vector()[:] = q_init_[key].vector()
         q_2[key].vector()[:] = q_init_1[key].vector()
-    assign(q_['phig'].sub(0), q_init_['phi'])
-    assign(q_1['phig'].sub(0), q_init_['phi'])
-    assign(q_2['phig'].sub(0), q_init_1['phi'])
+    set_subfunction(q_['phig'], 0, q_init_['phi'])
+    set_subfunction(q_1['phig'], 0, q_init_['phi'])
+    set_subfunction(q_2['phig'], 0, q_init_1['phi'])
     
     return dict(exprs=exprs)
     

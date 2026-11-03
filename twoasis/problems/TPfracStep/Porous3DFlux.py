@@ -19,9 +19,10 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, Expression, Function,
-    interpolate, SubDomain)
+    assemble, Constant, DirichletBC, DOLFIN_EPS_LARGE, Expression, Function, interpolate,
+    SubDomain)
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
     Faces, load_mesh, makedirs_on_root, mesh_extrema, PeriodicBox, setup_stats,
@@ -155,10 +156,9 @@ def create_bcs(V, W, subdomains, u0, injected_phase, zfrac, **NS_namespace):
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_phase, zfrac, **NS_namespace):
     #zfrac = 0.1
     z0 = zfrac*x_max[2]+(1-zfrac)*x_min[2]
-    phig_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         "-injected_phase*tanh((x[2]-z0)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+        epsilon=epsilon, z0=z0, injected_phase=injected_phase, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:

@@ -6,8 +6,9 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from dolfin import assign, DirichletBC, Expression, interpolate, UnitSquareMesh
+from dolfin import DirichletBC, Expression, UnitSquareMesh
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import PeriodicBox
 
@@ -61,10 +62,9 @@ def create_bcs(V, u_wall, **NS_namespace):
 
 
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, **NS_namespace):
-    phig_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         "tanh((sqrt(pow(x[0]-1, 2)+pow(x[1]-0.5, 2))-0.3)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+        epsilon=epsilon, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
         [bc.apply(x_1[ui]) for bc in bcs[ui]]

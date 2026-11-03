@@ -8,6 +8,7 @@ from dolfin import (
     as_backend_type, assemble, Constant, dot, dx, Function, FunctionAssigner, grad,
     inner, lhs, Matrix, norm, PETScDMCollection, PETScKrylovSolver, PETScOptions,
     PETScPreconditioner, rhs, Timer, Vector, VectorSpaceBasis)
+from twoasis.common.utilities import subfunction, subspace
 from twoasis.problems import info_blue
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
@@ -200,21 +201,17 @@ class PhaseFieldOnVelocitySpace:
 
     def __init__(self, W, V):
         self.c = Function(V)
+        self.transfer = None
         if W.sub(0).ufl_element().degree() == V.ufl_element().degree():
-            self.phi = None
             self.assigner = FunctionAssigner(V, W.sub(0))
         else:
-            self.phi = Function(W.sub(0).collapse())
-            self.assigner = FunctionAssigner(self.phi.function_space(), W.sub(0))
-            self.transfer = PETScDMCollection.create_transfer_matrix(
-                self.phi.function_space(), V)
+            self.transfer = PETScDMCollection.create_transfer_matrix(subspace(W, 0), V)
 
     def __call__(self, phig):
-        if self.phi is None:
+        if self.transfer is None:
             self.assigner.assign(self.c, phig.sub(0))
         else:
-            self.assigner.assign(self.phi, phig.sub(0))
-            self.transfer.mult(self.phi.vector(), self.c.vector())
+            self.transfer.mult(subfunction(phig, 0).vector(), self.c.vector())
         return self.c
 
 def set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu):

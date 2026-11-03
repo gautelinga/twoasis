@@ -15,8 +15,9 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
-from dolfin import assemble, assign, DirichletBC, dx, Expression, interpolate
+from dolfin import assemble, DirichletBC, dx, Expression
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
     Faces, gravitational_energy, PeriodicBox, phase_moments, rectangle_mesh,
@@ -90,10 +91,9 @@ def average_pressure_gradient(F0, controller, **NS_namespace):
 
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, R, u_wall, **NS_namespace):
-    phig_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_1['phig'].vector()
     q_['u1'].vector()[:] = u_wall

@@ -32,9 +32,10 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, conditional, DirichletBC, dx, Expression, gt, interpolate, lt, MPI,
-    SpatialCoordinate, sqrt, SubDomain)
+    assemble, conditional, DirichletBC, dx, Expression, gt, lt, MPI, SpatialCoordinate, sqrt,
+    SubDomain)
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_green
 from twoasis.problems.TPfracStep.shared import rectangle_mesh, setup_stats
 
@@ -96,10 +97,9 @@ def create_bcs(V, subdomains, **NS_namespace):
 
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, L, R, **NS_namespace):
-    phi_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         "tanh((sqrt(pow(x[0]-L/2, 2)+pow(x[1]-L/2, 2))-R)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, L=L, R=R, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phi_init)
+        epsilon=epsilon, L=L, R=R, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_['phig'].vector()
 

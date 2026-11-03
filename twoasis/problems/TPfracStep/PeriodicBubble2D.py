@@ -11,8 +11,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 
 import numpy as np
-from dolfin import assign, DirichletBC, dx, Expression, interpolate
+from dolfin import DirichletBC, dx, Expression
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep import Bubble2D
 from twoasis.problems.TPfracStep.shared import phase_moments, standard_stats, write_tdata
@@ -74,10 +75,9 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, u0, VV, Lx, Ly, R, **NS_nam
     q_['u0'].vector()[:] = u0
     q_['u1'].vector()[:] = 0.
     # Centered
-    phig_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         "tanh((sqrt(pow(x[0]-Lx/2, 2)+pow(x[1]-Ly/2, 2))-R)/(sqrt(2)*epsilon))",
-        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+        epsilon=epsilon, Lx=Lx, Ly=Ly, R=R, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:

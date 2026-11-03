@@ -14,9 +14,10 @@ from os import path
 
 import numpy as np
 from dolfin import (
-    assemble, assign, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression,
-    Function, HDF5File, interpolate, SubDomain, VectorFunctionSpace)
+    assemble, Constant, DirichletBC, DOLFIN_EPS_LARGE, dx, Expression, Function,
+    FunctionAssigner, HDF5File, interpolate, SubDomain, VectorFunctionSpace)
 
+from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep.shared import (
     centred, load_mesh, makedirs_on_root, PeriodicBox, setup_stats, standard_stats,
@@ -137,19 +138,19 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, che
                phi_target, **NS_namespace):
     if init_state == "":
         if checkerboard is None:
-            phi_init = interpolate(Expression(
+            phi_init = Expression(
                 #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
                 "tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
-                epsilon=epsilon, Ly=Ly, degree=2), VV['phig'].sub(0).collapse())
+                epsilon=epsilon, Ly=Ly, degree=2)
         else:
-            phi_init = Function(VV['phig'].sub(0).collapse(), name="phi")
+            phi_init = Function(subspace(VV['phig'], 0), name="phi")
             initialize_checkerboard_sat(phi_init, phi_target, checkerboard, [Lx, Ly], epsilon)
-        assign(q_['phig'].sub(0), phi_init)
+        set_subfunction(q_['phig'], 0, phi_init)
         q_1['phig'].vector()[:] = q_['phig'].vector()
     else:
         if not path.exists(init_state):
             raise FileNotFoundError("initial state {} does not exist".format(init_state))
-        phi_init = Function(VV['phig'].sub(0).collapse())
+        phi_init = Function(subspace(VV['phig'], 0))
         Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
                                 constrained_domain=V.dofmap().constrained_domain)
         u_init = Function(Vv)
@@ -157,9 +158,10 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, che
             h5f.read(phi_init, "phi")
             h5f.read(u_init, "u")
             h5f.read(q_['p'], "p")
-        assign(q_['phig'].sub(0), phi_init)
-        assign(q_['u0'], u_init.sub(0))
-        assign(q_['u1'], u_init.sub(1))
+        set_subfunction(q_['phig'], 0, phi_init)
+        # Both velocity components in one assignment.
+        FunctionAssigner([q_['u0'].function_space(), q_['u1'].function_space()], Vv).assign(
+            [q_['u0'], q_['u1']], u_init)
         for ui in q_:
             q_1[ui].vector()[:] = q_[ui].vector()[:]
             q_2[ui].vector()[:] = q_[ui].vector()[:]

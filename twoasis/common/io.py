@@ -12,8 +12,9 @@ import time
 import glob
 
 import numpy as np
-from dolfin import MPI, Function, FunctionAssigner, FunctionSpace, HDF5File, assign
+from dolfin import MPI, Function, FunctionSpace, HDF5File
 from femtools.xdmf import XDMFFile2
+from twoasis.common.utilities import set_subfunction, subfunction
 from twoasis.problems import info_red
 
 __all__ = ["create_initial_folders", "save_solution", "save_tstep_solution_h5",
@@ -91,19 +92,15 @@ def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
 def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction,
                            NS_parameters):
     """Store the velocity (as a vector), pressure, phase field and chemical
-    potential on the current timestep in the XDMF time series. The functions
-    written and the assigners filling them are built on the first call."""
-    out = _TIMESERIES_OUTPUT.get(id(tstepfiles))
-    if out is None:
-        W = q_['phig'].function_space()
-        out = dict(u=AssignedVectorFunction(u_, name="u"))
-        for i, name in enumerate(["phi", "g"]):
-            out[name] = Function(W.sub(i).collapse(), name=name)
-            out[name + "_assigner"] = FunctionAssigner(out[name].function_space(), W.sub(i))
-        _TIMESERIES_OUTPUT[id(tstepfiles)] = out
+    potential on the current timestep in the XDMF time series. The velocity
+    vector is built on the first call."""
+    if id(tstepfiles) not in _TIMESERIES_OUTPUT:
+        _TIMESERIES_OUTPUT[id(tstepfiles)] = AssignedVectorFunction(u_, name="u")
+    out = dict(u=_TIMESERIES_OUTPUT[id(tstepfiles)])
     out["u"]()
-    for name in ["phi", "g"]:
-        out[name + "_assigner"].assign(out[name], q_['phig'].sub(["phi", "g"].index(name)))
+    for i, name in enumerate(["phi", "g"]):
+        out[name] = subfunction(q_['phig'], i)
+        out[name].rename(name, name)
     for comp, tstepfile in tstepfiles.items():
         tstepfile.write(out[comp] if comp in out else q_[comp], float(t))
 
@@ -114,7 +111,7 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunct
                 pickle.dump(NS_parameters, f)
 
 
-# The output functions of save_tstep_solution_h5, per set of time series files.
+# The velocity vector of save_tstep_solution_h5, per set of time series files.
 _TIMESERIES_OUTPUT = {}
 
 
@@ -386,9 +383,7 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
             if not len(space.component()):  # not a subspace
                 function.interpolate(f1)
             else:
-                f = Function(space.collapse())
-                f.interpolate(f1)
-                assign(function.sub(space.component()[0]), f)
+                set_subfunction(function, space.component()[0], f1)
 
     u, matcher, t = read("u")
     for i in range(gdim):

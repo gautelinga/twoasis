@@ -23,9 +23,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
-    assemble, assign, cos, Expression, interpolate, MPI, SpatialCoordinate)
+from dolfin import assemble, cos, Expression, MPI, SpatialCoordinate
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems.TPfracStep import Bubble2D
 
 
@@ -73,10 +73,9 @@ def problem_parameters(NS_parameters, **NS_namespace):
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, Lx, Ly, A, **NS_namespace):
     # Heavy fluid (phi = 1) on top of light fluid, with the interface perturbed
     # by one cosine wavelength of amplitude A across the periodic width.
-    phig_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         "tanh((x[1] - Ly/2 - A*cos(2*M_PI*x[0]/Lx))/(sqrt(2)*epsilon))",
-        epsilon=epsilon, Lx=Lx, Ly=Ly, A=A, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+        epsilon=epsilon, Lx=Lx, Ly=Ly, A=A, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
         [bc.apply(x_1[ui]) for bc in bcs[ui]]

@@ -10,8 +10,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import assign, DirichletBC, Expression, interpolate
+from dolfin import DirichletBC, Expression
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.common.io import load_timeseries
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep import Porous2D
@@ -102,12 +103,11 @@ def create_bcs(V, Q, u0, W, subdomains, injected_phase, **NS_namespace):
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, mesh,
                constrained_domain, **NS_namespace):
     if initial_state is None:
-        phi_init = interpolate(Expression(
+        set_subfunction(q_['phig'], 0, Expression(
             #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
             #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
             "tanh((x[1]-y0)/(sqrt(2)*epsilon))",
-            epsilon=epsilon, Ly=Ly, y0=y0, degree=2), VV['phig'].sub(0).collapse())
-        assign(q_['phig'].sub(0), phi_init)
+            epsilon=epsilon, Ly=Ly, y0=y0, degree=2))
     elif initial_state.replace("/", "").endswith("Timeseries"):
         # The last state in the Timeseries/ folder of an earlier run.
         info_blue("initializing from: " + initial_state)
@@ -117,8 +117,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
             q_2[key].vector()[:] = q_[key].vector()
     else:
         info_blue("initializing from: " + initial_state)
-        phi_init = read_phase_field(initial_state, mesh, q_)
-        assign(q_['phig'].sub(0), phi_init)
+        set_subfunction(q_['phig'], 0, read_phase_field(initial_state, mesh, q_))
 
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_['phig'].vector()

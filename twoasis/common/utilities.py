@@ -376,22 +376,53 @@ def homogenize(bcs):
     return b
 
 
-_SUBFUNCTIONS = {}
+class _Component:
+    """Component i of a mixed space W, collapsed into a space of its own, with a
+    Function on it and the assigners to it from W and back."""
+
+    def __init__(self, W, i):
+        self.space = W.sub(i).collapse()
+        self.f = Function(self.space)
+        self.get = FunctionAssigner(self.space, W.sub(i))
+        self.put = FunctionAssigner(W.sub(i), self.space)
+
+
+# Collapsing a subspace builds a dofmap and a FunctionAssigner its own maps, so
+# both are built once per mixed space and component and shared by every caller.
+_COMPONENTS = {}
+
+
+def _component(W, i):
+    key = (W.id(), i)
+    if key not in _COMPONENTS:
+        _COMPONENTS[key] = _Component(W, i)
+    return _COMPONENTS[key]
+
+
+def subspace(W, i):
+    """The collapsed space of component i of the mixed space W (built once)."""
+    return _component(W, i).space
 
 
 def subfunction(q, i):
-    """Component i of the mixed Function q, copied into a Function on its own
-    (collapsed) space. The space, the Function and the assigner are built once
-    per mixed space and component, and the same Function is returned (with the
-    current values) on every call."""
-    W = q.function_space()
-    key = (W.id(), i)
-    if key not in _SUBFUNCTIONS:
-        f = Function(W.sub(i).collapse())
-        _SUBFUNCTIONS[key] = (f, FunctionAssigner(f.function_space(), W.sub(i)))
-    f, assigner = _SUBFUNCTIONS[key]
-    assigner.assign(f, q.sub(i))
-    return f
+    """Component i of the mixed Function q, copied into a Function on its
+    collapsed space (subspace). The same Function is returned, with the current
+    values, on every call for the same mixed space and component."""
+    c = _component(q.function_space(), i)
+    c.get.assign(c.f, q.sub(i))
+    return c.f
+
+
+def set_subfunction(q, i, value):
+    """Set component i of the mixed Function q to value: a Function on the
+    component's collapsed space (subspace), or anything else interpolate takes,
+    such as an Expression or a Function on another space, which is interpolated
+    there first."""
+    c = _component(q.function_space(), i)
+    if not (isinstance(value, Function) and value.function_space().id() == c.space.id()):
+        c.f.interpolate(value)
+        value = c.f
+    c.put.assign(q.sub(i), value)
 
 
 def compute_ind(q_, phase=-1):

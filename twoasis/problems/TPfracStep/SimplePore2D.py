@@ -9,8 +9,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import assign, DirichletBC, Expression, interpolate
+from dolfin import DirichletBC, Expression
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.Porous2D import Walls
 from twoasis.problems.TPfracStep.shared import (
@@ -101,16 +102,14 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, Dp0, sigma, rad, in
     R = abs(sigma/Dp0)
     eta = np.sign(Dp0)*np.sqrt(R**2 + rad**2 - (Ly/2)**2)
 
-    phi_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
         #"tanh((x[1]-0.25*Ly)/(sqrt(2)*epsilon))-tanh((x[1]+0.25*Ly)/(sqrt(2)*epsilon))+1",
         #"-tanh((x[0]-x0)/(sqrt(2)*epsilon))",
         # s flips the phases so that the ends match the boundary values
         # (-injected_phase on the left, injected_phase on the right).
         "s * (eta * x[0] > 0 ? tanh((sqrt(pow(x[0]+eta, 2) + pow(x[1], 2))-R)/(sqrt(2)*epsilon)) : -1)",
-        epsilon=epsilon, eta=eta, R=R, s=float(injected_phase * np.sign(Dp0)), degree=2),
-        VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phi_init)
+        epsilon=epsilon, eta=eta, R=R, s=float(injected_phase * np.sign(Dp0)), degree=2))
 
     q_1['phig'].vector()[:] = q_['phig'].vector()
     q_2['phig'].vector()[:] = q_['phig'].vector()

@@ -12,9 +12,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
-    assign, DirichletBC, DOLFIN_EPS_LARGE, Expression, interpolate, SubDomain)
+from dolfin import DirichletBC, DOLFIN_EPS_LARGE, Expression, SubDomain
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
     load_mesh, makedirs_on_root, PeriodicBox, setup_stats, standard_stats, write_tdata,
@@ -121,12 +121,11 @@ def create_bcs(V, subdomains, **NS_namespace):
 
 def initialize(q_, q_1, x_1, x_2, bcs, epsilon, VV, L, checkerboard, **NS_namespace):
     ccode = ccode_expr(checkerboard)
-    phig_init = interpolate(Expression(
+    set_subfunction(q_['phig'], 0, Expression(
         #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
         #"tanh((x[2]-0.75*L)/(sqrt(2)*epsilon))-tanh((x[2]-0.25*L)/(sqrt(2)*epsilon))+1",
         ccode,
-        epsilon=epsilon, L=L, degree=2), VV['phig'].sub(0).collapse())
-    assign(q_['phig'].sub(0), phig_init)
+        epsilon=epsilon, L=L, degree=2))
     q_1['phig'].vector()[:] = q_['phig'].vector()
     for ui in x_1:
         [bc.apply(x_1[ui]) for bc in bcs[ui]]

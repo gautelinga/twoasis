@@ -12,8 +12,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import assemble, assign, DirichletBC, dx, Function
+from dolfin import assemble, Constant, DirichletBC, dx
 
+from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.Porous2D import Walls
 from twoasis.problems.TPfracStep.shared import (
@@ -75,9 +76,7 @@ def create_bcs(V, subdomains, **NS_namespace):
 
 
 def initialize(q_, q_1, VV, **NS_namespace):
-    phi = Function(VV['phig'].sub(0).collapse())
-    phi.vector()[:] = 1.
-    assign(q_['phig'].sub(0), phi)
+    set_subfunction(q_['phig'], 0, Constant(1.))
     q_1['phig'].vector()[:] = q_['phig'].vector()
 
 

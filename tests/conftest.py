@@ -159,20 +159,38 @@ def bubble_bdf_restarted(tmp_path_factory, bubble_bdf):
 
 @pytest.fixture(scope="session")
 def bubble_bdf_restarted_old_format(tmp_path_factory, bubble_bdf):
-    """Like bubble_bdf_restarted, from a checkpoint that stores only the
-    current level for the pressure and the phase field (as older versions
-    wrote them). Returns (workdir, tdata, stdout)."""
-    if importlib.util.find_spec("h5py") is None:
-        pytest.skip("h5py not available")
+    """Like bubble_bdf_restarted, from a checkpoint in the old layout: bare dof
+    vectors, and only the current level for the pressure and the phase field.
+    Returns (workdir, tdata, stdout)."""
     wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted_old_format", bubble_bdf)
-    # Edit the files in a separate process: h5py may bundle its own HDF5
-    # library, which clashes with dolfin's if both are loaded in one process.
-    script = "import sys, h5py\nfor f in sys.argv[1:]:\n    with h5py.File(f, 'a') as h5f:\n        del h5f['previous']\n"
-    proc = subprocess.run([sys.executable, "-c", script, str(ckpt / "p.h5"), str(ckpt / "phig.h5")],
-                          capture_output=True, text=True, timeout=60, env=dict(os.environ))
-    assert proc.returncode == 0, "editing the checkpoint failed:\n" + proc.stderr[-3000:]
+    to_bare_vectors(ckpt, drop_previous=("p", "phig"))
     proc = run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
     return wd, load_tdata(wd), proc.stdout
+
+
+def to_bare_vectors(ckpt, drop_previous=()):
+    """Rewrite a serial checkpoint in the old layout, as HDF5File.write(vector)
+    stores it: each level a bare vector in dof order (on one process, the
+    Function layout's vector_0), and no previous level for the fields in
+    drop_previous."""
+    if importlib.util.find_spec("h5py") is None:
+        pytest.skip("h5py not available")
+    # Edit the files in a separate process: h5py may bundle its own HDF5
+    # library, which clashes with dolfin's if both are loaded in one process.
+    script = (
+        "import sys, h5py\n"
+        "drop = sys.argv[1].split(',')\n"
+        "for f in sys.argv[2:]:\n"
+        "    with h5py.File(f, 'a') as h5f:\n"
+        "        for level in ('current', 'previous'):\n"
+        "            v = h5f[level + '/vector_0'][...]\n"
+        "            del h5f[level]\n"
+        "            if level == 'current' or f.split('/')[-1][:-3] not in drop:\n"
+        "                h5f[level] = v\n")
+    files = sorted(str(f) for f in Path(ckpt).glob("*.h5") if not f.name.startswith("dofs_"))
+    proc = subprocess.run([sys.executable, "-c", script, ",".join(drop_previous)] + files,
+                          capture_output=True, text=True, timeout=60, env=dict(os.environ))
+    assert proc.returncode == 0, "editing the checkpoint failed:\n" + proc.stderr[-3000:]
 
 
 def copy_run(tmp_path_factory, name, run):

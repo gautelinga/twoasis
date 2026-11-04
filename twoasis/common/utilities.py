@@ -362,4 +362,5 @@ def check_periodic_pairing(constrained_domain, spaces):
     for V in (V for V in spaces if V.ufl_element().degree() <= 2):
         check_space_pairing(V, constrained_domain.upper, constrained_domain.periodic,
                             mesh.mpi_comm(), what=str(V.ufl_element()),
-                            lower=constrained_domain.lower)
+                            lower=constrained_domain.lower,
+                            tol=getattr(constrained_domain, "tol", None))

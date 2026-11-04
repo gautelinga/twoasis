@@ -10,9 +10,10 @@ variants) checking:
   * BDF and IPCS agree on the same case to discretization accuracy,
   * Naive, the plain reference implementation of IPCS's scheme, agrees with
     IPCS to solver tolerance,
-  * checkpoint/restart reproduces an uninterrupted run, also from a checkpoint
-    that lacks the previous time level, leaves no temporary checkpoint folders,
-    and refuses a checkpoint written by another number of processes.
+  * checkpoint/restart reproduces an uninterrupted run, also on another number
+    of processes and from an old checkpoint (bare vectors, without the previous
+    time level), leaves no temporary checkpoint folders, and refuses an old
+    checkpoint on another number of processes.
 """
 import shutil
 from os import path
@@ -22,7 +23,7 @@ import pytest
 
 from conftest import (BUBBLE, BUBBLE_P1, COLS, MASS_TOL, QUIET, assert_close,
                       assert_mass_conserved, copy_run, golden_compare, load_tdata,
-                      require_mpi, run_twoasis)
+                      require_mpi, run_twoasis, to_bare_vectors)
 
 # Scalars pinned by the golden tests.
 GOLDEN_COLS = ["u0m", "phim", "E_kin", "E_int", "vol_c"]
@@ -113,7 +114,8 @@ def test_checkpoint_folder(bubble_bdf_restarted):
     wd, _, _ = bubble_bdf_restarted
     run = wd / "results" / "data" / "1"
     assert {f.name for f in (run / "Checkpoint").iterdir()} == \
-        {"params.dat", "p.h5", "phig.h5", "u0.h5", "u1.h5"}
+        {"params.dat", "p.h5", "phig.h5", "u0.h5", "u1.h5",
+         "dofs_p.h5", "dofs_phig.h5", "dofs_u0.h5"}
     assert not (run / "Checkpoint.new").exists() and not (run / "Checkpoint.old").exists()
 
 
@@ -190,17 +192,35 @@ def test_restart_takes_the_problem_from_the_checkpoint(tmp_path_factory, bubble_
     assert load_tdata(wd).shape[0] == 12
 
 
-def test_restart_other_process_count(tmp_path_factory, bubble_bdf):
-    """A checkpoint written in serial cannot be read on two processes (the dof
-    order differs), so the restart stops with a clear error."""
+def test_restart_on_another_process_count(tmp_path_factory, bubble_bdf, bubble_bdf_restarted):
+    """A checkpoint written in serial, restarted on two processes: both time
+    levels come back on the new partition, and the run continues as the serial
+    restart does, to the Krylov tolerances."""
     require_mpi(2)
     wd, ckpt = copy_run(tmp_path_factory, "restart_np2", bubble_bdf)
-    with pytest.raises(AssertionError, match="written by 1 processes"):
+    proc = run_twoasis(wd, nprocs=2, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
+    assert "BDF1 on first timestep: False" in proc.stdout
+    td = load_tdata(wd)
+    _, td_s, _ = bubble_bdf_restarted
+    assert td.shape == td_s.shape
+    for name in GOLDEN_COLS:
+        assert_close("np2 restart " + name, td[-1, COLS[name]], td_s[-1, COLS[name]], 1e-4, 1e-7)
+
+
+def test_old_checkpoint_on_another_process_count(tmp_path_factory, bubble_bdf):
+    """An old checkpoint holds bare vectors in the dof order of the run that
+    wrote it, so a restart on another number of processes stops with a clear
+    error."""
+    require_mpi(2)
+    wd, ckpt = copy_run(tmp_path_factory, "restart_old_np2", bubble_bdf)
+    to_bare_vectors(ckpt)
+    with pytest.raises(AssertionError, match="written by 1 processes as bare vectors"):
         run_twoasis(wd, nprocs=2, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
 
 
 def test_restart_old_format(bubble_bdf_restarted_old_format, bubble_bdf_long):
-    """Restart from a checkpoint without the previous level of p and phi.
+    """Restart from an old checkpoint: bare vectors, without the previous level
+    of p and phi.
 
     The run must notice the missing level, take a first-order step, and then
     continue close to the uninterrupted run (which used BDF2 throughout).

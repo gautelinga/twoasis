@@ -32,7 +32,7 @@ python3 -m pip install --user --break-system-packages --no-deps meshpy
 for repo in femtools partractools meshtools; do
     git clone https://github.com/gautelinga/$repo.git
 done
-git -C femtools checkout 2026.2.0
+git -C femtools checkout 2026.2.1
 git -C partractools checkout 2026.2.1
 git -C meshtools checkout 2026.2.0
 for repo in femtools partractools meshtools; do
@@ -106,7 +106,7 @@ To continue a run, point to its checkpoint and give a later end time:
 twoasis TPfracStep problem=PeriodicBubble2D restart_folder=<folder>/data/1/Checkpoint T=1.0
 ```
 
-Restart on the same number of processes.
+The restart may use another number of processes.
 
 ## Your own problem
 

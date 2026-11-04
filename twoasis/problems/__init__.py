@@ -174,13 +174,6 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     if commandline_kwargs.get("restart_folder") is not None:
         restart_folder = path.abspath(commandline_kwargs["restart_folder"])
         NS_parameters.update(checkpoint_parameters(restart_folder))
-        # The checkpoint holds the fields in the parallel dof order of the run
-        # that wrote it, which depends on the number of processes.
-        nprocs = NS_parameters.get("num_processes", MPI.size(MPI.comm_world))
-        if nprocs != MPI.size(MPI.comm_world):
-            raise ValueError("The checkpoint in {} was written by {} processes; restart it "
-                             "with the same number (got {})".format(
-                                 restart_folder, nprocs, MPI.size(MPI.comm_world)))
         commandline_kwargs = dict(commandline_kwargs, restart_folder=restart_folder)
 
     # A key that is neither a default nor set by the problem is a mistake (a
@@ -217,7 +210,8 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     if MPI.size(mesh.mpi_comm()) > 1 and hasattr(constrained_domain, "upper"):
         from femtools.periodic_partition import repaired
         mesh = repaired(mesh, constrained_domain.upper, constrained_domain.periodic,
-                        mesh.mpi_comm(), log=info_blue)
+                        mesh.mpi_comm(), log=info_blue,
+                        tol=getattr(constrained_domain, "tol", None))
 
     # Returned dictionary to be updated in the NS namespace
     d = dict(mesh=mesh, constrained_domain=constrained_domain)

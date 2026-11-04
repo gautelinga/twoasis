@@ -4,7 +4,7 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from os import makedirs, listdir, remove, rename, path
+from os import link, makedirs, listdir, remove, rename, path
 import shutil
 from xml.etree import ElementTree as ET
 import pickle
@@ -13,6 +13,7 @@ import glob
 
 import numpy as np
 from dolfin import MPI, Function, FunctionSpace, HDF5File
+from femtools.dolfin_layout import write_dofs, write_function
 from femtools.xdmf import XDMFFile2
 from twoasis.common.utilities import set_subfunction, subfunction
 from twoasis.problems import info_red
@@ -119,20 +120,33 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunct
 _TIMESERIES_OUTPUT = {}
 
 
+#: the spaces (by id) whose dof tables this process has written to a run's checkpoint
+#: folder: from then on each checkpoint there links them instead of writing them again
+_tables_written = {}
+
+
 def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     """Write the parameters and the current and previous levels of every field
     to Checkpoint/.
 
     The files are written to Checkpoint.new/, which then replaces Checkpoint/ by
     renaming, so a run stopped while writing leaves the last complete checkpoint
-    in place. The fields are stored in the parallel dof order, so a restart must
-    use the same number of processes (post_import_problem checks this).
+    in place. Each field is stored as dolfin's HDF5File.write(Function) stores it
+    (femtools.dolfin_layout), with its cells' global ids and dofs, so that a
+    restart reads it on any number of processes. Those dof tables are fixed for a
+    run, so each space's are written once, at the run's first checkpoint
+    (dofs_<field>.h5, for the first field on the space), hard-linked into every
+    later checkpoint, and linked from the fields' files.
     """
     comm = MPI.comm_world
     checkpointfolder = path.join(newfolder, "Checkpoint")
     tmpfolder = checkpointfolder + ".new"
     oldfolder = checkpointfolder + ".old"
     NS_parameters["num_processes"] = MPI.size(comm)
+    written = _tables_written.setdefault(checkpointfolder, set())
+    tables = {}             # space id -> the file of its tables
+    for ui in q_:
+        tables.setdefault(q_[ui].function_space().id(), "dofs_{}.h5".format(ui))
     if MPI.rank(comm) == 0:
         recover_checkpoint(checkpointfolder)
         # Left over if an earlier run stopped while writing.
@@ -141,11 +155,19 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
         makedirs(tmpfolder)
         with open(path.join(tmpfolder, "params.dat"), "wb") as f:
             pickle.dump(NS_parameters, f)
+        for key, name in tables.items():
+            if key in written:
+                link(path.join(checkpointfolder, name), path.join(tmpfolder, name))
     MPI.barrier(comm)
     for ui in q_:
-        with HDF5File(comm, path.join(tmpfolder, ui + ".h5"), "w") as h5file:
-            h5file.write(q_[ui].vector(), "/current")
-            h5file.write(q_1[ui].vector(), "/previous")
+        V = q_[ui].function_space()
+        name = tables[V.id()]
+        if V.id() not in written:
+            write_dofs(path.join(tmpfolder, name), V, "dofs")
+            written.add(V.id())
+        filename = path.join(tmpfolder, ui + ".h5")
+        write_function(filename, q_[ui], "current", mode="w", dofs=(name, "dofs"))
+        write_function(filename, q_1[ui], "previous", dofs=(name, "dofs"))
     MPI.barrier(comm)
     if MPI.rank(comm) == 0:
         if path.exists(checkpointfolder):
@@ -208,29 +230,47 @@ def check_if_pause(folder, newfolder=None, key='pausetwoasis'):
 
 
 def init_from_restart(restart_folder, sys_comp, uc_comp,
-                      q_, q_1, q_2, tstep, **NS_namespace):
-    """Initialize solution from checkpoint files """
-    if restart_folder:
-        if MPI.rank(MPI.comm_world) == 0:
-            info_red('Restarting from checkpoint at time step {}'.format(tstep))
+                      q_, q_1, q_2, tstep, num_processes=None, **NS_namespace):
+    """Initialize solution from checkpoint files.
 
-        for ui in sys_comp:
-            filename = path.join(restart_folder, ui + '.h5')
-            with HDF5File(MPI.comm_world, filename, "r") as hdf5_file:
-                hdf5_file.read(q_[ui].vector(), "/current", False)
-                q_[ui].vector().apply('insert')
-                q_1[ui].vector().zero()
-                q_1[ui].vector().axpy(1., q_[ui].vector())
-                q_1[ui].vector().apply('insert')
-                # A checkpoint may hold only the current level of a field. In that
-                # case use it for the previous level too; the BDF solver then takes
-                # a first-order first step.
-                if hdf5_file.has_dataset("/previous"):
-                    hdf5_file.read(q_2[ui].vector(), "/previous", False)
-                else:
-                    q_2[ui].vector().zero()
-                    q_2[ui].vector().axpy(1., q_[ui].vector())
-                q_2[ui].vector().apply('insert')
+    A field stored as a Function is read onto this run's partition, whatever the
+    number of processes that wrote it. A field stored as a bare vector (the old
+    layout) is in the dof order of the run that wrote it, and is read only on the
+    same number of processes.
+    """
+    if not restart_folder:
+        return
+    comm = MPI.comm_world
+    if MPI.rank(comm) == 0:
+        info_red('Restarting from checkpoint at time step {}'.format(tstep))
+    for ui in sys_comp:
+        filename = path.join(restart_folder, ui + '.h5')
+        with HDF5File(comm, filename, "r") as hdf5_file:
+            # A Function is a group carrying its element's signature; a bare
+            # vector a dataset carrying its partition.
+            if "signature" in hdf5_file.attributes("/current").list_attributes():
+                read = lambda u, name: hdf5_file.read(u, name)
+            else:
+                if num_processes is not None and num_processes != MPI.size(comm):
+                    raise ValueError(
+                        "The checkpoint in {} was written by {} processes as bare vectors; "
+                        "restart it with the same number (got {})".format(
+                            restart_folder, num_processes, MPI.size(comm)))
+                read = lambda u, name: hdf5_file.read(u.vector(), name, False)
+            read(q_[ui], "/current")
+            q_[ui].vector().apply('insert')
+            q_1[ui].vector().zero()
+            q_1[ui].vector().axpy(1., q_[ui].vector())
+            q_1[ui].vector().apply('insert')
+            # A checkpoint may hold only the current level of a field. In that
+            # case use it for the previous level too; the BDF solver then takes
+            # a first-order first step.
+            if hdf5_file.has_dataset("/previous"):
+                read(q_2[ui], "/previous")
+            else:
+                q_2[ui].vector().zero()
+                q_2[ui].vector().axpy(1., q_[ui].vector())
+            q_2[ui].vector().apply('insert')
 
 
 def series_files(folder, name):

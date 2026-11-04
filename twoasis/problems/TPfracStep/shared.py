@@ -47,7 +47,7 @@ def load_mesh(fname, periodic=None):
         from femtools.periodic_partition import read_mesh
         # L=None: the upper faces are at the largest coordinates, which is all the
         # partition needs.
-        return read_mesh(fname, None, periodic, MPI.comm_world, log=_info)
+        return read_mesh(fname, None, periodic, MPI.comm_world, log=_info, tol=FACE_TOL)
     mesh = Mesh()
     with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
         h5f.read(mesh, "mesh", False)

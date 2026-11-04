@@ -113,6 +113,27 @@ def test_mesh_problem_in_parallel(tmp_path, problem):
     assert np.isfinite(load_tdata(tmp_path)).all()
 
 
+@pytest.mark.slow
+@pytest.mark.parametrize("problem,nprocs", [("Porous2D", 2), ("Porous3D", 3)])
+def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
+    """A checkpoint written in serial, restarted on nprocs processes (the mesh
+    read and its periodic partition repaired, Porous3D: partitioned by
+    femtools), continues as the uninterrupted serial run does. The checkpoint is
+    the run's second, whose dof tables are those of its first, linked."""
+    require_mpi(nprocs)
+    params = dict(QUIET, problem=problem, dt=1e-4, checkpoint=2, **with_mesh(tmp_path, problem))
+    reference = tmp_path / "reference"
+    reference.mkdir()
+    (reference / "meshes").symlink_to(tmp_path / "meshes")
+    run_twoasis(reference, T=6e-4, **params)
+    run_twoasis(tmp_path, T=4e-4, **params)
+    run_twoasis(tmp_path, nprocs=nprocs, T=6e-4,
+                restart_folder="results/data/1/Checkpoint", **params)
+    td, td_ref = load_tdata(tmp_path), load_tdata(reference)
+    assert td.shape == td_ref.shape
+    np.testing.assert_allclose(td, td_ref, rtol=1e-6, atol=1e-10)
+
+
 def test_bubble_without_gravity(tmp_path):
     """Bubble2D's statistics with g0 = 0, where the gravitational energy's
     integrand vanishes."""

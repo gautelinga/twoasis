@@ -74,7 +74,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="BDF",
         max_iter=10,
         max_error=1e-6,

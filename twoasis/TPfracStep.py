@@ -33,7 +33,7 @@ import twoasis.solvers.TPfracStep
 from twoasis.common import (
     create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
     save_solution)
-from twoasis.common.utilities import check_periodic_pairing, Coefficient
+from twoasis.common.utilities import check_periodic_pairing, Coefficient, phi_g
 from twoasis.problems import info_green, info_red, initial_memory_use, oasis_memory, OasisTimer
 
 
@@ -89,6 +89,7 @@ if scalar_components:
 if quadrature_degree is None:
     quadrature_degree = 2 * velocity_degree + 1
 parameters["form_compiler"]["quadrature_degree"] = quadrature_degree
+parameters["form_compiler"]["cpp_optimize_flags"] = "-O3"
 
 # Import chosen functionality from solvers
 # Each name in the solver's __all__ comes from the solver module, or else from
@@ -96,6 +97,11 @@ parameters["form_compiler"]["quadrature_degree"] = quadrature_degree
 solver = importlib.import_module('.'.join(('twoasis.solvers.TPfracStep', solver)))
 vars().update({name: getattr(solver, name) if hasattr(solver, name)
                else getattr(twoasis.solvers.TPfracStep, name) for name in solver.__all__})
+if rotational and not hasattr(solver, "pressure_update"):
+    if "rotational" in commandline_kwargs:
+        raise ValueError("rotational=True: the {} solver has no rotational pressure "
+                         "update".format(solver.__name__.split(".")[-1]))
+    rotational = False
 
 # Create lists of components solved for
 dim = mesh.geometry().dim()
@@ -200,7 +206,7 @@ phi_, g_ = split(phig_)
 phi_1, g_1 = split(phig_1)
 phi_2, g_2 = split(phig_2)
 
-print_solve_info = use_krylov_solvers and krylov_solvers['monitor_convergence']
+print_solve_info = krylov_solvers['monitor_convergence']
 
 # Boundary conditions
 bcs = create_bcs(**vars())
@@ -244,6 +250,8 @@ for ci in scalar_components:
 
 # Preassemble and allocate
 vars().update(setup(**vars()))
+anderson = (twoasis.solvers.TPfracStep.AndersonPressure(anderson_depth)
+            if anderson_depth else None)
 
 # Anything problem specific
 vars().update(pre_solve_hook(**vars()))
@@ -271,6 +279,13 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     phase_field_solve(**vars())
     t0.stop()
 
+    # A prescribed physical pressure p + phi*g follows the new phase field.
+    physical_bcs = [bc for bc in bcs['p'] if hasattr(bc, 'update_physical')]
+    if physical_bcs:
+        phig_values = phi_g(q_)
+        for bc in physical_bcs:
+            bc.update_physical(phig_values)
+
     # Iterate until the velocity changes by less than max_error, or by less than
     # max_error_rel relative to its norm; the absolute test decides for a fluid
     # (nearly) at rest.
@@ -293,6 +308,9 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         pressure_assemble(**vars())
         pressure_hook(**vars())
         pressure_solve(**vars())
+        pressure_update(**vars())
+        if anderson is not None:
+            anderson(x_['p'], inner_iter)
         t0.stop()
 
         print_velocity_pressure_info(**vars())

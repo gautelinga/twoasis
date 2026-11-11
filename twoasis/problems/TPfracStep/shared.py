@@ -4,20 +4,38 @@ __date__ = "2026-11-02"
 __copyright__ = "Copyright (C) 2026 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import makedirs, path, remove
+from os import listdir, makedirs, path, remove
 
 import numpy as np
 from dolfin import (
-    assemble, CompiledSubDomain, Constant, DomainBoundary, dx, Function, grad, HDF5File,
-    inner, Mesh, MPI, Point, RectangleMesh, SpatialCoordinate, SubDomain)
+    assemble, Constant, DirichletBC, dx, Function, grad, HDF5File, inner, Mesh, MPI, Point,
+    RectangleMesh, SpatialCoordinate)
 
-from femtools.periodic import periodic_box
+from femtools.box import FACE_TOL, Faces, mark_walls
+from femtools.dolfin_layout import write_dofs, write_function
+# Periodic boundary conditions on a box, from each periodic axis's (lower, upper)
+# bounds, e.g. PeriodicBox({0: (0, Lx)}) for periodicity in x.
+from femtools.periodic import periodic_box_from_bounds as PeriodicBox
 
-from twoasis.common.utilities import compute_ind, subfunction, subspace
+from twoasis.common.utilities import compute_ind, physical_pressure, subfunction, subspace
 
-# How near a face of the box a point must be to lie on it: above the rounding of
-# mesh generators (gmsh leaves points ~1e-14 off a face), far below any cell.
-FACE_TOL = 1e-10
+class PhysicalPressureBC(DirichletBC):
+    """A Dirichlet condition on the physical pressure p + phi*g, `value` (a number)
+    on the boundary given as for DirichletBC. With the capillary force -phi*grad(g)
+    the solver's pressure p is the physical one minus phi*g, so its boundary value
+    is value - phi*g: set by update_physical with phi*g at the pressure dofs
+    (common.utilities.phi_g), which the main loop calls after each phase-field
+    solve."""
+
+    def __init__(self, Q, value, *args):
+        self.physical = float(value)
+        self.boundary_value = Function(Q)
+        DirichletBC.__init__(self, Q, self.boundary_value, *args)
+
+    def update_physical(self, phig):
+        x = self.boundary_value.vector()
+        x.set_local(self.physical - phig)
+        x.apply('insert')
 
 
 def rectangle_mesh(Lx, Ly, res, centred=False):
@@ -57,55 +75,6 @@ def load_mesh(fname, periodic=None):
 def _info(s):
     if MPI.rank(MPI.comm_world) == 0:
         print(s)
-
-
-def PeriodicBox(periodic):
-    """Periodic boundary conditions on a box (femtools.periodic.periodic_box).
-
-    `periodic` maps each periodic axis to its (lower, upper) bounds, e.g.
-    {0: (0, Lx)} for periodicity in x. The face at the upper bound is identified
-    with the face at the lower bound. The box carries `lower`, `upper` and
-    `periodic` (one entry per axis x, y, z).
-    """
-    lower, upper = ([periodic[i][k] if i in periodic else 0. for i in range(3)] for k in (0, 1))
-    # map_tol: dolfin's default for a SubDomain.
-    return periodic_box(upper, FACE_TOL, [i in periodic for i in range(3)], lower,
-                        map_tol=1e-10)
-
-
-class Faces(SubDomain):
-    """The boundary where coordinate `axis` equals one of `values`."""
-
-    def __init__(self, axis, *values):
-        self.axis, self.values = axis, values
-        super().__init__()
-
-    def inside(self, x, on_boundary):
-        return on_boundary and any(abs(x[self.axis] - v) < FACE_TOL for v in self.values)
-
-
-def mark_walls(subdomains, mesh, marker=1):
-    """Mark the walls of the obstacles inside the mesh's bounding box `marker`:
-    every boundary facet, except those on the faces of the box (left 0; a
-    problem marks its inlets and outlets there afterwards). Compiled, so fast on
-    large meshes, and it needs no list of the obstacles."""
-    DomainBoundary().mark(subdomains, marker)
-    lo, hi = mesh_extrema(mesh)
-    faces = " || ".join("near(x[{0}], lo{0}, tol) || near(x[{0}], hi{0}, tol)".format(i)
-                        for i in range(mesh.geometry().dim()))
-    bounds = {"lo{}".format(i): v for i, v in enumerate(lo)}
-    bounds.update({"hi{}".format(i): v for i, v in enumerate(hi)})
-    CompiledSubDomain("on_boundary && ({})".format(faces), tol=FACE_TOL,
-                      **bounds).mark(subdomains, 0)
-
-
-def mesh_extrema(mesh):
-    """Lower and upper corners of the mesh's bounding box, over all processes."""
-    x = mesh.coordinates()
-    comm = mesh.mpi_comm()
-    lo = np.array([MPI.min(comm, float(v)) for v in x.min(axis=0)])
-    hi = np.array([MPI.max(comm, float(v)) for v in x.max(axis=0)])
-    return lo, hi
 
 
 def interface_energy(phi_, sigma, epsilon, dx):
@@ -239,6 +208,23 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
                        wall_markers)
 
 
+def start_timestamps(keys, tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree,
+                     pressure_degree, phase_field_degree, AssignedVectorFunction,
+                     constrained_domain, subdomains, **NS_namespace):
+    """A pre_solve_hook's set-up for Stats/ and Timestamps/: the statistics'
+    folder and volume (setup_stats), Timestamps/ described with the parameters
+    named in keys (write_timestamps_info), and the first timestamp. Returns the
+    names temporal_hook uses (uv, timestampsfolder, statsfolder, volume)."""
+    timestampsfolder = path.join(newfolder, "Timestamps")
+    uv = AssignedVectorFunction(u_, name="u")
+    makedirs_on_root(timestampsfolder)
+    write_timestamps_info(timestampsfolder, mesh, {key: NS_namespace[key] for key in keys},
+                          velocity_degree, pressure_degree, phase_field_degree,
+                          constrained_domain, subdomains)
+    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
+    return dict(uv=uv, timestampsfolder=timestampsfolder, **setup_stats(mesh, newfolder))
+
+
 def read_phase_field(fname, mesh, q_):
     """The phase field stored as "phi" in the HDF5 file fname (e.g. a file
     written by write_timestamp)."""
@@ -248,9 +234,17 @@ def read_phase_field(fname, mesh, q_):
     return phi__
 
 
+# The file holding the dof tables of a run's timestamps, by folder.
+_STAMP_TABLES = {}
+
+
 def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     """Write velocity, pressure and phase field to up_<tstep>.h5 and list the file
     in timestamps.dat, as its last step.
+
+    The fields' dof tables are written once per run, to dofs_<first step>.h5 next
+    to the files, and linked into each file (HDF5 external links, which readers
+    follow): a file holds only its values.
 
     A restart writes the step it starts from again, and an earlier run may have
     listed later steps (a restart from an older checkpoint). Those steps belong
@@ -261,7 +255,17 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     phi__ = subfunction(q_['phig'], 0)
     phi__.rename("phi", "phi")
     from partractools import case
-    case.write_fields(path.join(timestampsfolder, h5fname), {"u": uv, "p": p_, "phi": phi__})
+    P = physical_pressure(q_, Function(p_.function_space()))
+    fields = {"u": uv, "p": P, "phi": phi__}
+    tables = _STAMP_TABLES.get(timestampsfolder)
+    if tables is None:
+        tables = _STAMP_TABLES[timestampsfolder] = "dofs_{}.h5".format(tstep)
+        for i, (name, f) in enumerate(fields.items()):
+            write_dofs(path.join(timestampsfolder, tables), f.function_space(), name,
+                       mode="a" if i else "w")
+    for i, (name, f) in enumerate(fields.items()):
+        write_function(path.join(timestampsfolder, h5fname), f, name,
+                       mode="a" if i else "w", dofs=(tables, name))
     if MPI.rank(MPI.comm_world) == 0:
         stamps = path.join(timestampsfolder, "timestamps.dat")
         listed = case.read_stamps(stamps) if path.exists(stamps) else []
@@ -269,12 +273,16 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
         if len(keep) == len(listed):
             case.write_stamps(stamps, [("{:.6f}".format(t), h5fname)], mode="a")
         else:
-            for _, f in listed:
-                if _stamp_step(f) > tstep and path.exists(path.join(timestampsfolder, f)):
+            later = [f for _, f in listed if _stamp_step(f) > tstep]
+            later += [f for f in listdir(timestampsfolder)
+                      if f.startswith("dofs_") and _stamp_step(f) > tstep]
+            for f in later:
+                if path.exists(path.join(timestampsfolder, f)):
                     remove(path.join(timestampsfolder, f))
             case.write_stamps(stamps, keep + [("{:.6f}".format(t), h5fname)], mode="w")
 
 
 def _stamp_step(fname):
-    """The time step of a file up_<tstep>.h5 that write_timestamp wrote."""
+    """The time step of a file up_<tstep>.h5 or dofs_<tstep>.h5 that write_timestamp
+    wrote."""
     return int(path.splitext(fname)[0].split("_")[-1])

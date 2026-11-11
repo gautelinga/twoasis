@@ -53,7 +53,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=20,
         checkpoint=20,
         print_intermediate_info=20,
-        use_krylov_solvers=True,
         solver="BDF",
         bdf_order=1,
         AB_projection_pressure=False,

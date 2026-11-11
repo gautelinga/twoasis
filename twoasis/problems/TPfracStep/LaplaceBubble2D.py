@@ -70,7 +70,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         max_iter=100,
         max_error=1e-6,
         iters_on_first_timestep=200,

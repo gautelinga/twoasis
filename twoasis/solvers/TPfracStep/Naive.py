@@ -26,8 +26,10 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 import math
 
 from dolfin import (
-    as_backend_type, assemble, div, dot, dx, Function, grad, inner, lhs, normalize,
-    PETScKrylovSolver, rhs, solve, Vector, VectorSpaceBasis)
+    assemble, div, dot, dx, Function, grad, inner, lhs, normalize,
+    PETScKrylovSolver, rhs, solve)
+
+from femtools.nullspace import constant_nullspace
 
 from twoasis.common.utilities import homogenize
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
@@ -85,12 +87,8 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
     # Without a pressure Dirichlet condition the pressure is defined up to a
     # constant. LU cannot solve the singular system, so use a Krylov solver
     # (with a tight tolerance) on the complement of the constants.
-    p_sol = null_space = None
+    p_sol = None
     if not bcs['p']:
-        null_vec = Vector(x_['p'])
-        Q.dofmap().set(null_vec, 1.0)
-        null_vec *= 1.0 / null_vec.norm('l2')
-        null_space = VectorSpaceBasis([null_vec])
         p_sol = PETScKrylovSolver('gmres', 'hypre_amg')
         p_sol.parameters.update(dict(relative_tolerance=1e-12, absolute_tolerance=1e-15,
                                      maximum_iterations=1000, error_on_nonconvergence=True))
@@ -108,7 +106,7 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
     # Each equation is stored as the pair (bilinear form, linear form).
     return dict(Fpf=(lhs(Fpf), rhs(Fpf)), Fu={ui: (lhs(F), rhs(F)) for ui, F in Fu.items()},
                 Fp=(lhs(Fp), rhs(Fp)), rho_=rho_, rho_inv_=rho_inv_, mu_=mu_, phi_V=phi_V,
-                sigma_bar=sigma_bar, p_sol=p_sol, null_space=null_space, ML_inv=ML_inv,
+                sigma_bar=sigma_bar, p_sol=p_sol, ML_inv=ML_inv,
                 bcs0={ui: homogenize(bcs[ui]) for ui in u_components}, dpdx=Function(V))
 
 
@@ -133,15 +131,14 @@ def velocity_tentative_solve(ui, Fu, q_, x_, bcs, udiff, unorm, **NS_namespace):
     unorm[0] += x_[ui].norm('l2')
 
 
-def pressure_solve(Fp, p_, dp_, bcs, p_sol, null_space, **NS_namespace):
+def pressure_solve(Fp, p_, dp_, bcs, p_sol, Q, **NS_namespace):
     """Solve for the pressure; dp_ is its change."""
     dp_.assign(p_)
     if p_sol is None:
         solve(Fp[0] == Fp[1], p_, bcs['p'])
     else:
         A, b = assemble(Fp[0]), assemble(Fp[1])
-        as_backend_type(A).set_nullspace(null_space)
-        null_space.orthogonalize(b)
+        constant_nullspace(A, Q).orthogonalize(b)
         p_sol.solve(A, p_.vector(), b)
         normalize(p_.vector())
     dpv = dp_.vector()

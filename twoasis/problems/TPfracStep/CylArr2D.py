@@ -9,16 +9,14 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
 from dolfin import assemble, Constant, DirichletBC, dx
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, load_mesh, makedirs_on_root, mark_walls, PeriodicBox, setup_stats, write_tdata,
-    write_timestamp, write_timestamps_info)
+    centred, load_mesh, mark_walls, PeriodicBox, start_timestamps, write_tdata,
+    write_timestamp)
 
 
 def get_fname(Lx, rad, res, ext):
@@ -53,7 +51,6 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="IPCS")
 
 
@@ -79,19 +76,8 @@ def initialize(q_, q_1, VV, **NS_namespace):
     q_1['phig'].vector()[:] = q_['phig'].vector()
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
-                   phase_field_degree, AssignedVectorFunction, constrained_domain, subdomains, **NS_namespace):
-    stats = setup_stats(mesh, newfolder)
-    timestampsfolder = path.join(newfolder, "Timestamps")
-    uv = AssignedVectorFunction(u_, name="u")
-    makedirs_on_root(timestampsfolder)
-    write_timestamps_info(timestampsfolder, mesh,
-                          {key: NS_namespace[key] for key in
-                           ["F0", "g0", "mu", "rho", "rad", "res", "dt"]},
-                          velocity_degree, pressure_degree, phase_field_degree,
-                          constrained_domain, subdomains)
-    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    return dict(uv=uv, timestampsfolder=timestampsfolder, **stats)
+def pre_solve_hook(**NS_namespace):
+    return start_timestamps(["F0", "g0", "mu", "rho", "rad", "res", "dt"], **NS_namespace)
 
 
 def temporal_hook(q_, tstep, t, u_, p_, rho_, volume, statsfolder, timestampsfolder,

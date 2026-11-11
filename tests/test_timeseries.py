@@ -78,6 +78,11 @@ else:
             exact = interpolate(f(k, t), fn.function_space()).vector().get_local()
             local = np.abs(fn.vector().get_local() - exact).max() if len(exact) else 0.
             dof_errors[k] = MPI.max(MPI.comm_world, float(local))
+        # against the physical pressure p + phi*g, at the pressure dofs
+        I = lambda k: interpolate(f(k, t), Q).vector().get_local()
+        P = I("p") + I("phi") * I("g")
+        local = np.abs(q_["p"].vector().get_local() - P).max() if len(P) else 0.
+        dof_errors["P"] = MPI.max(MPI.comm_world, float(local))
         result[str(time)] = dict(t=t, errors=errors, dof_errors=dof_errors)
     if MPI.rank(MPI.comm_world) == 0:
         json.dump(result, open(out, "w"))
@@ -123,6 +128,25 @@ def test_read_back(tmp_path, series):
     assert_exact(helper(tmp_path, "read", folder), dofs=["u0", "u1", "p", "phi", "g"])
 
 
+def test_series_hold_the_physical_pressure(tmp_path, series):
+    """The series hold the physical pressure p + phi*g; their params.dat marks it,
+    and the reader gives back p. Without the mark the values are read as they
+    are: here that is p + phi*g."""
+    import pickle
+    import shutil
+    _, folder = series
+    params = pickle.load(open(str(folder / "params.dat"), "rb"))
+    assert params["timeseries_pressure"] == "physical"
+    unmarked = tmp_path / "unmarked"
+    shutil.copytree(str(folder), str(unmarked))
+    params.pop("timeseries_pressure")
+    pickle.dump(params, open(str(unmarked / "params.dat"), "wb"))
+    result = helper(tmp_path, "read", unmarked)
+    for time in ("None", "0.1"):
+        assert result[time]["dof_errors"]["P"] < 1e-12
+        assert result[time]["dof_errors"]["p"] > 1e-3
+
+
 def test_read_into_other_degrees(tmp_path, series):
     """Into P1 velocity (from the P2 values at the vertices) and a P2 phase field
     (interpolated from the vertex values of the P1 one)."""
@@ -145,25 +169,7 @@ def test_other_mesh_is_an_error(tmp_path, series):
     """A series from a different mesh is reported, not read into the wrong points."""
     _, folder = series
     result = helper(tmp_path, "read", folder, res=0.05)
-    assert "different mesh" in result["error"]
-
-
-def test_match_points():
-    """Matches within the tolerance, including points whose coordinates round to
-    the other side of a multiple of the tolerance; a shifted mesh is an error."""
-    from twoasis.common.io import match_points
-    rng = np.random.default_rng(1)
-    points = rng.random((1000, 3))
-    order = rng.permutation(1000)
-    tol = 1e-8
-    queries = points[order] + rng.uniform(-1e-6, 1e-6, (1000, 3)) * tol  # round-off
-    # Two points that straddle a rounding boundary of every coordinate.
-    points[order[:2]] = 0.5 * tol - 1e-3 * tol
-    points[order[1]] += 0.6
-    queries[:2] = points[order[:2]] + 2e-3 * tol
-    assert np.array_equal(match_points(points, queries, tol), order)
-    with pytest.raises(ValueError, match="different mesh"):
-        match_points(points, queries + 2 * tol, tol)
+    assert "not the one the field was written on" in result["error"]
 
 
 @pytest.fixture(scope="module")

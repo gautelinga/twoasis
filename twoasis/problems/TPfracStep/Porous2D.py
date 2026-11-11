@@ -20,8 +20,8 @@ from dolfin import (
 from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, load_mesh, makedirs_on_root, mark_walls, PeriodicBox, setup_stats, standard_stats,
-    write_tdata, write_timestamp, write_timestamps_info)
+    centred, load_mesh, mark_walls, PeriodicBox, standard_stats, start_timestamps,
+    write_tdata, write_timestamp)
 
 
 
@@ -97,7 +97,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="IPCS")
 
 
@@ -157,19 +156,9 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, che
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
-                   phase_field_degree, AssignedVectorFunction, constrained_domain, subdomains, **NS_namespace):
-    stats = setup_stats(mesh, newfolder)
-    timestampsfolder = path.join(newfolder, "Timestamps")
-    uv = AssignedVectorFunction(u_, name="u")
-    makedirs_on_root(timestampsfolder)
-    write_timestamps_info(timestampsfolder, mesh,
-                          {key: NS_namespace[key] for key in
-                           ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"]},
-                          velocity_degree, pressure_degree, phase_field_degree,
-                          constrained_domain, subdomains)
-    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    return dict(uv=uv, timestampsfolder=timestampsfolder, **stats)
+def pre_solve_hook(**NS_namespace):
+    return start_timestamps(
+        ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"], **NS_namespace)
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,

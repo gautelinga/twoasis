@@ -4,7 +4,7 @@ with `pytest -m slow`), and a quick run of a configuration that once crashed.
 These only check that a problem sets up and steps without errors, which catches
 problem files that have fallen out of sync with the solvers. The problems that
 read a mesh file run on small meshes made here (meshgen.py, and
-meshes/tube_mesh.py for Tube3D), two of them also on two processes. Also:
+meshes/tube_mesh.py for Tube3D), two of them also restarted in parallel. Also:
 TaylorBubble2D's controller across a restart.
 """
 import subprocess
@@ -103,17 +103,6 @@ def test_problem_runs(tmp_path, problem, solver):
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("problem", ["Porous2D", "Porous3D"])
-def test_mesh_problem_in_parallel(tmp_path, problem):
-    """On two processes: the mesh read (Porous3D: partitioned by femtools) and the
-    periodic partition repaired and checked."""
-    require_mpi(2)
-    params = with_mesh(tmp_path, problem)
-    run_twoasis(tmp_path, nprocs=2, problem=problem, dt=1e-4, T=2e-4, **QUIET, **params)
-    assert np.isfinite(load_tdata(tmp_path)).all()
-
-
-@pytest.mark.slow
 @pytest.mark.parametrize("problem,nprocs", [("Porous2D", 2), ("Porous3D", 3)])
 def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
     """A checkpoint written in serial, restarted on nprocs processes (the mesh
@@ -160,7 +149,9 @@ def test_timestamps_across_a_restart(tmp_path):
     """A restart writes the step it starts from to Timestamps/ again: it is listed
     once. A run stopped after its last checkpoint has listed later steps too; a
     restart from that checkpoint drops them, list entries and files, so that
-    timestamps.dat is one run's history."""
+    timestamps.dat is one run's history. Each run writes the dof tables once, to
+    dofs_<its first step>.h5, and its files link to them."""
+    import h5py
     params = dict(QUIET, problem="Porous2D", dt=1e-4, timestamps_interval=2, checkpoint=4,
                   **with_mesh(tmp_path, "Porous2D"))
     run = tmp_path / "results" / "data" / "1"
@@ -177,6 +168,14 @@ def test_timestamps_across_a_restart(tmp_path):
     assert not (run / "Timestamps" / "up_6.h5").exists()
     run_twoasis(tmp_path, T=8e-4, **restart)     # from step 4 again, on to 8
     assert listed() == ["up_{}.h5".format(n) for n in (0, 2, 4, 6, 8)], stamps.read_text()
+    assert sorted(f.name for f in (run / "Timestamps").glob("dofs_*")) == \
+        ["dofs_0.h5", "dofs_4.h5"]
+    for n, tables in ((2, "dofs_0.h5"), (8, "dofs_4.h5")):
+        with h5py.File(str(run / "Timestamps" / "up_{}.h5".format(n)), "r") as h5:
+            for name in ("u", "p", "phi"):
+                link = h5.get(name + "/cell_dofs", getlink=True)
+                assert isinstance(link, h5py.ExternalLink) and link.filename == tables
+                assert h5[name + "/cell_dofs"].size > 0      # read through the link
 
 
 def test_partrac_case_walls(tmp_path):

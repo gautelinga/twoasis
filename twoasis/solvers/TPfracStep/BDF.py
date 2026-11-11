@@ -10,14 +10,19 @@ import math
 
 import numpy as np
 from dolfin import (
-    as_backend_type, as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx,
-    Function, grad, inner, Matrix, nabla_grad, normalize, Timer)
+    as_vector, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad, inner, nabla_grad,
+    Timer)
 
+from femtools.fast_assembly import assemble
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    assemble_phase_field_system, attach_pressure_nullspace, krylov_get_solvers,
-    phase_field_system, PhaseFieldOnVelocitySpace, projection_solver, set_mixed_fields,
+    assemble_phase_field_system, assemble_pressure_matrix,
+    incremental_pressure_assemble as pressure_assemble,
+    incremental_pressure_solve as pressure_solve,
+    incremental_velocity_update as velocity_update, krylov_get_solvers,
+    phase_field_system, PhaseFieldOnVelocitySpace, pressure_matrix, projection_solver,
+    rotational_fields, rotational_pressure_update as pressure_update, set_mixed_fields,
     velocity_matrices)
 
 # The functions the main script takes from a solver.
@@ -40,10 +45,10 @@ def has_previous_level(x_1, x_2, fields):
 
 
 def setup(u_components, u, v, p, q, bcs, #dt,
-          scalar_components, V, Q, x_, x_1, x_2, p_, u_, A_cache, q_,
+          scalar_components, V, Q, x_, x_1, x_2, p_, u_, q_,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
           angles, ds, bdf_order, constant_poisson_coefficient, normal,
-          initial_step_1st_order, tstep,
+          initial_step_1st_order, tstep, rotational,
           velocity_update_solver, assemble_matrix, homogenize, acc, gradp_avg,
           GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, **NS_namespace):
     """Preassemble matrices."""
@@ -60,14 +65,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # Mass matrix without density coefficient
     Md = assemble_matrix(inner(u, v) * dx)
 
-    # Stiffness matrix that changes with time
-    Kt = (Matrix(Md), mu_ * inner(grad(u), grad(v * rho_inv_)))
-
-    # Pressure Laplacian without density coefficient
-    Apd = assemble_matrix(1./min(rho) * inner(grad(q), grad(p)) * dx, bcs['p'])
-
-    # Pressure Laplacian that changes with time
-    Apt = [Matrix(Apd), rho_inv_ * inner(grad(q), grad(p)), None]
+    # Viscous term
+    a_visc = mu_ * inner(grad(u), grad(v * rho_inv_)) * dx
 
     # Allocate coefficient matrix (needs reassembling)
     A, Ai = velocity_matrices(Md, bcs, u_components)
@@ -118,8 +117,9 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     beta = np.zeros(2)
 
     # Create dictionary to be returned into global NS namespace
-    d = dict(A=A, Md=Md, Ai=Ai, Apd=Apd, Apt=Apt, Kt=Kt, divu=divu, gradp=gradp, phigradg=phigradg,
-             alpha=alpha, beta=beta, bdf1_tstep=bdf1_tstep, **pf)
+    d = dict(A=A, Md=Md, Ai=Ai, divu=divu, gradp=gradp, phigradg=phigradg,
+             alpha=alpha, beta=beta, bdf1_tstep=bdf1_tstep,
+             **rotational_fields(rotational, q, Q, V, mu_), **pf)
 
     TPT = TPsource(mu_, u_adv, V, name="N")
 
@@ -131,7 +131,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # Shortcuts when both phases have the same properties. With equal
     # viscosities grad(mu) = 0, so the TPT source term vanishes. With equal
     # densities the pressure Poisson coefficient is constant. With both, the
-    # stiffness matrix Kt never changes.
+    # viscous matrix K_fixed never changes.
     matched_mu = mu[0] == mu[1]
     matched_rho = rho[0] == rho[1]
     if matched_mu:
@@ -141,26 +141,23 @@ def setup(u_components, u, v, p, q, bcs, #dt,
         constant_poisson_coefficient = True
     matched_properties = matched_mu and matched_rho
     if matched_properties:
-        info_blue("Matched properties: assembling the stiffness matrix once.")
-        assemble(Kt[1] * dx, tensor=Kt[0])
+        info_blue("Matched properties: assembling the viscous matrix once.")
     d.update(matched_mu=matched_mu, matched_properties=matched_properties,
-             constant_poisson_coefficient=constant_poisson_coefficient)
+             constant_poisson_coefficient=constant_poisson_coefficient,
+             K_fixed=assemble(a_visc) if matched_properties else None,
+             **pressure_matrix(constant_poisson_coefficient, rho, rho_inv_, p, q, Q, bcs))
 
-    if bcs['p'] == []:
-        Apt[2] = attach_pressure_nullspace(Apt[0], x_, Q)
-        as_backend_type(Apd).set_nullspace(Apt[2])
-
-    d.update(u_adv=u_adv, a_conv=a_conv, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
+    d.update(u_adv=u_adv, a_conv=a_conv, a_conv_visc=a_conv + a_visc, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
     return d
 
 get_solvers = krylov_get_solvers
 
-def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_order,
-                              Kt, u_adv, u_components, alpha, beta, AB_projection_pressure,
+def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_components, bdf_order,
+                              K_fixed, u_adv, u_components, alpha, beta, AB_projection_pressure,
                               b_tmp, bg0, b0, x_, x_1, x_2, bcs, TPT, rho, mu,
                               rho_, mu_, rho_inv_, phi_V, q_, acc, gradp_avg, bgp0,
                               Fv, matched_mu, matched_properties, phigradg,
-                              Apt, constant_poisson_coefficient,
+                              Ap, a_p, p_null, constant_poisson_coefficient,
                               **NS_namespace):
     """Called on the first inner iteration of each timestep.
 
@@ -168,7 +165,6 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
     coefficient fields, the tentative-velocity matrix and the parts of its
     right-hand side that do not depend on the pressure, and the pressure matrix.
     """
-    #info_blue("Assembling first inner iter")
 
     t0 = Timer("Assemble first inner iter")
 
@@ -212,12 +208,12 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
         b_tmp[ui].axpy(-1., phigradg[ui].rhs * rho_inv_.vector())
 
     # assemble semi-implicit convection, diffusion etc. for lhs
-    assemble(a_conv, tensor=A)
+    if matched_properties:
+        assemble(a_conv, tensor=A)
+        A.axpy(1.0, K_fixed, True)
+    else:
+        assemble(a_conv_visc, tensor=A)
     A.axpy(alpha[0], Md, True)
-
-    if not matched_properties:
-        assemble(Kt[1] * dx, tensor=Kt[0])
-    A.axpy(1.0, Kt[0], True)
 
     if Ai:
         for ui in u_components:
@@ -228,15 +224,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, dt, Md, scalar_components, bdf_orde
         [bc.apply(A) for bc in bcs['u0']]  # the same rows for every component
 
     # The pressure matrix depends on the density, which is fixed within the timestep.
-    if not constant_poisson_coefficient:
-        t1 = Timer("Pressure assemble")
-        assemble(Apt[1] * dx, tensor=Apt[0])
-        if bcs['p'] == []:
-            Aa = as_backend_type(Apt[0])
-            Aa.set_nullspace(Apt[2])
-        else:
-            [bc.apply(Apt[0]) for bc in bcs['p']]
-        t1.stop()
+    assemble_pressure_matrix(Ap, a_p, p_null, bcs, constant_poisson_coefficient)
 
     x_['p'].zero()
     if AB_projection_pressure: # and t < (T - tstep * DOLFIN_EPS) and not stop:
@@ -254,62 +242,6 @@ def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, rho_inv_, **NS_namespac
     b[ui].axpy(-1., gradp[ui].rhs * rho_inv_.vector())
 
 
-def pressure_assemble(b, x_, Apt, Apd, divu, alpha, constant_poisson_coefficient,
-                      **NS_namespace):
-    """Assemble the rhs of the pressure equation. The matrix is assembled in
-    assemble_first_inner_iter."""
-    divu.assemble_rhs()  # Computes div(u_)*q*dx
-    b['p'][:] = divu.rhs
-    b['p'] *= -alpha[0]
-    if not constant_poisson_coefficient:
-        b['p'].axpy(1., Apt[0] * x_['p'])
-    else:
-        b['p'].axpy(1., Apd * x_['p'])
-
-def pressure_solve(dp_, x_, Apt, Apd, b, p_sol, bcs, constant_poisson_coefficient,
-                   inner_iter, tstep, **NS_namespace):
-    """Solve pressure equation."""
-    #info_blue("Solving P")
-
-    # Rebuilding the AMG preconditioner is expensive, so reuse it while the matrix
-    # is unchanged: within a timestep, or for the whole run if the matrix is constant.
-    if constant_poisson_coefficient:
-        p_sol.set_reuse_preconditioner(tstep > 1 or inner_iter > 1)
-    else:
-        p_sol.set_reuse_preconditioner(inner_iter > 1)
-
-    [bc.apply(b['p']) for bc in bcs['p']]
-    dp_.vector().zero()
-    dp_.vector().axpy(1., x_['p'])
-
-    # With no pressure boundary condition the pressure is defined up to a
-    # constant: make the right-hand side consistent (orthogonal to the null space).
-    if Apt[2] is not None:
-        Apt[2].orthogonalize(b['p'])
-    t1 = Timer("Pressure Linear Algebra Solve")
-    p_sol.solve(Apd if constant_poisson_coefficient else Apt[0], x_['p'], b['p'])
-    t1.stop()
-
-    # LUSolver uses normalize directly for normalization of pressure
-    if bcs['p'] == []:
-        normalize(x_['p'])
-
-    dpv = dp_.vector()
-    dpv.axpy(-1., x_['p'])
-    dpv *= -1.
-
-
-def velocity_update(u_components, bcs, gradp, dp_, dt, x_, rho_inv_, rho, alpha, constant_poisson_coefficient, **NS_namespace):
-    """Update the velocity after regular pressure velocity iterations."""
-    factor = 1./alpha[0]
-    for ui in u_components:
-        gradp[ui](dp_)
-        if not constant_poisson_coefficient:
-            x_[ui].axpy(- factor, gradp[ui].vector() * rho_inv_.vector())
-        else:
-            x_[ui].axpy(- factor, gradp[ui].vector() / min(rho))
-        [bc.apply(x_[ui]) for bc in bcs[ui]]
-
 def scalar_assemble(a_scalar, a_conv, Ta, dt, M, scalar_components, Schmidt_T, KT,
                     nu, nut_, nunn_, Schmidt, b, K, x_1, b0, les_model, nn_model, **NS_namespace):
     """Assemble scalar equation."""
@@ -318,7 +250,7 @@ def scalar_assemble(a_scalar, a_conv, Ta, dt, M, scalar_components, Schmidt_T, K
 
 def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
                  nu, Schmidt, K, **NS_namespace):
-    """Solve scalar equation."""
+    """Solve the scalar equations: none, scalars are not supported."""
     pass
 
 def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha,
@@ -326,7 +258,6 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
                          beta, bdf_order, bdf1_tstep, fpf, bpf, NS_parameters,
                          **NS_namespace):
     """Assemble phase field equation."""
-    #info_blue("Assembling PF")
     # BDF2 needs the solution at t - 2*dt. On the step where setup found none
     # (bdf1_tstep), take a BDF1 step instead, since BDF2 with a wrong t - 2*dt
     # level does not conserve mass.
@@ -352,7 +283,6 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
         beta[0] = 1.0
         beta[1] = 0.0
 
-    #info_blue(f"{alpha}, {beta}")
 
     # Update u_adv used as convecting velocity
     for i, ui in enumerate(u_components):
@@ -368,13 +298,4 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
     b['phig'].axpy(-alpha[1], Mpf[0] * x_1['phig'])
     b['phig'].axpy(-alpha[2], Mpf[0] * x_2['phig'])
 
-    t1.stop()
-
-
-def phase_field_solve(pf_sol, Apf, x_, b, q_, bcs, **NS_namespace):
-    """Solve scalar equation."""
-    #info_blue("Solving PF")
-    t1 = Timer("Phase field solve")
-    [bc.apply(Apf, b['phig']) for bc in bcs['phig']]
-    pf_sol.solve(Apf, x_['phig'], b['phig'])
     t1.stop()

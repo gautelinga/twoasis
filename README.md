@@ -32,7 +32,7 @@ python3 -m pip install --user --break-system-packages --no-deps meshpy
 for repo in femtools partractools meshtools; do
     git clone https://github.com/gautelinga/$repo.git
 done
-git -C femtools checkout 2026.2.1
+git -C femtools checkout 2026.2.2
 git -C partractools checkout 2026.2.1
 git -C meshtools checkout 2026.2.0
 for repo in femtools partractools meshtools; do
@@ -95,7 +95,9 @@ In parallel, start it with MPI: `mpirun -np 4 twoasis TPfracStep problem=...`.
 
 Each run writes to a new numbered folder, `<folder>/data/1/`, `.../2/`, ...:
 
-- `Timeseries/`: the velocity, pressure and phase field as XDMF, for ParaView,
+- `Timeseries/`: the velocity, pressure and phase field as XDMF, for ParaView; the
+  pressure there (and in `Timestamps/`) is the physical pressure p + φg, while the
+  solver's own p, in `Checkpoint/`, is the physical pressure minus φg,
 - `Stats/`: scalars over time written by the problem (e.g. `tdata.dat`),
 - `Timestamps/` (the porous-medium and tube problems): a partrac case, with `boundaries.xdmf`, the walls partrac's `wall_upgrade` uses,
 - `Checkpoint/`: the latest state, for restarting.
@@ -106,7 +108,7 @@ To continue a run, point to its checkpoint and give a later end time:
 twoasis TPfracStep problem=PeriodicBubble2D restart_folder=<folder>/data/1/Checkpoint T=1.0
 ```
 
-The restart may use another number of processes.
+The restart may use another number of processes. It takes its parameters from the checkpoint, except the Krylov solvers' settings; the command line can still change any of them, while the problem file's values are those the run started with.
 
 ## Your own problem
 

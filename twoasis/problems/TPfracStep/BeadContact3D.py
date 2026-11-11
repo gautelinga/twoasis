@@ -79,7 +79,6 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="IPCS")
 
 

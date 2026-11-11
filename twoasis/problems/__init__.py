@@ -148,6 +148,12 @@ def problem_parameters(**NS_namespace):
     pass
 
 
+KRYLOV_SETTINGS = ("krylov_solvers", "velocity_krylov_solver", "pressure_krylov_solver",
+                   "phase_field_krylov_solver", "velocity_update_solver")
+# The velocity update's own settings that are part of the scheme, not of its solver.
+VELOCITY_UPDATE_SCHEME = ("method", "low_memory_version")
+
+
 def checkpoint_parameters(restart_folder):
     """The parameters stored with the checkpoint in restart_folder (params.dat),
     after putting back the checkpoint of an interrupted swap (recover_checkpoint)."""
@@ -170,10 +176,20 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     """
 
     # On a restart, start from the parameters stored with the checkpoint (they
-    # include t and tstep); the command line can still change any of them.
+    # include t and tstep); the command line can still change any of them. The
+    # Krylov solvers' settings stay the code's: they change the results only to
+    # the solvers' tolerances, and a checkpoint's may name a solver or
+    # preconditioner this code does not have, or one that converges worse. The
+    # velocity update's method is the checkpoint's, and a checkpoint that does not
+    # name the rotational update ran without it.
     if commandline_kwargs.get("restart_folder") is not None:
         restart_folder = path.abspath(commandline_kwargs["restart_folder"])
-        NS_parameters.update(checkpoint_parameters(restart_folder))
+        saved = dict(dict(rotational=False), **checkpoint_parameters(restart_folder))
+        NS_parameters.update({k: v for k, v in saved.items() if k not in KRYLOV_SETTINGS})
+        update = saved.get("velocity_update_solver", {})
+        NS_parameters["velocity_update_solver"] = dict(
+            NS_parameters["velocity_update_solver"],
+            **{k: update[k] for k in VELOCITY_UPDATE_SCHEME if k in update})
         commandline_kwargs = dict(commandline_kwargs, restart_folder=restart_folder)
 
     # A key that is neither a default nor set by the problem is a mistake (a

@@ -3,11 +3,11 @@
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 from .io import (
     check_if_kill, create_initial_folders, init_from_restart,
-    merge_visualization_files, merge_xml_files, save_checkpoint_solution_h5, save_solution,
+    merge_visualization_files, save_checkpoint_solution_h5, save_solution,
     save_tstep_solution_h5)
 from .utilities import (
-    A_cache, assemble_matrix, AssignedVectorFunction, compute_ind, DivRHS,
-    GradFunction, homogenize, Mat_cache_dict, OasisFunction,
+    assemble_matrix, AssignedVectorFunction, compute_ind, DivRHS,
+    GradFunction, homogenize, OasisFunction,
     PhiGradRHS, TPsource)
 import sys
 import ast
@@ -17,11 +17,11 @@ __all__ = [
     "parse_command_line",
     # io
     "check_if_kill", "create_initial_folders", "init_from_restart",
-    "merge_visualization_files", "merge_xml_files", "save_checkpoint_solution_h5", "save_solution",
+    "merge_visualization_files", "save_checkpoint_solution_h5", "save_solution",
     "save_tstep_solution_h5",
     # utilities
-    "A_cache", "assemble_matrix", "AssignedVectorFunction", "compute_ind",
-    "DivRHS", "GradFunction", "homogenize", "Mat_cache_dict",
+    "assemble_matrix", "AssignedVectorFunction", "compute_ind",
+    "DivRHS", "GradFunction", "homogenize",
     "OasisFunction", "PhiGradRHS", "TPsource"]
 
 # Parse command-line keyword arguments

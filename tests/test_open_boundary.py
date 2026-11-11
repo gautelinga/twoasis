@@ -6,7 +6,7 @@ tests are skipped without them).
 """
 import numpy as np
 
-from conftest import COLS, assert_close, golden_compare
+from conftest import COLS, assert_last_close, golden_compare
 
 
 def test_runs(pore_bdf, pore_ipcs):
@@ -28,6 +28,26 @@ def test_bdf_ipcs_agree(pore_bdf, pore_ipcs):
     A difference means one of them treats the open boundaries differently."""
     _, td_b = pore_bdf
     _, td_i = pore_ipcs
-    for name in ["u0m", "phim", "E_kin", "E_int"]:
-        # atol: tdata.dat holds 8 decimals
-        assert_close("IPCS " + name, td_i[-1, COLS[name]], td_b[-1, COLS[name]], 1e-6, 2e-8)
+    assert_last_close(td_i, td_b, [(name, 1e-6) for name in ["u0m", "phim", "E_kin", "E_int"]],
+                      "IPCS")
+
+
+def test_physical_pressure_at_the_ends(pore_bdf, pore_ipcs):
+    """The ends prescribe the physical pressure p + phi*g = 0 (PhysicalPressureBC,
+    followed every step): the last timestamp, which holds p + phi*g, is zero at
+    the ends' vertices."""
+    import dolfin
+    from femtools.boundaries import read
+    for wd, _ in (pore_bdf, pore_ipcs):
+        case = wd / "results" / "data" / "1" / "Timestamps"
+        mesh = dolfin.Mesh()
+        with dolfin.HDF5File(mesh.mpi_comm(), str(case / "mesh.h5"), "r") as h5:
+            h5.read(mesh, "mesh", False)
+        P = dolfin.Function(dolfin.FunctionSpace(mesh, "P", 1))
+        with dolfin.HDF5File(mesh.mpi_comm(), str(case / "up_5.h5"), "r") as h5:
+            h5.read(P, "p")
+        points, facets, markers = read(str(case / "boundaries.xdmf"))
+        ends = np.unique(facets[np.isin(markers, (2, 3))])
+        assert len(ends) > 0
+        assert max(abs(P(*points[i][:2])) for i in ends) < 1e-10
+        assert np.abs(P.vector().get_local()).max() > 1e-2

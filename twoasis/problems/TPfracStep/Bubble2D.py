@@ -1,5 +1,15 @@
-"""A bubble rising in a liquid column, test case 1 of the benchmark of Hysing et al.
-(2009), with no-slip walls at top and bottom and periodic sides.
+"""A bubble rising in a liquid column, the benchmark of Hysing et al. (2009), with
+no-slip walls at top and bottom and periodic sides (the benchmark has free-slip sides).
+
+case=1 (the default) is test case 1: densities 1000 and 100, viscosities 10 and 1,
+surface tension 24.5. case=2 is test case 2: densities 1000 and 1, viscosities 10 and
+0.1, surface tension 1.96. Case 2 needs the phase field and the chemical potential
+in P1, the pressure's space (phase_field_degree = chemical_potential_degree = 1):
+in P2 the capillary force -phi*grad(g) leaves bulk forces the P1 pressure cannot
+cancel, and in the light phase (density 1) they blow the run up within the first
+hundredth of a time unit, whatever the step. It also needs a finer mesh than case 1:
+at res=1/64 (epsilon = 1.3 cells) the run blows up at t ~ 0.37. case=2 sets
+res=1/128 and dt=0.001; any of its values can still be given on the command line.
 
 S. Hysing, S. Turek, D. Kuzmin, N. Parolini, E. Burman, S. Ganesan and L. Tobiska,
 Quantitative benchmark computations of two-dimensional bubble dynamics, Int. J. Numer.
@@ -31,8 +41,12 @@ def constrained_domain(Lx, **params):
     return PeriodicBox({0: (0, Lx)})
 
 
-def problem_parameters(NS_parameters, **NS_namespace):
+def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
+    case = commandline_kwargs.get("case", 1)
+    if case not in (1, 2):
+        raise ValueError("case={!r}: Hysing et al.'s test case 1 or 2".format(case))
     NS_parameters.update(
+        case=case,
         T=3.0,
         Lx=1,
         Ly=2,
@@ -55,12 +69,23 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="BDF",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=200,  # Number of iterations on first timestep
     )
+    if case == 2:
+        NS_parameters.update(
+            rho=[1000., 1.],
+            mu=[10., 0.1],
+            sigma=1.96,
+            res=1./128,
+            dt=0.001,
+            phase_field_degree=1,
+            chemical_potential_degree=1,
+            anderson_depth=2,
+            folder="bubble2d_case2_results",
+        )
 
 
 def mark_subdomains(subdomains, Ly, **NS_namespace):

@@ -4,45 +4,20 @@ __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import (assemble, Function, Constant,
-    TrialFunction,TestFunction, dx, Vector, Matrix,
-    FunctionSpace, Timer, div, Form, inner, grad,
-    VectorFunctionSpace, FunctionAssigner, DirichletBC, split)
+from femtools.fast_assembly import assemble, assemble_matrix
+from femtools.fast_bc import apply as apply_bc
+from femtools.mixed import AssignedVectorFunction, set_subfunction, subfunction, subspace
+from dolfin import (Function, Constant, TrialFunction, TestFunction, dx, Vector,
+    FunctionSpace, Timer, div, inner, grad, DirichletBC, split)
 
 # The UFL that dolfin was built with: ufl_legacy in recent installations, ufl in
 # older ones.
 try:
     from ufl_legacy import Coefficient
-    from ufl_legacy.tensors import ListTensor
     if not isinstance(Constant(0.), Coefficient):
         raise ImportError
 except ImportError:
     from ufl import Coefficient
-    from ufl.tensors import ListTensor
-
-# Create some dictionaries to hold work matrices
-class Mat_cache_dict(dict):
-    """Items in dictionary are matrices stored for efficient reuse."""
-
-    def __missing__(self, key):
-        form, bcs = key
-        A = assemble(form)
-        for bc in bcs:
-            bc.apply(A)
-
-        self[key] = A
-        return self[key]
-
-
-A_cache = Mat_cache_dict()
-
-
-def assemble_matrix(form, bcs=[]):
-    """Assemble matrix using cache register.
-    """
-    assert Form(form).rank() == 2
-    return A_cache[(form, tuple(bcs))]
-
 
 class OasisFunction(Function):
     """Function with more or less efficient projection methods
@@ -82,10 +57,10 @@ class OasisFunction(Function):
 
         self.sol = solver
         if method.lower() == "default":
-            self.A = A_cache[(Mass, tuple(bcs))]
+            self.A = assemble_matrix(Mass, bcs)
 
         elif method.lower() == "lumping":
-            self.A = A_cache[(Mass, tuple(bcs))]
+            self.A = assemble_matrix(Mass, bcs)
             if Space.ufl_element().degree() >= 2:
                 # Mass lumping is only accurate for P1; use the consistent mass
                 # matrix for higher degrees.
@@ -119,7 +94,7 @@ class OasisFunction(Function):
             self.assemble_rhs()
 
         for bc in self.bcs:
-            bc.apply(self.rhs)
+            apply_bc(bc, self.rhs)
 
         if self.method.lower() == "default":
             self.sol.solve(self.A, self.vector(), self.rhs)
@@ -152,7 +127,7 @@ class GradFunction(OasisFunction):
         Source = p_.function_space()
         if not low_memory_version:
             self.matvec = [
-                A_cache[(self.test * TrialFunction(Source).dx(i) * dx, ())], p_]
+                assemble_matrix(self.test * TrialFunction(Source).dx(i) * dx), p_]
 
         if solver_method.lower() == "gradient_matrix":
             from femtools.gradient import compiled_gradient_module
@@ -208,7 +183,7 @@ class DivRHS:
         self.rhs = assemble(self.form)
         V = u_[0].function_space()
         self.matvec = None if low_memory else [
-            (A_cache[(q * TrialFunction(V).dx(i) * dx, ())], u_[i])
+            (assemble_matrix(q * TrialFunction(V).dx(i) * dx), u_[i])
             for i in range(Q.mesh().geometry().dim())]
 
     def assemble_rhs(self):
@@ -231,32 +206,6 @@ class PhiGradRHS:
 
     def assemble_rhs(self):
         assemble(self.form, tensor=self.rhs)
-
-
-class AssignedVectorFunction(Function):
-    """Vector function used for postprocessing.
-
-    Assign data from ListTensor components using FunctionAssigner.
-    """
-
-    def __init__(self, u, name="Assigned Vector Function"):
-
-        self.u = u
-        assert isinstance(u, ListTensor)
-        V = u[0].function_space()
-        mesh = V.mesh()
-        family = V.ufl_element().family()
-        degree = V.ufl_element().degree()
-        constrained_domain = V.dofmap().constrained_domain
-        Vv = VectorFunctionSpace(mesh, family, degree,
-                                 constrained_domain=constrained_domain)
-
-        Function.__init__(self, Vv, name=name)
-        self.fa = [FunctionAssigner(Vv.sub(i), V) for i, _u in enumerate(u)]
-
-    def __call__(self):
-        for i, _u in enumerate(self.u):
-            self.fa[i].assign(self.sub(i), _u)
 
 
 class TPsource(Function):
@@ -285,53 +234,25 @@ def homogenize(bcs):
     return b
 
 
-class _Component:
-    """Component i of a mixed space W, collapsed into a space of its own, with a
-    Function on it and the assigners to it from W and back."""
-
-    def __init__(self, W, i):
-        self.space = W.sub(i).collapse()
-        self.f = Function(self.space)
-        self.get = FunctionAssigner(self.space, W.sub(i))
-        self.put = FunctionAssigner(W.sub(i), self.space)
-
-
-# Collapsing a subspace builds a dofmap and a FunctionAssigner its own maps, so
-# both are built once per mixed space and component and shared by every caller.
-_COMPONENTS = {}
+def phi_g(q_):
+    """phi*g at the dofs of the pressure space (an array of this process's
+    values). The capillary force being -phi*grad(g), the solver's pressure p is
+    the physical pressure minus phi*g. phi and g are each interpolated onto the
+    pressure space (femtools.fast_interpolation, a transfer matrix built once),
+    so phi*g is exact at its nodes."""
+    from femtools.fast_interpolation import values
+    Q = q_['p'].function_space()
+    phi, g = q_['phig'].split()
+    return values(phi, Q) * values(g, Q)
 
 
-def _component(W, i):
-    key = (W.id(), i)
-    if key not in _COMPONENTS:
-        _COMPONENTS[key] = _Component(W, i)
-    return _COMPONENTS[key]
-
-
-def subspace(W, i):
-    """The collapsed space of component i of the mixed space W (built once)."""
-    return _component(W, i).space
-
-
-def subfunction(q, i):
-    """Component i of the mixed Function q, copied into a Function on its
-    collapsed space (subspace). The same Function is returned, with the current
-    values, on every call for the same mixed space and component."""
-    c = _component(q.function_space(), i)
-    c.get.assign(c.f, q.sub(i))
-    return c.f
-
-
-def set_subfunction(q, i, value):
-    """Set component i of the mixed Function q to value: a Function on the
-    component's collapsed space (subspace), or anything else interpolate takes,
-    such as an Expression or a Function on another space, which is interpolated
-    there first."""
-    c = _component(q.function_space(), i)
-    if not (isinstance(value, Function) and value.function_space().id() == c.space.id()):
-        c.f.interpolate(value)
-        value = c.f
-    c.put.assign(q.sub(i), value)
+def physical_pressure(q_, out):
+    """The physical pressure p + phi*g into out, a Function on the pressure space;
+    returns out."""
+    x = out.vector()
+    x.set_local(q_['p'].vector().get_local() + phi_g(q_))
+    x.apply('insert')
+    return out
 
 
 def compute_ind(q_, phase=-1):

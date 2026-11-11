@@ -61,7 +61,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_interval=0.02,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="IPCS",
         AB_projection_pressure=False,
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep

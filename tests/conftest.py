@@ -9,7 +9,8 @@ It comes in two variants:
     P2 velocity and BDF2. This exercises the matched-property shortcuts.
   * BUBBLE_P1: unequal densities and viscosities, P1 velocity and BDF1, the
     settings of most production problems. This exercises the general
-    variable-coefficient path and the lumped-mass velocity update.
+    variable-coefficient path. P1/P1 passes converge slowly; capped at 30 a
+    step, the statistics are those of 200 to 8 decimals.
 
 SimplePore2D (PORE) covers open boundaries with pressure and phase-field
 Dirichlet conditions; its mesh is generated with meshes/lattice_mesh.py.
@@ -43,12 +44,13 @@ QUIET = dict(stat_interval=1, plot_interval=1000000, timestamps_interval=1000000
              save_step=1000000, checkpoint=1000000, folder="results")
 
 BUBBLE = dict(QUIET, problem="PeriodicBubble2D", dt=0.002, res=0.03125, epsilon=0.05,
-              R=0.25, M=0.000125, checkpoint=10)
+              R=0.25, M=0.000125, checkpoint=10, print_velocity_pressure_convergence=True)
 
-BUBBLE_P1 = dict(BUBBLE, rho=[1, 0.1], mu=[1, 0.1], velocity_degree=1, bdf_order=1)
+BUBBLE_P1 = dict(BUBBLE, rho=[1, 0.1], mu=[1, 0.1], velocity_degree=1, bdf_order=1,
+                 max_iter=30, iters_on_first_timestep=30)
 
 # Five steps of SimplePore2D on a coarse mesh (lattice_mesh.py -res 0.1).
-PORE = dict(QUIET, problem="SimplePore2D", res=0.1, dt=0.02, T=0.1)
+PORE = dict(QUIET, problem="SimplePore2D", res=0.1, dt=0.02, T=0.1, timestamps_interval=5)
 
 GOLDEN_FILE = Path(__file__).parent / "golden.json"
 
@@ -70,11 +72,18 @@ def run_twoasis(workdir, nprocs=1, timeout=900, **params):
                PYTHONPATH=str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     proc = subprocess.run(cmd, cwd=str(workdir), env=env,
                           capture_output=True, text=True, timeout=timeout)
+    (Path(workdir) / "stdout.txt").write_text(proc.stdout)
     if proc.returncode != 0:
         raise AssertionError(
             "twoasis exited with {} for {}\n--- stdout tail ---\n{}\n--- stderr tail ---\n{}".format(
                 proc.returncode, " ".join(cmd), proc.stdout[-3000:], proc.stderr[-3000:]))
     return proc
+
+
+def passes(workdir):
+    """The number of inner passes of the run in workdir, whose output prints one
+    line per pass (print_velocity_pressure_convergence)."""
+    return (Path(workdir) / "stdout.txt").read_text().count("Iter =")
 
 
 # The scheme conserves int(phi) exactly. What drift remains comes from the
@@ -158,19 +167,19 @@ def bubble_bdf_restarted(tmp_path_factory, bubble_bdf):
 
 
 @pytest.fixture(scope="session")
-def bubble_bdf_restarted_old_format(tmp_path_factory, bubble_bdf):
-    """Like bubble_bdf_restarted, from a checkpoint in the old layout: bare dof
-    vectors, and only the current level for the pressure and the phase field.
+def bubble_bdf_restarted_bare_vectors(tmp_path_factory, bubble_bdf):
+    """Like bubble_bdf_restarted, from a checkpoint of bare dof vectors, with
+    only the current level for the pressure and the phase field.
     Returns (workdir, tdata, stdout)."""
-    wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted_old_format", bubble_bdf)
+    wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted_bare_vectors", bubble_bdf)
     to_bare_vectors(ckpt, drop_previous=("p", "phig"))
     proc = run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
     return wd, load_tdata(wd), proc.stdout
 
 
 def to_bare_vectors(ckpt, drop_previous=()):
-    """Rewrite a serial checkpoint in the old layout, as HDF5File.write(vector)
-    stores it: each level a bare vector in dof order (on one process, the
+    """Rewrite a serial checkpoint as bare vectors, as HDF5File.write(vector)
+    stores them: each level a bare vector in dof order (on one process, the
     Function layout's vector_0), and no previous level for the fields in
     drop_previous."""
     if importlib.util.find_spec("h5py") is None:
@@ -256,6 +265,16 @@ def assert_close(label, value, reference, rtol, atol=0.):
     assert abs(value - reference) <= rtol * abs(reference) + atol, \
         "{} = {:.10g}, expected {:.10g} (rtol={}, atol={})".format(
             label, value, reference, rtol, atol)
+
+
+def assert_last_close(td, td_ref, rtols, label):
+    """Assert that two runs' statistics have the same shape, are finite, and
+    agree at the last step in the columns named in rtols, each to its rtol."""
+    assert td.shape == td_ref.shape
+    assert np.isfinite(td).all()
+    for name, rtol in rtols:
+        # atol: tdata.dat holds 8 decimals
+        assert_close(label + " " + name, td[-1, COLS[name]], td_ref[-1, COLS[name]], rtol, 2e-8)
 
 
 def assert_mass_conserved(td, tol):

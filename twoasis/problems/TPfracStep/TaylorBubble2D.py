@@ -58,7 +58,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=40,
         checkpoint=40,
         print_intermediate_info=40,
-        use_krylov_solvers=True,
         regulator=None,  # "V_c" or "y_cm"
         # The controller's state (forcing, vel_prev, y_cm_prev), set during the
         # run. It is saved with the checkpoint's parameters, so that a restart

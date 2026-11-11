@@ -7,16 +7,14 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
 from dolfin import DirichletBC, Expression, SubDomain
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
+from femtools.periodic import extent
 from twoasis.problems.TPfracStep.shared import (
-    load_mesh, makedirs_on_root, mesh_extrema, PeriodicBox, setup_stats, standard_stats,
-    write_tdata, write_timestamp, write_timestamps_info)
+    load_mesh, PeriodicBox, standard_stats, start_timestamps, write_tdata, write_timestamp)
 
 
 class Walls(SubDomain):
@@ -57,24 +55,24 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="BDF",
         bdf_order=1,
         AB_projection_pressure=False,
         max_iter=20,                 # Number of inner pressure velocity iterations on timestep
         max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=100,  # Number of iterations on first timestep
+        velocity_tolerance_factor=0.1,
     )
 
 
 def constrained_domain(mesh, **params):
-    zmin, zmax = (x[2] for x in mesh_extrema(mesh))
+    zmin, zmax = (x[2] for x in extent(mesh))
     return PeriodicBox({2: (zmin, zmax)})
 
 
 def mark_subdomains(subdomains, mesh, **NS_namespace):
     """Mark the wall 1 and add the tube's ends z0, z1 and radius R to the namespace."""
-    lo, hi = mesh_extrema(mesh)
+    lo, hi = extent(mesh)
     R = hi[0]
     Walls(R, mesh.hmax()**2 / R).mark(subdomains, 1)
     return dict(z0=lo[2], z1=hi[2], R=R)
@@ -102,19 +100,9 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, z0, z1, Lb, Rb, **NS_na
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
-                   phase_field_degree, AssignedVectorFunction, constrained_domain, subdomains, **NS_namespace):
-    stats = setup_stats(mesh, newfolder)
-    timestampsfolder = path.join(newfolder, "Timestamps")
-    uv = AssignedVectorFunction(u_, name="u")
-    makedirs_on_root(timestampsfolder)
-    write_timestamps_info(timestampsfolder, mesh,
-                          {key: NS_namespace[key] for key in
-                           ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"]},
-                          velocity_degree, pressure_degree, phase_field_degree,
-                          constrained_domain, subdomains)
-    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    return dict(uv=uv, timestampsfolder=timestampsfolder, **stats)
+def pre_solve_hook(**NS_namespace):
+    return start_timestamps(
+        ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"], **NS_namespace)
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,

@@ -11,17 +11,18 @@ variants) checking:
   * Naive, the plain reference implementation of IPCS's scheme, agrees with
     IPCS to solver tolerance,
   * checkpoint/restart reproduces an uninterrupted run, also on another number
-    of processes and from an old checkpoint (bare vectors, without the previous
-    time level), leaves no temporary checkpoint folders, and refuses an old
-    checkpoint on another number of processes.
+    of processes, in both directions, and from a checkpoint of bare vectors
+    without the previous time level; leaves no temporary checkpoint folders;
+    and refuses a checkpoint of bare vectors on another number of processes.
 """
 import shutil
 from os import path
+from pathlib import Path
 
 import numpy as np
 import pytest
 
-from conftest import (BUBBLE, BUBBLE_P1, COLS, MASS_TOL, QUIET, assert_close,
+from conftest import (BUBBLE, BUBBLE_P1, COLS, MASS_TOL, QUIET, assert_close, assert_last_close,
                       assert_mass_conserved, copy_run, golden_compare, load_tdata,
                       require_mpi, run_twoasis, to_bare_vectors)
 
@@ -66,8 +67,7 @@ def test_bdf_ipcs_agree(request, variant, rtols):
     """Same case, different time discretizations."""
     _, td_b = request.getfixturevalue(variant + "_bdf")
     _, td_i = request.getfixturevalue(variant + "_ipcs")
-    for name, rtol in rtols:
-        assert_close("IPCS " + name, td_i[-1, COLS[name]], td_b[-1, COLS[name]], rtol)
+    assert_last_close(td_i, td_b, rtols, "IPCS")
 
 
 def test_naive_ipcs_agree(tmp_path):
@@ -77,9 +77,11 @@ def test_naive_ipcs_agree(tmp_path):
     they are written with. The case has unequal properties, so the density and
     viscosity weighting and the grad(mu) term are exercised. A fixed number of
     inner iterations (max_error=0) makes both solvers take the same steps; it is
-    cut to 10 to keep Naive fast, which is enough for these three steps.
+    cut to 10 to keep Naive fast, which is enough for these three steps. Naive
+    has no rotational pressure update, so IPCS runs without it.
     """
-    params = dict(BUBBLE_P1, T=0.006, max_iter=10, iters_on_first_timestep=10, max_error=0)
+    params = dict(BUBBLE_P1, T=0.006, max_iter=10, iters_on_first_timestep=10, max_error=0,
+                  rotational=False)
     td = {}
     for solver in ("Naive", "IPCS"):
         wd = tmp_path / solver
@@ -207,25 +209,25 @@ def test_restart_on_another_process_count(tmp_path_factory, bubble_bdf, bubble_b
         assert_close("np2 restart " + name, td[-1, COLS[name]], td_s[-1, COLS[name]], 1e-4, 1e-7)
 
 
-def test_old_checkpoint_on_another_process_count(tmp_path_factory, bubble_bdf):
-    """An old checkpoint holds bare vectors in the dof order of the run that
+def test_bare_vectors_on_another_process_count(tmp_path_factory, bubble_bdf):
+    """A checkpoint of bare vectors holds them in the dof order of the run that
     wrote it, so a restart on another number of processes stops with a clear
     error."""
     require_mpi(2)
-    wd, ckpt = copy_run(tmp_path_factory, "restart_old_np2", bubble_bdf)
+    wd, ckpt = copy_run(tmp_path_factory, "restart_bare_np2", bubble_bdf)
     to_bare_vectors(ckpt)
     with pytest.raises(AssertionError, match="written by 1 processes as bare vectors"):
         run_twoasis(wd, nprocs=2, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
 
 
-def test_restart_old_format(bubble_bdf_restarted_old_format, bubble_bdf_long):
-    """Restart from an old checkpoint: bare vectors, without the previous level
-    of p and phi.
+def test_restart_from_bare_vectors(bubble_bdf_restarted_bare_vectors, bubble_bdf_long):
+    """Restart from a checkpoint of bare vectors, without the previous level of
+    p and phi.
 
     The run must notice the missing level, take a first-order step, and then
     continue close to the uninterrupted run (which used BDF2 throughout).
     """
-    _, td_r, stdout = bubble_bdf_restarted_old_format
+    _, td_r, stdout = bubble_bdf_restarted_bare_vectors
     _, td_l = bubble_bdf_long
     assert "BDF1 on first timestep: True" in stdout
     assert td_r.shape[0] == 20
@@ -235,8 +237,9 @@ def test_restart_old_format(bubble_bdf_restarted_old_format, bubble_bdf_long):
         assert_close("restarted " + name, td_r[-1, COLS[name]], td_l[-1, COLS[name]], rtol)
 
 
-def test_parallel(tmp_path, bubble_bdf):
-    """Two-rank run: completes, conserves mass, agrees with serial."""
+def test_parallel(tmp_path, bubble_bdf, bubble_bdf_long):
+    """Two-rank run: completes, conserves mass, agrees with serial; its
+    checkpoint, restarted in serial, continues as the uninterrupted run does."""
     require_mpi(2)
     run_twoasis(tmp_path, nprocs=2, solver="BDF", T=0.02, **BUBBLE)
     td = load_tdata(tmp_path)
@@ -245,6 +248,15 @@ def test_parallel(tmp_path, bubble_bdf):
     _, td_s = bubble_bdf
     for name in ["u0m", "phim", "E_int"]:
         assert_close("np2 " + name, td[-1, COLS[name]], td_s[-1, COLS[name]], 1e-3, 1e-7)
+    ckpt = Path(tmp_path) / "results" / "data" / "1" / "Checkpoint"
+    proc = run_twoasis(tmp_path, solver="BDF", T=0.024, restart_folder=str(ckpt), **BUBBLE)
+    assert "BDF1 on first timestep: False" in proc.stdout
+    td = load_tdata(tmp_path)
+    _, td_l = bubble_bdf_long
+    row = list(td_l[:, 0]).index(td[-1, 0])
+    for name in ["u0m", "phim", "E_int"]:
+        assert_close("np2 -> serial " + name, td[-1, COLS[name]], td_l[row, COLS[name]],
+                     1e-3, 1e-7)
 
 
 @pytest.mark.parametrize("solver", ["BDF", "IPCS"])

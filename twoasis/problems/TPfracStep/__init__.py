@@ -25,12 +25,26 @@ NS_parameters.update(
     # only if initialize() (or the checkpoint) provides the solution at t - 2*dt.
     initial_step_1st_order=None,
     constant_poisson_coefficient=False,
+    # Rotational pressure update (BDF and IPCS): after each pressure solve,
+    # p = p* + phi - mu*div(u*), with u* the tentative velocity and phi the
+    # pressure increment. It removes most of the boundary layer that the pressure
+    # equation's Neumann condition leaves at walls and prescribed velocities, and
+    # makes the inner iterations converge where they otherwise stall. The Naive
+    # solver has none.
+    rotational=True,
+    # Anderson acceleration of the inner passes on the pressure, with this many
+    # earlier passes (0: off).
+    anderson_depth=0,
+    # For problems whose inner passes iterate: a tentative-velocity solve stops
+    # once its residual has fallen by this factor (e.g. 0.1) from the one it
+    # starts from (0: the solver's own relative tolerance). It pays where the
+    # velocity solves dominate. With anderson_depth it takes more passes.
+    velocity_tolerance_factor=0,
     quadrature_degree=None,        # quadrature degree for all forms; None means 2*velocity_degree + 1
 
     # Phase field parameters
     phase_field_degree=None,         # degree of phi; None means velocity_degree
     chemical_potential_degree=None,  # degree of g; None means phase_field_degree
-    phase_field_fieldsplit=False,  # use a Schur fieldsplit preconditioner for the (phi, g) solve
 
     M=0.001,
     epsilon=0.04,
@@ -52,7 +66,6 @@ NS_parameters.update(
                                 # (e.g. 1e-3: integral statistics change by ~1e-5 or less;
                                 # not for small velocities measured pointwise)
     iters_on_first_timestep=2,  # Number of iterations on each of the first 10 timesteps
-    use_krylov_solvers=True,    # Otherwise use LU-solver
     print_intermediate_info=10,
     print_velocity_pressure_convergence=False,
 
@@ -81,29 +94,32 @@ NS_parameters.update(
         nonzero_initial_guess=True,
         absolute_tolerance=1e-12),      # small, so the relative tolerance decides when to stop
 
+    # Each solver's solver_type and preconditioner_type take PETSc's names
+    # (dolfin's, such as 'bicgstab' or 'hypre_amg', are translated), and its
+    # petsc_options any further PETSc options for that solver, e.g.
+    # velocity_krylov_solver='{"petsc_options": {"sub_pc_type": "icc"}}'.
+    # 'bjacobi' is block Jacobi with ILU(0) on each process's block.
+
     # Velocity update
     velocity_update_solver=dict(
         method='default',  # consistent mass matrix; 'lumping' lumps it for P1 (P2 and higher
                            # always use the consistent one)
         solver_type='cg',
-        preconditioner_type='jacobi',
+        preconditioner_type='jacobi',  # optimal for a mass matrix, on any number of processes
         low_memory_version=False),
 
     velocity_krylov_solver=dict(
         solver_type='bicgstab',
-        preconditioner_type='jacobi'),
+        preconditioner_type='bjacobi'),
 
     pressure_krylov_solver=dict(
         solver_type='gmres',
-        preconditioner_type='hypre_amg'),  # scales better than 'petsc_amg' on large meshes
-
-    scalar_krylov_solver=dict(
-        solver_type='bicgstab',
-        preconditioner_type='jacobi'),
+        preconditioner_type='hypre_amg'),  # scales better than 'petsc_amg' on large meshes;
+                                           # femtools.ksp.BOOMERAMG_3D's settings in 3D
 
     phase_field_krylov_solver=dict(
-        solver_type='gmres',
-        preconditioner_type='jacobi')
+        solver_type='fgmres',
+        preconditioner_type='schur')  # PhaseFieldSchur: iterations independent of h and dt
 )
 
 # Default relative tolerance and iteration limit for each Krylov solver, used
@@ -114,9 +130,7 @@ KRYLOV_TOLERANCES = dict(
     velocity_update_solver=dict(relative_tolerance=1e-8, maximum_iterations=200),
     # AMG converges in a few iterations; needing more means it has stalled.
     pressure_krylov_solver=dict(relative_tolerance=1e-6, maximum_iterations=100),
-    # Tight, since it sets the accuracy of the interface. Jacobi is a weak
-    # preconditioner for this system; with phase_field_fieldsplit ~100
-    # iterations are enough.
+    # Tight, since it sets the accuracy of the interface.
     phase_field_krylov_solver=dict(relative_tolerance=1e-8, maximum_iterations=1000),
 )
 

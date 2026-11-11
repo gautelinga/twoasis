@@ -15,16 +15,15 @@ __copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import path
-
 import numpy as np
 from dolfin import assemble, Constant, DirichletBC, Expression, Function, interpolate
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
+from femtools.periodic import extent
 from twoasis.problems.TPfracStep.shared import (
-    Faces, load_mesh, makedirs_on_root, mark_walls, mesh_extrema, PeriodicBox, setup_stats,
-    standard_stats, write_tdata, write_timestamp, write_timestamps_info)
+    Faces, load_mesh, mark_walls, PeriodicBox, standard_stats, start_timestamps,
+    write_tdata)
 
 
 
@@ -57,7 +56,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         save_step=10,
         checkpoint=10,
         print_intermediate_info=10,
-        use_krylov_solvers=True,
         solver="BDF",  # solver="IPCS",
         bdf_order=1,
         AB_projection_pressure=False,
@@ -68,14 +66,14 @@ def problem_parameters(NS_parameters, **NS_namespace):
 
 
 def constrained_domain(mesh, **params):
-    x_min, x_max = mesh_extrema(mesh)
+    x_min, x_max = extent(mesh)
     return PeriodicBox({0: (x_min[0], x_max[0]), 1: (x_min[1], x_max[1])})
 
 
 def mark_subdomains(subdomains, mesh, **NS_namespace):
     """Mark the obstacles 1, the bottom 2 and the top 3, and add the mesh's
     bounding box x_min, x_max to the namespace."""
-    x_min, x_max = mesh_extrema(mesh)
+    x_min, x_max = extent(mesh)
     mark_walls(subdomains, mesh)
     Faces(2, x_min[2]).mark(subdomains, 2)
     Faces(2, x_max[2]).mark(subdomains, 3)
@@ -152,20 +150,10 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x_min, x_max, injected_
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(tstep, t, q_, p_, mesh, u_, newfolder, velocity_degree, pressure_degree,
-                   phase_field_degree, AssignedVectorFunction, constrained_domain, subdomains, ds, **NS_namespace):
-    stats = setup_stats(mesh, newfolder)
+def pre_solve_hook(ds, **NS_namespace):
     area = [assemble(Constant(1.) * ds(i)) for i in (2, 3)]  # bottom, top
-    timestampsfolder = path.join(newfolder, "Timestamps")
-    uv = AssignedVectorFunction(u_, name="u")
-    makedirs_on_root(timestampsfolder)
-    write_timestamps_info(timestampsfolder, mesh,
-                          {key: NS_namespace[key] for key in
-                           ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"]},
-                          velocity_degree, pressure_degree, phase_field_degree,
-                          constrained_domain, subdomains)
-    write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)
-    return dict(uv=uv, timestampsfolder=timestampsfolder, area=area, **stats)
+    return dict(start_timestamps(
+        ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"], **NS_namespace), area=area)
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, area, statsfolder,

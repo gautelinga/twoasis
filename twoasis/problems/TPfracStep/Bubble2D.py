@@ -1,5 +1,6 @@
 """A bubble rising in a liquid column, the benchmark of Hysing et al. (2009), with
-no-slip walls at top and bottom and periodic sides (the benchmark has free-slip sides).
+no-slip walls at top and bottom and periodic sides, or with periodic=False free-slip
+side walls as in the benchmark.
 
 case=1 (the default) is test case 1: densities 1000 and 100, viscosities 10 and 1,
 surface tension 24.5. case=2 is test case 2: densities 1000 and 1, viscosities 10 and
@@ -23,22 +24,24 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
+from os import path
+
 import numpy as np
-from twoasis.backend import DirichletBC, dx, Expression
+from twoasis.backend import DirichletBC, dx, Expression, MPI
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    Faces, gravitational_energy, PeriodicBox, phase_moments, rectangle_mesh,
-    setup_stats, standard_stats, write_tdata)
+    append_row, Faces, gravitational_energy, hysing_quantities, PeriodicBox, phase_moments,
+    rectangle_mesh, setup_stats, standard_stats, write_tdata)
 
 
 def mesh(Lx, Ly, res, **params):
     return rectangle_mesh(Lx, Ly, res)
 
 
-def constrained_domain(Lx, **params):
-    return PeriodicBox({0: (0, Lx)})
+def constrained_domain(Lx, periodic=True, **params):
+    return PeriodicBox({0: (0, Lx)}) if periodic else None
 
 
 def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
@@ -47,6 +50,8 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         raise ValueError("case={!r}: Hysing et al.'s test case 1 or 2".format(case))
     NS_parameters.update(
         case=case,
+        periodic=True,  # periodic sides; False: free-slip side walls, as in the benchmark
+        hysing_stats=True,  # Stats/benchmark.dat: Hysing's quantities (shared.hysing_quantities)
         T=3.0,
         Lx=1,
         Ly=2,
@@ -88,17 +93,21 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         )
 
 
-def mark_subdomains(subdomains, Ly, **NS_namespace):
+def mark_subdomains(subdomains, Lx, Ly, periodic=True, **NS_namespace):
     Faces(1, 0, Ly).mark(subdomains, 2)  # top and bottom walls
+    if not periodic:
+        Faces(0, 0, Lx).mark(subdomains, 4)  # the sides: free-slip walls
 
 
 def contact_angles(theta, **NS_namespace):
     return [(theta, 2)]
 
 
-def create_bcs(V, subdomains, **NS_namespace):
+def create_bcs(V, subdomains, periodic=True, **NS_namespace):
     bc_u_tb = DirichletBC(V, 0, subdomains, 2)
-    return dict(u0=[bc_u_tb],
+    # Free slip on the sides: no flow through them, the tangential velocity free.
+    sides = [] if periodic else [DirichletBC(V, 0, subdomains, 4)]
+    return dict(u0=[bc_u_tb] + sides,
                 u1=[bc_u_tb],
                 p=[],
                 phig=[])
@@ -121,14 +130,22 @@ def pre_solve_hook(mesh, newfolder, **NS_namespace):
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, g0, statsfolder,
-                  stat_interval, mesh, **NS_namespace):
+                  stat_interval, mesh, hysing_stats=False, **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, the mean velocity (u0m, u1m) and phase
     field (phim), the energies per volume (kinetic, interface gradient and
     double-well parts, gravitational), and the bubble's (phi = -1) area, height
-    and vertical velocity."""
+    and vertical velocity. With hysing_stats, also to Stats/benchmark.dat: tstep, t
+    and the benchmark's bubble area, centroid height, rise velocity and circularity
+    (shared.hysing_quantities)."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         entries = standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
         entries.append(gravitational_energy(rho_, g0, volume, mesh))
         vol_c, (_, y_cm), (_, V_c) = phase_moments(q_, mesh, dx(domain=mesh))
         write_tdata(statsfolder, tstep, t, entries + [vol_c, y_cm, V_c])
+        if hysing_stats:
+            values = hysing_quantities(q_, phi_, mesh, dx(domain=mesh))
+            if MPI.rank(MPI.comm_world) == 0:
+                append_row(path.join(statsfolder, "benchmark.dat"), tstep,
+                           ("{:d} {:.8f} " + " ".join("{:.10e}" for _ in values) + "\n").format(
+                               tstep, t, *values))

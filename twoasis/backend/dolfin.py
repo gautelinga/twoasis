@@ -25,7 +25,7 @@ names with the same behaviour for what the driver (TPfracStep.py), the solvers
     UFL, more   conditional, cos, exp, ge, gt, le, lt, sin, sqrt
     problems    Mesh, RectangleMesh, Point, Expression, SubDomain, SpatialCoordinate, Faces,
                 read_mesh_file, write_mesh_h5, extent, mark_walls (meshes, boxes, walls),
-                UnitSquareMesh, mesh_coordinates (writable), hmax
+                UnitSquareMesh, BoxMesh, mesh_coordinates (writable), hmax
                 (femtools.box), PeriodicBox (femtools.periodic.periodic_box_from_bounds)
     helpers     function_space, space_mesh, mesh_comm, geometric_dimension, element_degree
                 (dolfin's methods that are DOLFINx properties), owned_dofs, fixed_dofs
@@ -40,7 +40,7 @@ from dolfin import (
     dx, Expression, FacetNormal, FiniteElement, Function, FunctionSpace, grad, IndexMap, inner,
     lhs, list_timings, Matrix, Measure, Mesh, MixedElement, MPI, nabla_grad, norm, normalize,
     parameters, PETScKrylovSolver, Point, RectangleMesh, rhs, solve, SpatialCoordinate, split,
-    UnitSquareMesh,
+    UnitSquareMesh, BoxMesh,
     TestFunction, TestFunctions, Timer, TimingClear, TimingType, TrialFunction, TrialFunctions,
     Vector, XDMFFile)
 
@@ -282,7 +282,7 @@ __all__ = [
     "write_dof_tables", "write_function_h5", "space_id", "read_function_h5",
     "read_vector_function_h5", "read_series_step", "read_vector_series_step",
     "weighted_gradient_matrix",
-    "read_mesh_file", "write_mesh_h5", "extent", "mark_walls", "UnitSquareMesh",
+    "read_mesh_file", "write_mesh_h5", "extent", "mark_walls", "UnitSquareMesh", "BoxMesh",
     "mesh_coordinates", "hmax",
     "Mesh", "RectangleMesh", "Point", "Expression", "SpatialCoordinate", "Faces", "PeriodicBox",
     "SubDomain", "conditional", "cos", "exp", "ge", "gt", "le", "lt", "sin", "sqrt",

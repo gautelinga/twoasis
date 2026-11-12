@@ -263,6 +263,15 @@ def read_mesh_file(fname, periodic=None):
     return mesh
 
 
+def BoxMesh(p0, p1, nx, ny, nz):
+    """dolfin's BoxMesh(Point, Point, nx, ny, nz): the same vertices and tetrahedra
+    (DOLFINx's create_box numbers them as dolfin does), on MPI.comm_world."""
+    return dolfinx.mesh.create_box(MPI.comm_world, [[p0[0], p0[1], p0[2]],
+                                                     [p1[0], p1[1], p1[2]]],
+                                   [int(nx), int(ny), int(nz)],
+                                   dolfinx.mesh.CellType.tetrahedron)
+
+
 def UnitSquareMesh(nx, ny, diagonal="right"):
     """dolfin's UnitSquareMesh(nx, ny, diagonal) (RectangleMesh of the unit square)."""
     return RectangleMesh(Point(0., 0.), Point(1., 1.), nx, ny, diagonal)
@@ -1355,7 +1364,7 @@ __all__ = [
     "write_dof_tables", "write_function_h5", "space_id",
     "read_function_h5", "read_vector_function_h5", "read_series_step",
     "read_vector_series_step", "weighted_gradient_matrix",
-    "read_mesh_file", "write_mesh_h5", "extent", "mark_walls", "UnitSquareMesh",
+    "read_mesh_file", "write_mesh_h5", "extent", "mark_walls", "UnitSquareMesh", "BoxMesh",
     "mesh_coordinates", "hmax",
     "Mesh", "RectangleMesh", "Point", "Expression", "SpatialCoordinate", "Faces", "PeriodicBox",
     "SubDomain", "conditional", "cos", "exp", "ge", "gt", "le", "lt", "sin", "sqrt",

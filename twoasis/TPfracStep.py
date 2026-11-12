@@ -337,6 +337,13 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
         print_velocity_pressure_info(**vars())
 
+    # The passes stopped at their limit without converging: worth knowing, since the
+    # step then carries the velocity-pressure splitting error of its last pass.
+    if udiff[0] > max(max_error, max_error_rel * unorm[0]):
+        info_red("Warning: timestep {}: {} inner passes without converging (velocity change "
+                 "{:.2e}, tolerance {:.2e})".format(tstep, inner_iter, udiff[0],
+                                                    max(max_error, max_error_rel * unorm[0])))
+
     # Update velocity
     t0 = OasisTimer("Velocity update")
     with tel.block("velocity_update"):

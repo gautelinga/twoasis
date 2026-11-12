@@ -15,12 +15,12 @@ from os import path
 import numpy as np
 from twoasis.backend import (
     assemble, Constant, DirichletBC, dx, Expression, Function, function_space, interpolate,
-    read_function_h5, read_vector_function_h5, space_mesh)
+    MPI, read_function_h5, read_vector_function_h5, space_mesh)
 
 from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_blue, info_red
 from twoasis.problems.TPfracStep.shared import (
-    centred, load_mesh, mark_walls, PeriodicBox, standard_stats, start_timestamps,
+    append_row, centred, load_mesh, mark_walls, PeriodicBox, standard_stats, start_timestamps,
     write_tdata, write_timestamp)
 
 
@@ -155,13 +155,20 @@ def pre_solve_hook(**NS_namespace):
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,
-                  timestampsfolder, stat_interval, timestamps_interval, uv, mesh, **NS_namespace):
+                  timestampsfolder, stat_interval, timestamps_interval, uv, mesh, ds,
+                  **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim and the energies per
-    volume (kinetic, interface gradient and double-well parts); and u, p and phi
-    to Timestamps/ every timestamps_interval steps."""
+    volume (kinetic, interface gradient and double-well parts); to Stats/wetting.dat:
+    tstep, t and the fraction of the obstacles' walls the phase phi = +1 wets (the
+    phase theta is measured through); and u, p and phi to Timestamps/ every
+    timestamps_interval steps."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         write_tdata(statsfolder, tstep, t,
                     standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh))
+        wet = assemble(0.5 * (1 + phi_) * ds(1)) / assemble(Constant(1.) * ds(1))
+        if MPI.rank(MPI.comm_world) == 0:
+            append_row(path.join(statsfolder, "wetting.dat"), tstep,
+                       "{:d} {:.8f} {:.10e}\n".format(tstep, t, wet))
     if tstep % timestamps_interval == 0:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)

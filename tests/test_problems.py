@@ -13,7 +13,8 @@ import sys
 import numpy as np
 import pytest
 
-from conftest import QUIET, REPO_ROOT, load_tdata, require_mpi, run_twoasis
+from conftest import (MASS_TOL, QUIET, REPO_ROOT, assert_mass_conserved, load_tdata, require_mpi,
+                      run_twoasis)
 
 # Problems that build their own mesh. PeriodicBubble2D (the bubble fixtures),
 # TaylorBubble2D (test_taylorbubble_smoke) and TaylorGreen2D (test_convergence)
@@ -214,3 +215,21 @@ def test_partrac_case_walls(tmp_path):
                                 for cell in cells)
     assert facets[1] == facets[3]
     print("wall facets:", expected)
+
+
+def test_porous2d_wetting_direction(tmp_path):
+    """The contact angle drives the wetting the right way (twoasisx's Porous2D gate):
+    from the same start, theta = pi/4 (phase phi = +1 wets the obstacles) raises the
+    fraction of the walls that phase covers and theta = 3*pi/4 lowers it, and the mass
+    of each phase is kept."""
+    params = dict(QUIET, problem="Porous2D", T=0.25, **with_mesh(tmp_path, "Porous2D"))
+    change = {}
+    for theta in (np.pi / 4, 3 * np.pi / 4):
+        wd = tmp_path / "theta{:.3f}".format(theta)
+        wd.mkdir()
+        (wd / "meshes").symlink_to(tmp_path / "meshes")
+        run_twoasis(wd, theta=theta, **params)
+        wet = np.loadtxt(wd / "results" / "data" / "1" / "Stats" / "wetting.dat", ndmin=2)
+        change[theta] = wet[-1, 2] - wet[0, 2]
+        assert_mass_conserved(load_tdata(wd), MASS_TOL)
+    assert change[np.pi / 4] > 0.05 and change[3 * np.pi / 4] < -0.05, change

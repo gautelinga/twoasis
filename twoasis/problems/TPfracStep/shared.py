@@ -89,6 +89,29 @@ def phase_moments(q_, mesh, dx, phase=-1):
     return vol, centroid, velocity
 
 
+def hysing_quantities(q_, phi_, mesh, dx, axis=None):
+    """The benchmark quantities of Hysing et al. (2009) for the bubble phi = -1, with
+    the linear indicator 1 - c, c = (1 + phi)/2, of the diffuse-interface benchmarks:
+    its area A (in 3D its volume), centroid along `axis` (default the last, the rise
+    axis) and mean velocity along it, and its circularity 2*sqrt(pi*A)/P_b, P_b its
+    perimeter by the co-area formula (the integral of |grad c|) -- in 3D its
+    sphericity pi^(1/3) (6 A)^(2/3) / S_b, S_b its surface area by the same formula
+    (Adelsberger et al.'s 3D benchmark). All processes must call it (it assembles)."""
+    from twoasis.backend import inner, sqrt
+    X = SpatialCoordinate(mesh)
+    dim = geometric_dimension(mesh)
+    axis = dim - 1 if axis is None else axis
+    bubble = 0.5 * (1.0 - phi_)
+    c = 0.5 * (1.0 + phi_)
+    A = assemble(bubble * dx)
+    centroid = assemble(X[axis] * bubble * dx) / A
+    velocity = assemble(q_["u{}".format(axis)] * bubble * dx) / A
+    surface = assemble(sqrt(inner(grad(c), grad(c))) * dx)
+    shape = (2.0 * np.sqrt(np.pi * A) if dim == 2
+             else np.pi ** (1. / 3.) * (6.0 * A) ** (2. / 3.)) / surface
+    return A, centroid, velocity, shape
+
+
 def makedirs_on_root(*folders):
     """Create folders (on rank 0 only) if they do not exist."""
     if MPI.rank(MPI.comm_world) == 0:

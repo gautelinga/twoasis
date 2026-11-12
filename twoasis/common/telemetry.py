@@ -13,7 +13,8 @@ Stats/telemetry.jsonl (rank 0):
 the largest over the processes. `solvers` are the Krylov solvers by role (velocity,
 pressure, phase_field, projection): solves, iterations, preconditioner setups (PETSc's
 PCSetUp events in the solver's log stage, nested ones included, such as the Schur
-preconditioner's inner AMG) and the time in their solves. Both backends' solvers are
+preconditioner's inner AMG), the time in their solves and the part of it in those
+setups (pc_seconds). Both backends' solvers are
 PETSc KSPs, so the counts mean the same on each.
 
 Telemetry off (the default), nothing is wrapped or timed: `solver` returns the solver
@@ -96,6 +97,7 @@ class Telemetry:
         self._stages = {}
         self._solvers = {}
         self._pc_before = {}
+        self._pc_time_before = {}
         self._blocks = dict.fromkeys(BLOCKS, 0.0)
         self._file = open(path, "w") if comm.rank == 0 else None
         self._t0 = None
@@ -123,9 +125,12 @@ class Telemetry:
     def end_step(self, tstep, t, passes):
         wall = time.perf_counter() - self._t0
         roles = sorted(self._solvers)
-        pcs = [self._pcsetup.getPerfInfo(self._stages[r])["count"] for r in roles]
+        info = [self._pcsetup.getPerfInfo(self._stages[r]) for r in roles]
+        pcs = [i["count"] for i in info]
+        pc_times = [i["time"] for i in info]
         local = np.array([wall] + list(self._blocks.values())
-                         + [self._solvers[r]["seconds"] for r in roles])
+                         + [self._solvers[r]["seconds"] for r in roles]
+                         + [t - self._pc_time_before.get(r, 0.0) for r, t in zip(roles, pc_times)])
         from mpi4py import MPI
         # Elementwise: the pickle-based allreduce would compare whole arrays.
         times = np.empty_like(local)
@@ -134,15 +139,18 @@ class Telemetry:
             line = dict(tstep=int(tstep), t=float(t), passes=int(passes), wall=times[0],
                         blocks=dict(zip(self._blocks, times[1:1 + len(self._blocks)])),
                         solvers={})
+            nb = 1 + len(self._blocks)
             for k, (r, pc) in enumerate(zip(roles, pcs)):
                 s = self._solvers[r]
                 line["solvers"][r] = dict(solves=s["solves"], its=s["its"],
                                           pc_setups=int(pc - self._pc_before[r]),
-                                          seconds=times[1 + len(self._blocks) + k])
+                                          seconds=times[nb + k],
+                                          pc_seconds=times[nb + len(roles) + k])
             self._file.write(json.dumps(line) + "\n")
             self._file.flush()
-        for r, pc in zip(roles, pcs):
+        for r, pc, t in zip(roles, pcs, pc_times):
             self._pc_before[r] = pc
+            self._pc_time_before[r] = t
             self._solvers[r].update(solves=0, its=0, seconds=0.0)
         self._blocks = dict.fromkeys(self._blocks, 0.0)
 

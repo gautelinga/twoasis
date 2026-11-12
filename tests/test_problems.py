@@ -120,7 +120,9 @@ def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
                 restart_folder="results/data/1/Checkpoint", **params)
     td, td_ref = load_tdata(tmp_path), load_tdata(reference)
     assert td.shape == td_ref.shape
-    np.testing.assert_allclose(td, td_ref, rtol=1e-6, atol=1e-10)
+    # atol: one unit of the 8th decimal the statistics are printed with, which the
+    # order of a parallel sum can flip
+    np.testing.assert_allclose(td, td_ref, rtol=1e-6, atol=1.1e-8)
 
 
 def test_bubble_without_gravity(tmp_path):
@@ -187,7 +189,8 @@ def test_partrac_case_walls(tmp_path):
     from femtools.boundaries import read
     from partractools.case import read_params
     from twoasis.problems.TPfracStep.CylArr2D import get_fname
-    from twoasis.problems.TPfracStep.shared import load_mesh, mark_walls
+    # The expected walls from dolfin, whichever backend the runs are on
+    from twoasis.backend.dolfin import mark_walls, read_mesh_file as load_mesh
     require_mpi(3)
     params = with_mesh(tmp_path, "CylArr2D")
     mesh = load_mesh(str(tmp_path / get_fname(ext="h5", **params)))

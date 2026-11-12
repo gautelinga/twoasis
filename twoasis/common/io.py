@@ -10,10 +10,11 @@ import pickle
 import time
 import glob
 
-from dolfin import MPI, Function, HDF5File
-from femtools.dolfin_layout import write_dofs, write_function
 from femtools.swap import new_folder, recover, swap_in
-from femtools.xdmf import continued, merge_series, XDMFFile2
+from twoasis.backend import (
+    Function, function_space, MPI, space_id, TimeSeriesFile, write_dof_tables,
+    write_function_h5)
+from twoasis.backend import name as backend_name
 from twoasis.common.utilities import phi_g, physical_pressure, set_subfunction, subfunction
 from twoasis.problems import info_red
 
@@ -62,13 +63,11 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
             stem = "_from_tstep_{}_r{}".format(tstep, k)
     stem = MPI.comm_world.bcast(stem, root=0)
 
-    # XDMFFile2 (femtools) writes what dolfin's XDMFFile writes, but keeps the
-    # midside nodes of a P2 field and compresses the data.
+    # One time series file per field (twoasis.backend.TimeSeriesFile: XDMF that keeps a
+    # P2 field's midside nodes, in the same layout on both backends).
     tstepfiles = {}
     for ui in comps:
-        tstepfiles[ui] = XDMFFile2(MPI.comm_world, path.join(tstepfolder, ui + stem + ".xdmf"))
-        tstepfiles[ui].parameters["rewrite_function_mesh"] = False
-        tstepfiles[ui].parameters["flush_output"] = True
+        tstepfiles[ui] = TimeSeriesFile(MPI.comm_world, path.join(tstepfolder, ui + stem + ".xdmf"))
 
     return newfolder, tstepfiles
 
@@ -113,7 +112,7 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunct
                     pickle.dump(dict(NS_parameters, timeseries_pressure="physical"), f)
         out = dict(u=AssignedVectorFunction(u_, name="u"))
         if MPI.comm_world.bcast(physical, root=0):
-            out["p"] = Function(q_['p'].function_space())
+            out["p"] = Function(function_space(q_['p']))
             out["p"].rename("p", "p")
         _TIMESERIES_OUTPUT[id(tstepfiles)] = out
     out = dict(_TIMESERIES_OUTPUT[id(tstepfiles)])
@@ -159,7 +158,7 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     tables = {}             # space id -> the file of its tables
     unlinked = set()
     for ui in q_:
-        tables.setdefault(q_[ui].function_space().id(), "dofs_{}.h5".format(ui))
+        tables.setdefault(space_id(function_space(q_[ui])), "dofs_{}.h5".format(ui))
     if MPI.rank(comm) == 0:
         recover_checkpoint(checkpointfolder)
         # Left over if an earlier run stopped while writing.
@@ -175,14 +174,14 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
                     unlinked.add(key)
     written -= comm.bcast(unlinked, root=0)
     for ui in q_:
-        V = q_[ui].function_space()
-        name = tables[V.id()]
-        if V.id() not in written:
-            write_dofs(path.join(tmpfolder, name), V, "dofs")
-            written.add(V.id())
+        V = function_space(q_[ui])
+        name = tables[space_id(V)]
+        if space_id(V) not in written:
+            write_dof_tables(path.join(tmpfolder, name), V, "dofs")
+            written.add(space_id(V))
         filename = path.join(tmpfolder, ui + ".h5")
-        write_function(filename, q_[ui], "current", mode="w", dofs=(name, "dofs"))
-        write_function(filename, q_1[ui], "previous", dofs=(name, "dofs"))
+        write_function_h5(filename, q_[ui], "current", mode="w", dofs=(name, "dofs"))
+        write_function_h5(filename, q_1[ui], "previous", dofs=(name, "dofs"))
     MPI.barrier(comm)
     if MPI.rank(comm) == 0:
         swap_in(tmpfolder, checkpointfolder)
@@ -248,6 +247,10 @@ def init_from_restart(restart_folder, sys_comp, uc_comp,
     comm = MPI.comm_world
     if MPI.rank(comm) == 0:
         info_red('Restarting from checkpoint at time step {}'.format(tstep))
+    if backend_name != "dolfin":
+        _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm)
+        return
+    from dolfin import HDF5File
     for ui in sys_comp:
         filename = path.join(restart_folder, ui + '.h5')
         with HDF5File(comm, filename, "r") as hdf5_file:
@@ -278,6 +281,34 @@ def init_from_restart(restart_folder, sys_comp, uc_comp,
             q_2[ui].vector().apply('insert')
 
 
+def _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm):
+    """init_from_restart's fields on a backend other than dolfin: each field's current
+    and previous levels, stored as Functions in dolfin's layout (by either backend, on
+    any number of processes), read with twoasis.backend.read_function_h5. A checkpoint
+    of bare vectors (dolfin's old format) restarts on dolfin alone."""
+    import h5py
+    from twoasis.backend import read_function_h5
+    for ui in sys_comp:
+        filename = path.join(restart_folder, ui + '.h5')
+        found = None
+        if MPI.rank(comm) == 0:
+            with h5py.File(filename, "r") as h5:
+                found = (isinstance(h5["current"], h5py.Group)
+                         and "signature" in h5["current"].attrs, "previous" in h5)
+        is_function, has_previous = comm.bcast(found, root=0)
+        if not is_function:
+            raise ValueError("{}: a checkpoint of bare vectors (dolfin's old format); "
+                             "restart it with backend=dolfin".format(filename))
+        read_function_h5(filename, q_[ui], "current")
+        q_1[ui].vector().zero()
+        q_1[ui].vector().axpy(1., q_[ui].vector())
+        if has_previous:
+            read_function_h5(filename, q_2[ui], "previous")
+        else:
+            q_2[ui].vector().zero()
+            q_2[ui].vector().axpy(1., q_[ui].vector())
+
+
 def series_files(folder, name):
     """The time series files of field `name` in folder, in the order they were
     written: the first run's, then those of the restarts that continued it."""
@@ -288,6 +319,7 @@ def series_files(folder, name):
 def merge_visualization_files(newfolder, **namespace):
     """Merge the time series of each field written by a run and the restarts that
     continued it into the first run's file (femtools.xdmf.merge_series)."""
+    from femtools.xdmf import merge_series
     if MPI.rank(MPI.comm_world) == 0:
         timefolder = path.join(newfolder, 'Timeseries')
         for name in ["u", "p", "phi", "g"]:
@@ -304,16 +336,18 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
 
     The steps of a field are those of the run's files and of the restarts that
     continued it (femtools.xdmf.continued). Each field is read by femtools
-    (XDMFFile2.read_checkpoint): from its nodal values, P1 or P2, on any number of
-    processes, onto the field's space of any degree. A series whose params.dat marks
+    (twoasis.backend.read_series_step: XDMFFile2.read_checkpoint on dolfin): from its
+    nodal values, P1 or P2, on any number of processes, onto the field's space of any
+    degree, whichever backend wrote it. A series whose params.dat marks
     its pressure as the physical one (timeseries_pressure) gives p = P - phi*g;
     a series without that record holds p."""
-    from dolfin import FunctionAssigner, VectorFunctionSpace
-    from femtools.xdmf import grids
+    from femtools.xdmf import continued, grids
+    from twoasis.backend import (
+        geometric_dimension, read_series_step, read_vector_series_step, space_mesh)
     from twoasis.common.utilities import subspace
 
-    mesh = VV['p'].mesh()
-    gdim = mesh.geometry().dim()
+    mesh = space_mesh(VV['p'])
+    gdim = geometric_dimension(mesh)
 
     def step(name, t_exact=None):
         """(time, file, counter) of the step of series name at the requested time,
@@ -336,19 +370,14 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
 
     def read(function, name, t_exact=None):
         t, f, counter = step(name, t_exact)
-        with XDMFFile2(mesh.mpi_comm(), f) as xdmf:
-            xdmf.read_checkpoint(function, name, counter)
+        read_series_step(f, name, counter, function)
         return t
 
-    V = VV['u0']
     us = [q_['u{}'.format(i)] for i in range(gdim)]
-    el = V.ufl_element()
-    uv = Function(VectorFunctionSpace(mesh, el.family(), el.degree(),
-                                      constrained_domain=constrained_domain))
-    t = read(uv, "u")
-    FunctionAssigner([V] * gdim, uv.function_space()).assign(us, uv)
+    t, f, counter = step("u")
+    read_vector_series_step(f, "u", counter, us, constrained_domain)
     read(q_['p'], "p", t)
-    W = q_['phig'].function_space()
+    W = function_space(q_['phig'])
     for i, name in enumerate(["phi", "g"]):
         f = Function(subspace(W, i))
         read(f, name, t)

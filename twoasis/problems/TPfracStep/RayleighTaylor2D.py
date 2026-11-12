@@ -23,7 +23,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import assemble, cos, Expression, MPI, SpatialCoordinate
+from twoasis.backend import assemble, cos, Expression, MPI, SpatialCoordinate
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems.TPfracStep import Bubble2D

@@ -32,7 +32,7 @@ python3 -m pip install --user --break-system-packages --no-deps meshpy
 for repo in femtools partractools meshtools; do
     git clone https://github.com/gautelinga/$repo.git
 done
-git -C femtools checkout 2026.2.2
+git -C femtools checkout 2026.2.3
 git -C partractools checkout 2026.2.1
 git -C meshtools checkout 2026.2.0
 for repo in femtools partractools meshtools; do

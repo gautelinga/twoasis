@@ -16,17 +16,18 @@ iterations. Problem hooks (initialize, pre_solve_hook, temporal_hook, ...) are c
 with the whole namespace.
 """
 import importlib
-from os import path
+from os import makedirs, path
 
 from numpy import array
-from dolfin import (
-    as_vector, assemble, DOLFIN_EPS, dx, FacetNormal, FiniteElement, Function, FunctionSpace,
-    list_timings, Measure, MixedElement, MPI, parameters, split, TestFunction,
-    TestFunctions, TimingClear, TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
-
-from femtools.boundaries import BoundaryMarkers
+from twoasis.backend import name as backend_name
+from twoasis.backend import (
+    as_vector, assemble, BoundaryMarkers, DOLFIN_EPS, dx, FacetNormal, FiniteElement,
+    Function, FunctionSpace, geometric_dimension, list_timings, Measure, mesh_comm,
+    MixedElement, MPI, parameters, split, TestFunction, TestFunctions, TimingClear,
+    TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
 
 import twoasis.common
+import twoasis.common.telemetry
 import twoasis.problems
 import twoasis.problems.TPfracStep
 import twoasis.solvers.TPfracStep
@@ -61,6 +62,7 @@ if problemspec is None:
 
 # Import the problem module
 if MPI.rank(MPI.comm_world) == 0:
+    print('Backend: ' + backend_name)
     print('Importing problem module '+problemname+':\n'+problemspec.origin)
 problemmod = importlib.util.module_from_spec(problemspec)
 problemspec.loader.exec_module(problemmod)
@@ -78,6 +80,8 @@ problem_parameters(**vars())
 
 # Update current namespace with NS_parameters and commandline_kwargs ++
 vars().update(post_import_problem(**vars()))
+# The backend this run is on (backend=auto resolved), recorded with the parameters.
+backend = NS_parameters["backend"] = backend_name
 
 if scalar_components:
     raise NotImplementedError("passive scalars (scalar_components) are not supported by the "
@@ -104,7 +108,7 @@ if rotational and not hasattr(solver, "pressure_update"):
     rotational = False
 
 # Create lists of components solved for
-dim = mesh.geometry().dim()
+dim = geometric_dimension(mesh)
 u_components = ['u' + str(x) for x in range(dim)]
 #u_components = ['u']
 sys_comp = u_components + ['p'] + ['phig'] + scalar_components
@@ -113,6 +117,16 @@ uphi_components = u_components + ['phig']
 
 # Set up initial folders for storing results
 newfolder, tstepfiles = create_initial_folders(**vars())
+
+# Per-step telemetry (twoasis/common/telemetry.py), started before the solvers are made.
+if telemetry:
+    if MPI.rank(MPI.comm_world) == 0:
+        makedirs(path.join(newfolder, "Stats"), exist_ok=True)
+    MPI.barrier(MPI.comm_world)
+    tel = twoasis.common.telemetry.start(path.join(newfolder, "Stats", "telemetry.jsonl"),
+                                         MPI.comm_world)
+else:
+    tel = twoasis.common.telemetry.current
 
 # Declare FunctionSpaces and arguments
 V = Q = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
@@ -145,7 +159,7 @@ normal = FacetNormal(mesh)
 
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)
-with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "subdomains.xdmf")) as xdmff:
+with XDMFFile(mesh_comm(mesh), path.join(newfolder, "subdomains.xdmf")) as xdmff:
     xdmff.write(subdomains)
 
 u = TrialFunction(V)
@@ -214,7 +228,7 @@ bcs = create_bcs(**vars())
 angles = contact_angles(**vars())
 
 if len(angles) > 0 and isinstance(angles[0][0], Function):
-    with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "angles.xdmf")) as xdmff:
+    with XDMFFile(mesh_comm(mesh), path.join(newfolder, "angles.xdmf")) as xdmff:
         xdmff.write(angles[0][0])
 
 
@@ -269,14 +283,17 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     udiff = array([1e8])  # Norm of velocity change over last inner iter
     unorm = array([0.])   # ... and of the velocity
     num_iter = max(iters_on_first_timestep, max_iter) if tstep <= 10 else max_iter
+    tel.start_step()
 
     start_timestep_hook(**vars())
 
     # Solve for phase field
     t0 = OasisTimer('Solving phase field', print_solve_info)
-    phase_field_assemble(**vars())
+    with tel.block("phase_field_assemble"):
+        phase_field_assemble(**vars())
     phase_field_hook(**vars())
-    phase_field_solve(**vars())
+    with tel.block("phase_field_solve"):
+        phase_field_solve(**vars())
     t0.stop()
 
     # A prescribed physical pressure p + phi*g follows the new phase field.
@@ -295,29 +312,35 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
-            assemble_first_inner_iter(**vars())
+            with tel.block("first_inner_assemble"):
+                assemble_first_inner_iter(**vars())
         udiff[0] = unorm[0] = 0.0
         for i, ui in enumerate(u_components):
             t1 = OasisTimer('Solving tentative velocity ' + ui, print_solve_info)
-            velocity_tentative_assemble(**vars())
+            with tel.block("velocity_assemble"):
+                velocity_tentative_assemble(**vars())
             velocity_tentative_hook(**vars())
-            velocity_tentative_solve(**vars())
+            with tel.block("velocity_solve"):
+                velocity_tentative_solve(**vars())
             t1.stop()
 
         t0 = OasisTimer("Pressure solve", print_solve_info)
-        pressure_assemble(**vars())
+        with tel.block("pressure_assemble"):
+            pressure_assemble(**vars())
         pressure_hook(**vars())
-        pressure_solve(**vars())
-        pressure_update(**vars())
-        if anderson is not None:
-            anderson(x_['p'], inner_iter)
+        with tel.block("pressure_solve"):
+            pressure_solve(**vars())
+            pressure_update(**vars())
+            if anderson is not None:
+                anderson(x_['p'], inner_iter)
         t0.stop()
 
         print_velocity_pressure_info(**vars())
 
     # Update velocity
     t0 = OasisTimer("Velocity update")
-    velocity_update(**vars())
+    with tel.block("velocity_update"):
+        velocity_update(**vars())
     t0.stop()
 
     # Solve for scalars
@@ -331,10 +354,12 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
     # temporal_hook may return a dict of values to update; None means nothing.
     # A returned stop=True ends the run after this step.
-    vars().update(temporal_hook(**vars()) or {})
+    with tel.block("hooks"):
+        vars().update(temporal_hook(**vars()) or {})
 
-    # Save solution if required and check for killoasis file
-    stop = save_solution(**vars()) or stop
+        # Save solution if required and check for killoasis file
+        stop = save_solution(**vars()) or stop
+    tel.end_step(tstep, t, inner_iter)
 
     # Update to a new timestep
     for ui in u_components:
@@ -379,6 +404,7 @@ info_red('Total memory use of solver = ' +
 
 for tstepfile in tstepfiles.values():
     tstepfile.close()
+tel.close()
 if restart_folder is not None:
     merge_visualization_files(**vars())
 

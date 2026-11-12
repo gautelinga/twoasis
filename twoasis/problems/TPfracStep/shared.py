@@ -7,15 +7,12 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import listdir, makedirs, path, remove
 
 import numpy as np
-from dolfin import (
-    assemble, Constant, DirichletBC, dx, Function, grad, HDF5File, inner, Mesh, MPI, Point,
-    RectangleMesh, SpatialCoordinate)
+from twoasis.backend import (
+    assemble, Constant, DirichletBC, dx, extent, Faces, Function, function_space,
+    geometric_dimension, grad, inner, mark_walls, MPI, PeriodicBox, Point, read_mesh_file,
+    read_function_h5, RectangleMesh, SpatialCoordinate, write_dof_tables, write_function_h5,
+    write_mesh_h5)
 
-from femtools.box import FACE_TOL, Faces, mark_walls
-from femtools.dolfin_layout import write_dofs, write_function
-# Periodic boundary conditions on a box, from each periodic axis's (lower, upper)
-# bounds, e.g. PeriodicBox({0: (0, Lx)}) for periodicity in x.
-from femtools.periodic import periodic_box_from_bounds as PeriodicBox
 
 from twoasis.common.utilities import compute_ind, physical_pressure, subfunction, subspace
 
@@ -52,24 +49,10 @@ def centred(L):
 
 
 def load_mesh(fname, periodic=None):
-    """Read the mesh stored as "mesh" in the HDF5 file fname.
-
-    `periodic` gives the axes (x, y, z) the problem identifies. Under MPI the mesh
-    is then read in blocks and partitioned with femtools.periodic_partition, so that
-    no process holds a vertex of a periodic face without knowing that it is periodic
-    (dolfin's periodic dofmap would give that vertex a wrong dof). Without it, the
-    mesh is read by dolfin and post_import_problem repairs the partition, which
-    costs another build of the mesh when cells have to move.
-    """
-    if periodic is not None and MPI.size(MPI.comm_world) > 1:
-        from femtools.periodic_partition import read_mesh
-        # L=None: the upper faces are at the largest coordinates, which is all the
-        # partition needs.
-        return read_mesh(fname, None, periodic, MPI.comm_world, log=_info, tol=FACE_TOL)
-    mesh = Mesh()
-    with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
-        h5f.read(mesh, "mesh", False)
-    return mesh
+    """Read the mesh stored as "mesh" in the HDF5 file fname (dolfin's layout):
+    twoasis.backend.read_mesh_file. `periodic` gives the axes (x, y, z) the problem
+    identifies, which dolfin's partition needs under MPI."""
+    return read_mesh_file(fname, periodic)
 
 
 def _info(s):
@@ -99,7 +82,7 @@ def phase_moments(q_, mesh, dx, phase=-1):
     crosses the periodic boundary."""
     ind_ = compute_ind(q_, phase)
     X = SpatialCoordinate(mesh)
-    dim = mesh.geometry().dim()
+    dim = geometric_dimension(mesh)
     vol = assemble(ind_ * dx)
     centroid = [assemble(ind_ * X[i] * dx) / vol for i in range(dim)]
     velocity = [assemble(ind_ * q_["u{}".format(i)] * dx) / vol for i in range(dim)]
@@ -130,7 +113,7 @@ def standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh):
     E_int and double-well E_pot parts (see interface_energy). Returns them as a
     list in this order. All processes must call it (it assembles)."""
     dX = dx(domain=mesh)
-    dim = mesh.geometry().dim()
+    dim = geometric_dimension(mesh)
     um = [assemble(q_['u{}'.format(i)] * dX) / volume for i in range(dim)]
     phim = assemble(phi_ * dX) / volume
     E_kin = 0.5 * assemble(rho_ * sum(u_[i]**2 for i in range(dim)) * dX) / volume
@@ -144,7 +127,7 @@ def gravitational_energy(rho_, g0, volume, mesh):
     if g0 is None:
         return 0.
     X = SpatialCoordinate(mesh)
-    dim = mesh.geometry().dim()
+    dim = geometric_dimension(mesh)
     return assemble(-rho_ * sum(g0[i] * X[i] for i in range(dim)) * dx(domain=mesh)) / volume
 
 
@@ -200,7 +183,7 @@ def write_timestamps_info(timestampsfolder, mesh, params, velocity_degree, press
             timestamps="timestamps.dat", mesh="mesh.h5",
             **{"periodic_" + axis: periodic[i] for i, axis in enumerate("xyz")},
             rho=1.0))
-    case.write_mesh(path.join(timestampsfolder, "mesh.h5"), mesh)
+    write_mesh_h5(path.join(timestampsfolder, "mesh.h5"), mesh)
     # Collective
     subdomains.write(path.join(timestampsfolder, "boundaries.xdmf"))
     if MPI.rank(MPI.comm_world) == 0:
@@ -228,10 +211,8 @@ def start_timestamps(keys, tstep, t, q_, p_, mesh, u_, newfolder, velocity_degre
 def read_phase_field(fname, mesh, q_):
     """The phase field stored as "phi" in the HDF5 file fname (e.g. a file
     written by write_timestamp)."""
-    phi__ = Function(subspace(q_['phig'].function_space(), 0))
-    with HDF5File(mesh.mpi_comm(), fname, "r") as h5f:
-        h5f.read(phi__, "phi")
-    return phi__
+    phi__ = Function(subspace(function_space(q_['phig']), 0))
+    return read_function_h5(fname, phi__, "phi")
 
 
 # The file holding the dof tables of a run's timestamps, by folder.
@@ -255,16 +236,16 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     phi__ = subfunction(q_['phig'], 0)
     phi__.rename("phi", "phi")
     from partractools import case
-    P = physical_pressure(q_, Function(p_.function_space()))
+    P = physical_pressure(q_, Function(function_space(p_)))
     fields = {"u": uv, "p": P, "phi": phi__}
     tables = _STAMP_TABLES.get(timestampsfolder)
     if tables is None:
         tables = _STAMP_TABLES[timestampsfolder] = "dofs_{}.h5".format(tstep)
         for i, (name, f) in enumerate(fields.items()):
-            write_dofs(path.join(timestampsfolder, tables), f.function_space(), name,
+            write_dof_tables(path.join(timestampsfolder, tables), function_space(f), name,
                        mode="a" if i else "w")
     for i, (name, f) in enumerate(fields.items()):
-        write_function(path.join(timestampsfolder, h5fname), f, name,
+        write_function_h5(path.join(timestampsfolder, h5fname), f, name,
                        mode="a" if i else "w", dofs=(tables, name))
     if MPI.rank(MPI.comm_world) == 0:
         stamps = path.join(timestampsfolder, "timestamps.dat")

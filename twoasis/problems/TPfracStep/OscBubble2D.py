@@ -24,7 +24,7 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
-from dolfin import DirichletBC, dx, Expression
+from twoasis.backend import DirichletBC, dx, Expression
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red

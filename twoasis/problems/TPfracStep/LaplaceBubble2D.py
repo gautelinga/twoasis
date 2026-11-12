@@ -31,7 +31,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
+from twoasis.backend import (
     assemble, conditional, DirichletBC, dx, Expression, gt, lt, MPI, SpatialCoordinate, sqrt,
     SubDomain)
 

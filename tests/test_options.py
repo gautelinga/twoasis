@@ -29,6 +29,19 @@ def test_lumped_mass_velocity_update(tmp_path, bubble_p1_bdf):
                       [("u0m", 1e-5), ("phim", 1e-8), ("E_int", 1e-7)], "lumped mass")
 
 
+def test_gradient_matrix_velocity_update(tmp_path, bubble_p1_bdf):
+    """method='gradient_matrix' (the cells' mean gradients averaged onto the velocity
+    dofs, a matrix built once) instead of the consistent-mass projection: as with
+    lumping, only the last pressure increment goes through it, so the results stay
+    close."""
+    run_twoasis(tmp_path, solver="BDF", T=0.02,
+                velocity_update_solver='{"method": "gradient_matrix"}', **BUBBLE_P1)
+    td = load_tdata(tmp_path)
+    assert_mass_conserved(td, MASS_TOL)
+    assert_last_close(td, bubble_p1_bdf[1],
+                      [("u0m", 1e-5), ("phim", 1e-8), ("E_int", 1e-7)], "gradient matrix")
+
+
 def test_ab_projection_pressure(tmp_path, bubble_bdf):
     """Extrapolating the pressure as the first guess changes only where the
     inner iterations start, not what they converge to."""
@@ -51,7 +64,7 @@ def test_lower_degree_phase_field(tmp_path, bubble_p1_bdf, solver):
 
 
 SET_FORCING = '''
-from dolfin import Constant
+from twoasis.backend import Constant
 from twoasis.problems.TPfracStep.PeriodicBubble2D import *
 
 

@@ -6,16 +6,16 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
                  "Copyright (C) 2013 Mikael Mortensen <mikaem@math.uio.no>")
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from dolfin import DirichletBC, Expression, UnitSquareMesh
+from twoasis.backend import DirichletBC, Expression, mesh_coordinates, UnitSquareMesh
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
-from twoasis.problems.TPfracStep.shared import PeriodicBox
+from twoasis.problems.TPfracStep.shared import Faces, PeriodicBox
 
 
 def mesh(Nx=128, Ny=64, **params):
     m = UnitSquareMesh(Nx, Ny)
-    m.coordinates()[:, 0] *= 2
+    mesh_coordinates(m)[:, 0] *= 2
     return m
 
 
@@ -23,8 +23,7 @@ def constrained_domain(**params):
     return PeriodicBox({0: (0, 2.0)})
 
 
-top = "std::abs(x[1]-1) < 1e-8"
-bottom = "std::abs(x[1]) < 1e-8"
+TOP, BOTTOM = 3, 2  # the walls' markers
 
 
 def problem_parameters(NS_parameters, **NS_namespace):
@@ -49,11 +48,16 @@ def problem_parameters(NS_parameters, **NS_namespace):
     )
 
 
-def create_bcs(V, u_wall, **NS_namespace):
-    bc_ux_top = DirichletBC(V, u_wall, top)
-    bc_ux_bottom = DirichletBC(V, -u_wall, bottom)
-    bc_uy_top = DirichletBC(V, 0, top)
-    bc_uy_bottom = DirichletBC(V, 0, bottom)
+def mark_subdomains(subdomains, **NS_namespace):
+    Faces(1, 1.0).mark(subdomains, TOP)
+    Faces(1, 0.0).mark(subdomains, BOTTOM)
+
+
+def create_bcs(V, u_wall, subdomains, **NS_namespace):
+    bc_ux_top = DirichletBC(V, u_wall, subdomains, TOP)
+    bc_ux_bottom = DirichletBC(V, -u_wall, subdomains, BOTTOM)
+    bc_uy_top = DirichletBC(V, 0, subdomains, TOP)
+    bc_uy_bottom = DirichletBC(V, 0, subdomains, BOTTOM)
     return dict(u0=[bc_ux_top, bc_ux_bottom],
                 u1=[bc_uy_top, bc_uy_bottom],
                 p=[],

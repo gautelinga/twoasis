@@ -13,9 +13,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
-    assemble, Constant, DirichletBC, dx, Expression, Function, FunctionAssigner, HDF5File,
-    interpolate, VectorFunctionSpace)
+from twoasis.backend import (
+    assemble, Constant, DirichletBC, dx, Expression, Function, function_space, interpolate,
+    read_function_h5, read_vector_function_h5, space_mesh)
 
 from twoasis.common.utilities import set_subfunction, subspace
 from twoasis.problems import info_blue, info_red
@@ -41,7 +41,7 @@ def initialize_checkerboard_sat(phi_init, phi_target, checkerboard, L, epsilon, 
     dims = range(len(L))
     Dx = L / np.array(checkerboard) / 2
 
-    x_ = [interpolate(Expression(f"x[{dim}]", degree=1), phi_init.function_space()).vector()[:] for dim in dims]
+    x_ = [interpolate(Expression(f"x[{dim}]", degree=1), function_space(phi_init)).vector()[:] for dim in dims]
     i_ = [np.floor((x_[dim]-x0[dim])/Dx[dim]) for dim in dims]
     xi_ = [x0[dim] + (i_[dim] + 0.5) * Dx[dim] for dim in dims]
     dxi_ = [abs(x_[dim] - xi_[dim]) for dim in dims]
@@ -49,7 +49,7 @@ def initialize_checkerboard_sat(phi_init, phi_target, checkerboard, L, epsilon, 
     psi_ = np.minimum.reduce(dxi_) * (-1)**ir_
 
     c = 0.
-    vol = assemble(Constant(1.) * dx(domain=phi_init.function_space().mesh()))
+    vol = assemble(Constant(1.) * dx(domain=space_mesh(function_space(phi_init))))
     phi_mean = 0.
     it = 0
     # Newton iterations
@@ -135,17 +135,10 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, che
         if not path.exists(init_state):
             raise FileNotFoundError("initial state {} does not exist".format(init_state))
         phi_init = Function(subspace(VV['phig'], 0))
-        Vv = VectorFunctionSpace(mesh, V.ufl_element().family(), V.ufl_element().degree(),
-                                constrained_domain=V.dofmap().constrained_domain)
-        u_init = Function(Vv)
-        with HDF5File(mesh.mpi_comm(), init_state, "r") as h5f:
-            h5f.read(phi_init, "phi")
-            h5f.read(u_init, "u")
-            h5f.read(q_['p'], "p")
+        read_function_h5(init_state, phi_init, "phi")
+        read_function_h5(init_state, q_['p'], "p")
+        read_vector_function_h5(init_state, "u", [q_['u0'], q_['u1']])
         set_subfunction(q_['phig'], 0, phi_init)
-        # Both velocity components in one assignment.
-        FunctionAssigner([q_['u0'].function_space(), q_['u1'].function_space()], Vv).assign(
-            [q_['u0'], q_['u1']], u_init)
         for ui in q_:
             q_1[ui].vector()[:] = q_[ui].vector()[:]
             q_2[ui].vector()[:] = q_[ui].vector()[:]

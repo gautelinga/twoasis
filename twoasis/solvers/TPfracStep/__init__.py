@@ -4,25 +4,16 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import (
-    as_backend_type, Constant, dot, dx, Function, grad, IndexMap, inner, lhs, Matrix, MPI, norm,
-    normalize, PETScKrylovSolver, rhs, TestFunctions, Timer, TrialFunctions, Vector)
-from femtools.fast_assembly import assemble
-from femtools.fast_bc import apply as apply_bc
-from femtools.fast_interpolation import interpolate
-from femtools import ksp
-from femtools.nullspace import constant_nullspace
+from twoasis.backend import (
+    apply_bc, as_backend_type, assemble, Constant, constant_nullspace, dot, dx, element_degree,
+    fixed_dofs, Function, function_space, geometric_dimension, grad, inner, interpolate, ksp,
+    lhs, Matrix, MPI, norm, normalize, owned_dofs, PETScKrylovSolver, rhs, space_mesh,
+    TestFunctions, Timer, TrialFunctions, ufl, Vector)
+from twoasis.common import telemetry
 from twoasis.problems import info_blue
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
 import numpy as np
-# Use the UFL that dolfin was built with (ufl_legacy in recent installations).
-try:
-    import ufl_legacy as ufl
-    if not isinstance(Constant(0.), ufl.Coefficient):
-        raise ImportError
-except ImportError:
-    import ufl
 
 
 """Define all functions required by fractional step solver."""
@@ -69,7 +60,7 @@ def krylov_solver(name, cfg, krylov_solvers, pc_options=None):
     sol = PETScKrylovSolver()
     ksp.configure(sol.ksp(), name + "_", options)
     sol.parameters.update(krylov_solver_parameters(name, cfg, krylov_solvers))
-    return sol
+    return telemetry.current.solver(sol, name)  # the solver itself unless telemetry is on
 
 
 def projection_solver(velocity_update_solver, krylov_solvers):
@@ -104,13 +95,13 @@ def krylov_get_solvers(krylov_solvers, q_, mesh, bcs, velocity_krylov_solver,
             {'ksp_converged_use_initial_residual_norm': True}, **u_cfg.get('petsc_options', {})))
     u_sol = krylov_solver("velocity_krylov_solver", u_cfg, krylov_solvers)
     p_cfg = pressure_krylov_solver
-    if (mesh.geometry().dim() == 3
+    if (geometric_dimension(mesh) == 3
             and ksp.PC_NAMES.get(p_cfg['preconditioner_type']) == ksp.BOOMERAMG):
         p_cfg = dict(p_cfg, petsc_options=dict(ksp.BOOMERAMG_3D,
                                                **p_cfg.get('petsc_options', {})))
     p_sol = krylov_solver("pressure_krylov_solver", p_cfg, krylov_solvers)
     if phase_field_krylov_solver['preconditioner_type'] == 'schur':
-        pf_sol = phase_field_schur_solver(q_['phig'].function_space(), phase_field_krylov_solver,
+        pf_sol = phase_field_schur_solver(function_space(q_['phig']), phase_field_krylov_solver,
                                           krylov_solvers, bcs['phig'])
     else:
         pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
@@ -135,25 +126,20 @@ class PhaseFieldSchur:
     def __init__(self, W, prefix, bcs):
         from petsc4py import PETSc
 
-        def dofs(i):
-            return np.asarray(W.sub(i).dofmap().dofs(), dtype=PETSc.IntType)
-
         def block(form):
             return as_backend_type(assemble(form)).mat().createSubMatrix(self.is_phi, self.is_phi)
 
-        phi_dofs = dofs(0)
+        phi_dofs = owned_dofs(W, 0)
         self.is_phi = PETSc.IS().createGeneral(phi_dofs, comm=PETSc.COMM_WORLD)
-        self.is_g = PETSc.IS().createGeneral(dofs(1), comm=PETSc.COMM_WORLD)
+        self.is_g = PETSc.IS().createGeneral(owned_dofs(W, 1), comm=PETSc.COMM_WORLD)
         phi, _ = TrialFunctions(W)
         xi, _ = TestFunctions(W)
         self.Mphi = block(phi * xi * dx)
         self.Kphi = block(inner(grad(phi), grad(xi)) * dx)
         # phi's Dirichlet dofs as rows of the phi block
-        start, owned = W.dofmap().ownership_range()[0], W.dofmap().index_map().size(
-            IndexMap.MapSize.OWNED)
-        fixed = [start + k for bc in bcs for k in bc.get_boundary_values() if k < owned]
         self.fixed = (self.Mphi.getOwnershipRange()[0]
-                      + np.flatnonzero(np.isin(phi_dofs, fixed))).astype(PETSc.IntType)
+                      + np.flatnonzero(np.isin(phi_dofs, fixed_dofs(W, bcs)))).astype(
+                          PETSc.IntType)
         self.Mphi.zeroRowsColumns(self.fixed, diag=1.)
         self.kH = self.inner_ksp(prefix + "H_")
         self.kM = self.inner_ksp(prefix + "M_")
@@ -219,7 +205,7 @@ def phase_field_schur_solver(W, phase_field_krylov_solver, krylov_solvers, bcs):
     it saves; Mg, a mass matrix, with four Chebyshev-Jacobi iterations. An inner
     Krylov solve is not a fixed linear map, so the outer method must then be a
     flexible one (fgmres or gcr)."""
-    if W.mesh().geometry().dim() == 2:
+    if geometric_dimension(space_mesh(W)) == 2:
         H = {"H_ksp_type": "preonly", "H_pc_type": "hypre", "H_pc_hypre_type": "boomeramg"}
     else:
         H = {"H_ksp_type": "cg", "H_pc_type": "jacobi", "H_ksp_rtol": 1e-2, "H_ksp_max_it": 50}
@@ -371,9 +357,9 @@ def rotational_fields(rotational, q, Q, V, mu_):
         raise ValueError("rotational={!r}: True or False".format(rotational))
     if not rotational:
         return dict(mass_Q_inv=None, mu_Q=None, mu_mass_Q=None, rotational_work=None)
-    if Q.ufl_element().degree() > 1:
+    if element_degree(Q) > 1:
         raise ValueError("rotational=True needs a P1 pressure: the lumped P{} mass has "
-                         "zeros".format(Q.ufl_element().degree()))
+                         "zeros".format(element_degree(Q)))
     mass_Q_inv = assemble(q * dx)
     mass_Q_inv.set_local(1. / mass_Q_inv.get_local())
     mass_Q_inv.apply('insert')
@@ -397,7 +383,7 @@ def rotational_pressure_update(rotational, x_, divu, mu_, mu_Q, mass_Q_inv, mu_m
         return
     if inner_iter == 1:
         if mu_Q is not mu_:
-            interpolate(mu_, mu_Q.function_space(), out=mu_Q)
+            interpolate(mu_, function_space(mu_Q), out=mu_Q)
         mu_mass_Q.zero()
         mu_mass_Q.axpy(1., mu_Q.vector())
         mu_mass_Q *= mass_Q_inv
@@ -455,7 +441,7 @@ class PhaseFieldOnVelocitySpace:
         self.c = Function(V)
 
     def __call__(self, phig):
-        return interpolate(phig.split()[0], self.c.function_space(), out=self.c)
+        return interpolate(phig.split()[0], function_space(self.c), out=self.c)
 
 
 def set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu):

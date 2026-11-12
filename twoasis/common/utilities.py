@@ -4,20 +4,11 @@ __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from femtools.fast_assembly import assemble, assemble_matrix
-from femtools.fast_bc import apply as apply_bc
-from femtools.mixed import AssignedVectorFunction, set_subfunction, subfunction, subspace
-from dolfin import (Function, Constant, TrialFunction, TestFunction, dx, Vector,
-    FunctionSpace, Timer, div, inner, grad, DirichletBC, split)
-
-# The UFL that dolfin was built with: ufl_legacy in recent installations, ufl in
-# older ones.
-try:
-    from ufl_legacy import Coefficient
-    if not isinstance(Constant(0.), Coefficient):
-        raise ImportError
-except ImportError:
-    from ufl import Coefficient
+from twoasis.backend import (
+    apply_bc, assemble, assemble_matrix, AssignedVectorFunction, Coefficient, Constant,
+    DirichletBC, div, dx, element_degree, Function, function_space, FunctionSpace,
+    geometric_dimension, grad, inner, nodal_values, set_subfunction, space_mesh, split,
+    subfunction, subspace, TestFunction, Timer, TrialFunction, Vector, weighted_gradient_matrix)
 
 class OasisFunction(Function):
     """Function with more or less efficient projection methods
@@ -43,6 +34,7 @@ class OasisFunction(Function):
                  solver=None):
 
         Function.__init__(self, Space, name=name)
+        self.projection_name = name
         self.form = form
         self.method = method
         self.bcs = list(bcs)
@@ -61,7 +53,7 @@ class OasisFunction(Function):
 
         elif method.lower() == "lumping":
             self.A = assemble_matrix(Mass, bcs)
-            if Space.ufl_element().degree() >= 2:
+            if element_degree(Space) >= 2:
                 # Mass lumping is only accurate for P1; use the consistent mass
                 # matrix for higher degrees.
                 self.method = "default"
@@ -88,7 +80,7 @@ class OasisFunction(Function):
         """
         Compute the projection
         """
-        timer = Timer("Projecting {}".format(self.name()))
+        timer = Timer("Projecting {}".format(self.projection_name))
 
         if assemb_rhs:
             self.assemble_rhs()
@@ -115,7 +107,7 @@ class GradFunction(OasisFunction):
     def __init__(self, p_, Space, i=0, bcs=[], name="grad", method={}, solver=None):
 
         assert len(p_.ufl_shape) == 0
-        assert i >= 0 and i < Space.mesh().geometry().dim()
+        assert i >= 0 and i < geometric_dimension(space_mesh(Space))
 
         solver_method = method.get('method', 'default')
         low_memory_version = method.get('low_memory_version', False)
@@ -124,20 +116,13 @@ class GradFunction(OasisFunction):
                                method=solver_method, solver=solver)
 
         self.i = i
-        Source = p_.function_space()
+        Source = function_space(p_)
         if not low_memory_version:
             self.matvec = [
                 assemble_matrix(self.test * TrialFunction(Source).dx(i) * dx), p_]
 
         if solver_method.lower() == "gradient_matrix":
-            from femtools.gradient import compiled_gradient_module
-            DG = FunctionSpace(Space.mesh(), 'DG', 0)
-            G = assemble(TrialFunction(DG) * self.test * dx())
-            dg = Function(DG)
-            dP = assemble(TrialFunction(p_.function_space()).dx(i)
-                          * TestFunction(DG) * dx())
-            self.WGM = compiled_gradient_module.compute_weighted_gradient_matrix(
-                G, dP, dg)
+            self.WGM = weighted_gradient_matrix(Space, Source, i)
 
     def assemble_rhs(self, u=None):
         """
@@ -181,10 +166,10 @@ class DivRHS:
         q = TestFunction(Q)
         self.form = div(u_) * q * dx
         self.rhs = assemble(self.form)
-        V = u_[0].function_space()
+        V = function_space(u_[0])
         self.matvec = None if low_memory else [
             (assemble_matrix(q * TrialFunction(V).dx(i) * dx), u_[i])
-            for i in range(Q.mesh().geometry().dim())]
+            for i in range(geometric_dimension(space_mesh(Q)))]
 
     def assemble_rhs(self):
         if self.matvec is None:
@@ -215,7 +200,7 @@ class TPsource(Function):
 
         Function.__init__(self, Space, name=name)
 
-        dim = Space.mesh().geometry().dim()
+        dim = geometric_dimension(space_mesh(Space))
         test = TestFunction(Space)
         self.bf = [inner(inner(grad(mu), u.dx(i)), test)
                    * dx for i in range(dim)]
@@ -240,10 +225,9 @@ def phi_g(q_):
     the physical pressure minus phi*g. phi and g are each interpolated onto the
     pressure space (femtools.fast_interpolation, a transfer matrix built once),
     so phi*g is exact at its nodes."""
-    from femtools.fast_interpolation import values
-    Q = q_['p'].function_space()
+    Q = function_space(q_['p'])
     phi, g = q_['phig'].split()
-    return values(phi, Q) * values(g, Q)
+    return nodal_values(phi, Q) * nodal_values(g, Q)
 
 
 def physical_pressure(q_, out):
@@ -258,7 +242,7 @@ def physical_pressure(q_, out):
 def compute_ind(q_, phase=-1):
     """Smoothed indicator (0 to 1) of the phase phi = phase (+1 or -1)."""
     phi = subfunction(q_["phig"], 0)
-    ind_ = Function(phi.function_space())
+    ind_ = Function(function_space(phi))
     c_ = 0.5*(1 + phase * phi.vector().get_local())
     c_[c_ < 0] = 0
     c_[c_ > 1] = 1
@@ -275,6 +259,9 @@ def check_periodic_pairing(constrained_domain, spaces):
     are checked (a mixed space when its parts have one degree);
     femtools.periodic_partition.check_space_pairing raises PairingError.
     """
+    from twoasis.backend import name
+    if name != "dolfin":  # DOLFINx pairs periodic dofs by their coordinates
+        return
     from dolfin import MPI
     mesh = spaces[0].mesh()
     if MPI.size(mesh.mpi_comm()) == 1 or not hasattr(constrained_domain, "upper"):

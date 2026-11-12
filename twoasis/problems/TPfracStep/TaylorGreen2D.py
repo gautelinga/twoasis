@@ -10,7 +10,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
+from twoasis.backend import (
     assemble, dx, Expression, interpolate, MPI, Point, RectangleMesh)
 
 from twoasis.common.utilities import set_subfunction, subspace

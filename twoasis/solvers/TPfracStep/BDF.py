@@ -9,11 +9,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 import math
 
 import numpy as np
-from dolfin import (
-    as_vector, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad, inner, nabla_grad,
-    Timer)
-
-from femtools.fast_assembly import assemble
+from twoasis.backend import (
+    as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, function_space, grad,
+    inner, nabla_grad, Timer)
 from twoasis.problems import info_blue
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
@@ -57,7 +55,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     rho_ = Function(V)
     rho_inv_ = Function(V)
     mu_ = Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(q_['phig'].function_space(), V)
+    phi_V = PhaseFieldOnVelocitySpace(function_space(q_['phig']), V)
 
     # If things need to be precomputed
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)

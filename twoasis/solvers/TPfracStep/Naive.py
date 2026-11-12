@@ -25,11 +25,9 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import math
 
-from dolfin import (
-    assemble, div, dot, dx, Function, grad, inner, lhs, normalize,
-    PETScKrylovSolver, rhs, solve)
-
-from femtools.nullspace import constant_nullspace
+from twoasis.backend import (
+    assemble, constant_nullspace, div, dot, dx, element_degree, Function, function_space, grad,
+    inner, lhs, normalize, PETScKrylovSolver, rhs, solve)
 
 from twoasis.common.utilities import homogenize
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
@@ -49,7 +47,7 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
 
     # Density, its inverse and viscosity on V, set from the phase field
     rho_, rho_inv_, mu_ = Function(V), Function(V), Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(q_['phig'].function_space(), V)
+    phi_V = PhaseFieldOnVelocitySpace(function_space(q_['phig']), V)
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     # Cahn-Hilliard: conservative advection of phi (the boundary term gives the
@@ -98,7 +96,7 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
     # so (then the inverse row sums ML_inv are needed), and otherwise uses the
     # consistent mass matrix with homogeneous Dirichlet conditions.
     ML_inv = None
-    if velocity_update_solver.get('method') == 'lumping' and V.ufl_element().degree() == 1:
+    if velocity_update_solver.get('method') == 'lumping' and element_degree(V) == 1:
         ML_inv = assemble(v * dx)
         ML_inv.set_local(1. / ML_inv.get_local())
         ML_inv.apply('insert')

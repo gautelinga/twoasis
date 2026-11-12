@@ -193,3 +193,100 @@ def test_read_back_3d(tmp_path, series_3d):
     helper(tmp_path, "write", tmp_path / "results_np2", nprocs=2, res=0.25, dim=3)
     assert_exact(helper(tmp_path, "read", tmp_path / "results_np2" / "data" / "1" / "Timeseries",
                         res=0.25, dim=3), dofs=dofs)
+
+
+# The same on the DOLFINx backend: the helper's spaces made through twoasis.backend, the
+# fields from compiled Expressions; it writes with the solver's writer and reads with
+# load_timeseries, so the series cross between the backends both ways.
+HELPER_X = r'''
+import json, sys
+import numpy as np
+from twoasis.backend import (as_vector, Expression, FiniteElement, Function, function_space,
+                             FunctionSpace, interpolate, MixedElement, MPI, set_subfunction,
+                             subfunction)
+from twoasis.common.io import create_initial_folders, load_timeseries, save_tstep_solution_h5
+from twoasis.common.utilities import AssignedVectorFunction
+from twoasis.problems.TPfracStep.shared import PeriodicBox, rectangle_mesh
+mode, folder, res, vdeg, pdeg, out = (sys.argv[1], sys.argv[2], float(sys.argv[3]),
+                                      int(sys.argv[4]), int(sys.argv[5]), sys.argv[6])
+mesh = rectangle_mesh(2.0, 1.0, res)
+us = ["u0", "u1"]
+pb = PeriodicBox({0: (0, 2.0)})
+V = FunctionSpace(mesh, "CG", vdeg, constrained_domain=pb)
+Q = FunctionSpace(mesh, "CG", 1, constrained_domain=pb)
+el = FiniteElement("CG", mesh.ufl_cell(), pdeg)
+W = FunctionSpace(mesh, MixedElement([el, el]), constrained_domain=pb)
+VV = dict({u: V for u in us}, p=Q, phig=W)
+q_ = {k: Function(S) for k, S in VV.items()}
+CODE = dict(u0="sin(pi*x[0])*x[1] + t", u1="cos(pi*x[0]) - 2*t*x[1]*x[1]",
+            p="x[1]*sin(pi*x[0]) + 3*t", phi="tanh((x[1] - 0.5 - 0.1*cos(pi*x[0]))/0.1) * t",
+            g="x[1]*x[1]*t + cos(pi*x[0])")
+f = lambda name, t: Expression(CODE[name], t=t, degree=4)
+if mode == "write":
+    newfolder, tstepfiles = create_initial_folders(
+        folder, None, us + ["p", "phig"], 0, lambda s: None, [])
+    for t in (0.1, 0.2):
+        for k in us + ["p"]:
+            interpolate(f(k, t), VV[k], out=q_[k])
+        for i, k in enumerate(("phi", "g")):
+            set_subfunction(q_["phig"], i, f(k, t))
+        u_ = as_vector([q_[u] for u in us])
+        save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction, {})
+    for file in tstepfiles.values():
+        file.close()
+else:
+    result = {}
+    for time in (None, 0.1):
+        t = load_timeseries(folder, q_, VV, pb, time=time)
+        errors = {}
+        for k in us + ["p", "phi", "g"]:
+            fn = q_[k] if k in q_ else subfunction(q_["phig"], ("phi", "g").index(k))
+            exact = interpolate(f(k, t), function_space(fn)).vector().get_local()
+            local = np.abs(fn.vector().get_local() - exact).max() if len(exact) else 0.
+            errors[k] = MPI.max(MPI.comm_world, float(local))
+        # against the physical pressure p + phi*g, at the pressure dofs
+        I = lambda k: interpolate(f(k, t), Q).vector().get_local()
+        P = I("p") + I("phi") * I("g")
+        local = np.abs(q_["p"].vector().get_local() - P).max() if len(P) else 0.
+        dof_errors = dict(errors, P=MPI.max(MPI.comm_world, float(local)))
+        result[str(time)] = dict(t=t, errors={}, dof_errors=dof_errors)
+    if MPI.rank(MPI.comm_world) == 0:
+        json.dump(result, open(out, "w"))
+'''
+
+
+def helper_x(tmp_path, mode, folder, nprocs=1, res=0.0625, vdeg=2, pdeg=1):
+    pytest.importorskip("dolfinx")
+    script = tmp_path / "helper_x.py"
+    script.write_text(HELPER_X)
+    out = tmp_path / "result_x_{}_{}_{}_{}.json".format(mode, nprocs, vdeg, pdeg)
+    cmd = [sys.executable, str(script), mode, str(folder), str(res), str(vdeg), str(pdeg), str(out)]
+    if nprocs > 1:
+        cmd = ["mpirun", "-np", str(nprocs)] + cmd
+    env = dict(os.environ, TWOASIS_BACKEND="dolfinx",
+               PYTHONPATH=str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    proc = subprocess.run(cmd, cwd=str(tmp_path), env=env, capture_output=True, text=True,
+                          timeout=600)
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
+    return json.loads(out.read_text()) if mode == "read" else None
+
+
+def test_dolfin_series_read_on_dolfinx(tmp_path, series):
+    """dolfin's series read on DOLFINx, into the writing degrees and into others, in
+    serial and on two processes; the series hold the physical pressure, from which the
+    reader gives back p."""
+    _, folder = series
+    dofs = ["u0", "u1", "p", "phi", "g"]
+    assert_exact(helper_x(tmp_path, "read", folder), dofs=dofs)
+    assert_exact(helper_x(tmp_path, "read", folder, vdeg=1, pdeg=2), dofs=["u0", "u1", "p"])
+    require_mpi(2)
+    assert_exact(helper_x(tmp_path, "read", folder, nprocs=2), dofs=dofs)
+
+
+def test_dolfinx_series_read_on_both(tmp_path):
+    """DOLFINx's series (written on two processes) read on dolfin and on DOLFINx."""
+    require_mpi(2)
+    helper_x(tmp_path, "write", tmp_path / "results", nprocs=2)
+    folder = tmp_path / "results" / "data" / "1" / "Timeseries"
+    assert_exact(helper(tmp_path, "read", folder), dofs=["u0", "u1", "p", "phi", "g"])
+    assert_exact(helper_x(tmp_path, "read", folder), dofs=["u0", "u1", "p", "phi", "g"])

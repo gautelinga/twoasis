@@ -4,7 +4,7 @@ __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import Constant
+from twoasis.backend import Constant, geometric_dimension
 
 from twoasis.problems import NS_parameters
 
@@ -40,6 +40,10 @@ NS_parameters.update(
     # starts from (0: the solver's own relative tolerance). It pays where the
     # velocity solves dominate. With anderson_depth it takes more passes.
     velocity_tolerance_factor=0,
+    backend="auto",      # dolfin, dolfinx, or auto: a restart's checkpoint's, else dolfin
+                         # (chosen when twoasis.backend is imported; see its docstring)
+    telemetry=False,     # write Stats/telemetry.jsonl: per-step times, Krylov iterations and
+                         # preconditioner setups (twoasis/common/telemetry.py)
     quadrature_degree=None,        # quadrature degree for all forms; None means 2*velocity_degree + 1
 
     # Phase field parameters
@@ -173,9 +177,10 @@ def contact_angles(theta, **NS_namespace):
 def average_pressure_gradient(F0, mesh, **NS_namespace):
     """The mean pressure gradient, -F0: F0 is the force per volume it drives the
     flow with."""
-    return Constant(tuple(-f for f in F0) if F0 is not None else (0.,) * mesh.geometry().dim())
+    return Constant(tuple(-f for f in F0) if F0 is not None
+                    else (0.,) * geometric_dimension(mesh))
 
 
 def acceleration(g0, mesh, **NS_namespace):
     """Body acceleration g0 (e.g. gravity)."""
-    return Constant(tuple(g0) if g0 is not None else (0.,) * mesh.geometry().dim())
+    return Constant(tuple(g0) if g0 is not None else (0.,) * geometric_dimension(mesh))

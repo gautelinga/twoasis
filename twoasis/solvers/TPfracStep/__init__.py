@@ -9,8 +9,9 @@ from twoasis.backend import (
     fixed_dofs, Function, function_space, geometric_dimension, grad, inner, interpolate, ksp,
     lhs, Matrix, MPI, norm, normalize, owned_dofs, PETScKrylovSolver, rhs, space_mesh,
     TestFunctions, Timer, TrialFunctions, ufl, Vector)
-from twoasis.common import telemetry
+from twoasis.common import dual, telemetry
 from twoasis.problems import info_blue
+from twoasis.common.utilities import axpy, mult, pointwise
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
 import numpy as np
@@ -435,12 +436,16 @@ def wall_potential_linear_derivative(phi, phi0):
 class PhaseFieldOnVelocitySpace:
     """The phase field phi, taken from the mixed (phi, g) function, as a Function
     c on the velocity space V, by femtools.fast_interpolation: a transfer matrix
-    built once, then a sparse matrix-vector product per update."""
+    built once, then a sparse matrix-vector product per update. On the dual mesh,
+    phi at V's nodes, which are the phase field's mesh's too (DualMesh.inject)."""
 
-    def __init__(self, W, V):
+    def __init__(self, V):
         self.c = Function(V)
+        self.dual = dual.current()
 
     def __call__(self, phig):
+        if self.dual is not None:
+            return self.dual.inject(phig, 0, self.c)
         return interpolate(phig.split()[0], function_space(self.c), out=self.c)
 
 
@@ -500,7 +505,7 @@ def incremental_pressure_assemble(b, x_, Ap, divu, alpha, **NS_namespace):
     divu.assemble_rhs()
     b['p'][:] = divu.rhs
     b['p'] *= -alpha[0]
-    b['p'].axpy(1., Ap * x_['p'])
+    axpy(b['p'], 1., mult(Ap, x_['p']))
 
 
 def incremental_pressure_solve(dp_, x_, Ap, p_null, b, p_sol, bcs, inner_iter, tstep,
@@ -535,7 +540,7 @@ def incremental_velocity_update(u_components, bcs, gradp, dp_, x_, rho, rho_inv_
         if constant_poisson_coefficient:
             x_[ui].axpy(-1. / (alpha[0] * min(rho)), gradp[ui].vector())
         else:
-            x_[ui].axpy(-1. / alpha[0], gradp[ui].vector() * rho_inv_.vector())
+            axpy(x_[ui], -1. / alpha[0], pointwise(gradp[ui].vector(), rho_inv_.vector()))
         [apply_bc(bc, x_[ui]) for bc in bcs[ui]]
 
 

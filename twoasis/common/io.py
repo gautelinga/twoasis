@@ -11,6 +11,7 @@ import time
 import glob
 
 from femtools.swap import new_folder, recover, swap_in
+from twoasis.common import dual
 from twoasis.backend import (
     Function, function_space, MPI, space_id, TimeSeriesFile, write_dof_tables,
     write_function_h5)
@@ -157,8 +158,11 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     written = _tables_written.setdefault(checkpointfolder, set())
     tables = {}             # space id -> the file of its tables
     unlinked = set()
+    d = dual.current()
+    lattice = {"phig"} if d is not None else set()   # the dual mesh's fields, by cell
     for ui in q_:
-        tables.setdefault(space_id(function_space(q_[ui])), "dofs_{}.h5".format(ui))
+        if ui not in lattice:
+            tables.setdefault(space_id(function_space(q_[ui])), "dofs_{}.h5".format(ui))
     if MPI.rank(comm) == 0:
         recover_checkpoint(checkpointfolder)
         # Left over if an earlier run stopped while writing.
@@ -174,6 +178,11 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
                     unlinked.add(key)
     written -= comm.bcast(unlinked, root=0)
     for ui in q_:
+        if ui in lattice:
+            filename = path.join(tmpfolder, ui + ".h5")
+            d.write_function(filename, q_[ui], "current", mode="w")
+            d.write_function(filename, q_1[ui], "previous")
+            continue
         V = function_space(q_[ui])
         name = tables[space_id(V)]
         if space_id(V) not in written:
@@ -247,66 +256,96 @@ def init_from_restart(restart_folder, sys_comp, uc_comp,
     comm = MPI.comm_world
     if MPI.rank(comm) == 0:
         info_red('Restarting from checkpoint at time step {}'.format(tstep))
-    if backend_name != "dolfin":
-        _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm)
-        return
-    from dolfin import HDF5File
-    for ui in sys_comp:
-        filename = path.join(restart_folder, ui + '.h5')
-        with HDF5File(comm, filename, "r") as hdf5_file:
-            # A Function is a group carrying its element's signature; a bare
-            # vector a dataset carrying its partition.
-            if "signature" in hdf5_file.attributes("/current").list_attributes():
-                read = lambda u, name: hdf5_file.read(u, name)
-            else:
-                if num_processes is not None and num_processes != MPI.size(comm):
-                    raise ValueError(
-                        "The checkpoint in {} was written by {} processes as bare vectors; "
-                        "restart it with the same number (got {})".format(
-                            restart_folder, num_processes, MPI.size(comm)))
-                read = lambda u, name: hdf5_file.read(u.vector(), name, False)
-            read(q_[ui], "/current")
-            q_[ui].vector().apply('insert')
-            q_1[ui].vector().zero()
-            q_1[ui].vector().axpy(1., q_[ui].vector())
-            q_1[ui].vector().apply('insert')
-            # A checkpoint may hold only the current level of a field. In that
-            # case use it for the previous level too; the BDF solver then takes
-            # a first-order first step.
-            if hdf5_file.has_dataset("/previous"):
-                read(q_2[ui], "/previous")
-            else:
-                q_2[ui].vector().zero()
-                q_2[ui].vector().axpy(1., q_[ui].vector())
-            q_2[ui].vector().apply('insert')
+    _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm, num_processes)
 
 
-def _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm):
-    """init_from_restart's fields on a backend other than dolfin: each field's current
-    and previous levels, stored as Functions in dolfin's layout (by either backend, on
-    any number of processes), read with twoasis.backend.read_function_h5. A checkpoint
-    of bare vectors (dolfin's old format) restarts on dolfin alone."""
+def _checkpoint_kind(filename, comm):
+    """`(kind, has_previous)` of a field's checkpoint file: kind "function" (dolfin's
+    layout of a Function), "dual-lattice" (a phase field on the dual mesh,
+    DualMesh.write_function) or "bare" (dolfin's old bare vectors). Read on rank 0; an
+    error there is raised on every rank. Collective."""
     import h5py
+    found = None
+    if MPI.rank(comm) == 0:
+        try:
+            with h5py.File(filename, "r") as h5:
+                node = h5["current"]
+                layout = node.attrs.get("layout")
+                layout = layout.decode() if isinstance(layout, bytes) else layout
+                if layout == "dual-lattice":
+                    kind = layout
+                elif isinstance(node, h5py.Group) and "signature" in node.attrs:
+                    kind = "function"
+                else:
+                    kind = "bare"
+                found = (kind, "previous" in h5)
+        except (OSError, KeyError) as e:
+            found = "{}: not a checkpoint of a field ({})".format(filename, e)
+    found = comm.bcast(found, root=0)
+    if isinstance(found, str):
+        raise ValueError(found)
+    return found
+
+
+def _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm, num_processes=None):
+    """init_from_restart's fields: each field's current and previous levels, stored as
+    Functions in dolfin's layout (by either backend, on any number of processes; read
+    by twoasis.backend.read_function_h5), or on the dual mesh the phase field by
+    flow-mesh cell (DualMesh.read_function). A checkpoint of bare vectors (dolfin's old
+    format) restarts on dolfin alone, on the number of processes that wrote it."""
     from twoasis.backend import read_function_h5
+    d = dual.current()
     for ui in sys_comp:
         filename = path.join(restart_folder, ui + '.h5')
-        found = None
-        if MPI.rank(comm) == 0:
-            with h5py.File(filename, "r") as h5:
-                found = (isinstance(h5["current"], h5py.Group)
-                         and "signature" in h5["current"].attrs, "previous" in h5)
-        is_function, has_previous = comm.bcast(found, root=0)
-        if not is_function:
-            raise ValueError("{}: a checkpoint of bare vectors (dolfin's old format); "
-                             "restart it with backend=dolfin".format(filename))
-        read_function_h5(filename, q_[ui], "current")
+        kind, has_previous = _checkpoint_kind(filename, comm)
+        on_dual = d is not None and ui == "phig"
+        if kind == "dual-lattice" and not on_dual:
+            raise ValueError("{}: a phase field on the dual mesh; restart it with the "
+                             "phase_refine it was written with".format(filename))
+        if on_dual and kind != "dual-lattice":
+            raise ValueError("{}: a phase field on the flow mesh; restart it without "
+                             "phase_refine".format(filename))
+        if on_dual:
+            def read(u, name):
+                d.read_function(filename, name, u)
+        elif kind == "function":
+            def read(u, name):
+                read_function_h5(filename, u, name)
+        else:
+            read = _bare_vector_reader(filename, restart_folder, num_processes, comm)
+        read(q_[ui], "current")
         q_1[ui].vector().zero()
         q_1[ui].vector().axpy(1., q_[ui].vector())
+        q_1[ui].vector().apply('insert')       # dolfin's ghosts
+        # A checkpoint may hold only the current level of a field. In that case use
+        # it for the previous level too; the BDF solver then takes a first-order
+        # first step.
         if has_previous:
-            read_function_h5(filename, q_2[ui], "previous")
+            read(q_2[ui], "previous")
         else:
             q_2[ui].vector().zero()
             q_2[ui].vector().axpy(1., q_[ui].vector())
+            q_2[ui].vector().apply('insert')
+
+
+def _bare_vector_reader(filename, restart_folder, num_processes, comm):
+    """A reader of dolfin's old checkpoints, bare vectors in the dof order of the run
+    that wrote them: on dolfin, on as many processes."""
+    if backend_name != "dolfin":
+        raise ValueError("{}: a checkpoint of bare vectors (dolfin's old format); "
+                         "restart it with backend=dolfin".format(filename))
+    if num_processes is not None and num_processes != MPI.size(comm):
+        raise ValueError(
+            "The checkpoint in {} was written by {} processes as bare vectors; "
+            "restart it with the same number (got {})".format(
+                restart_folder, num_processes, MPI.size(comm)))
+    from dolfin import HDF5File
+
+    def read(u, name):
+        with HDF5File(comm, filename, "r") as hdf5_file:
+            hdf5_file.read(u.vector(), "/" + name, False)
+        u.vector().apply('insert')
+    return read
 
 
 def series_files(folder, name):
@@ -328,7 +367,7 @@ def merge_visualization_files(newfolder, **namespace):
                 merge_series(files)
 
 
-def load_timeseries(folder, q_, VV, constrained_domain, time=None):
+def load_timeseries(folder, q_, VV, time=None):
     """Set q_ (velocity, pressure, phase field and chemical potential) from the
     XDMF time series in folder, the Timeseries/ of an earlier run: at the last
     saved time of the velocity, or at its saved time closest to `time`; the
@@ -375,7 +414,7 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
 
     us = [q_['u{}'.format(i)] for i in range(gdim)]
     t, f, counter = step("u")
-    read_vector_series_step(f, "u", counter, us, constrained_domain)
+    read_vector_series_step(f, "u", counter, us)
     read(q_['p'], "p", t)
     W = function_space(q_['phig'])
     for i, name in enumerate(["phi", "g"]):

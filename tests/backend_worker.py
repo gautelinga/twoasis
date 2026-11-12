@@ -59,7 +59,7 @@ def keys(V, n_sub):
             comp[np.asarray(V.sub(i).dofmap().dofs())] = i
         return np.column_stack([comp, wrapped(X[:, :2])])
     from femtools.dolfinx.periodic import flat_collapse_map
-    from twoasis.backend.dolfinx import unique_dofs
+    from femtools.backend.dolfinx import unique_dofs
     U = unique_dofs(V)
     if n_sub == 0:
         X = V.tabulate_dof_coordinates()[:, :2]

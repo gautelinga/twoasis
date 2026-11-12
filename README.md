@@ -40,6 +40,11 @@ for repo in femtools partractools meshtools; do
 done
 ```
 
+The `twoasis` command runs one OpenMP and BLAS thread per process (it sets
+`OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1` unless they are set): with one MPI rank
+per core, threaded BLAS in each rank oversubscribes the cores and slows every step.
+Set the same variables when calling twoasis's modules from your own script.
+
 ## Running a simulation
 
 ```

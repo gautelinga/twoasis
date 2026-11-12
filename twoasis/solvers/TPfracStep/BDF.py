@@ -10,9 +10,10 @@ import math
 
 import numpy as np
 from twoasis.backend import (
-    as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, function_space, grad,
+    as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad,
     inner, nabla_grad, Timer)
 from twoasis.problems import info_blue
+from twoasis.common.utilities import axpy, mult, pointwise
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     assemble_phase_field_system, assemble_pressure_matrix,
@@ -55,7 +56,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     rho_ = Function(V)
     rho_inv_ = Function(V)
     mu_ = Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(function_space(q_['phig']), V)
+    phi_V = PhaseFieldOnVelocitySpace(V)
 
     # If things need to be precomputed
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
@@ -176,7 +177,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_compone
         acc_vals = acc.values()
     if gradp_is_uniform:
         gradp_vals = gradp_avg.values()
-        b_gp = Md * rho_inv_.vector()  # equals assemble(v*rho_inv_*dx)
+        b_gp = mult(Md, rho_inv_.vector(), "b_gp")  # equals assemble(v*rho_inv_*dx)
 
     for i, ui in enumerate(u_components):
         # zero out rhs
@@ -188,22 +189,22 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_compone
             assemble(bg0[ui] * dx, tensor=b_tmp[ui])
         # add average pressure gradient
         if gradp_is_uniform:
-            b_tmp[ui].axpy(-gradp_vals[i], b_gp)
+            axpy(b_tmp[ui], -gradp_vals[i], b_gp)
         else:
             b0[ui].zero()
             assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])
             b_tmp[ui].axpy(-1., b0[ui])
-        b_tmp[ui].axpy(-alpha[1], Md * x_1[ui])
-        b_tmp[ui].axpy(-alpha[2], Md * x_2[ui])
+        axpy(b_tmp[ui], -alpha[1], mult(Md, x_1[ui]))
+        axpy(b_tmp[ui], -alpha[2], mult(Md, x_2[ui]))
 
         if not matched_mu:
             TPT.assemble_rhs(i)
-            b_tmp[ui].axpy(1., TPT.vector() * rho_inv_.vector())
+            axpy(b_tmp[ui], 1., pointwise(TPT.vector(), rho_inv_.vector()))
 
         # Capillary force. The phase field is solved before the inner
         # iterations, so this term is fixed within the timestep.
         phigradg[ui].assemble_rhs()
-        b_tmp[ui].axpy(-1., phigradg[ui].rhs * rho_inv_.vector())
+        axpy(b_tmp[ui], -1., pointwise(phigradg[ui].rhs, rho_inv_.vector()))
 
     # assemble semi-implicit convection, diffusion etc. for lhs
     if matched_properties:
@@ -237,7 +238,7 @@ def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, rho_inv_, **NS_namespac
     b[ui].zero()
     b[ui].axpy(1., b_tmp[ui])
     gradp[ui].assemble_rhs(p_)
-    b[ui].axpy(-1., gradp[ui].rhs * rho_inv_.vector())
+    axpy(b[ui], -1., pointwise(gradp[ui].rhs, rho_inv_.vector()))
 
 
 def scalar_assemble(a_scalar, a_conv, Ta, dt, M, scalar_components, Schmidt_T, KT,
@@ -293,7 +294,7 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
                                 Lpft, b['phig'], bpf, fpf, t)
 
     # Add mass
-    b['phig'].axpy(-alpha[1], Mpf[0] * x_1['phig'])
-    b['phig'].axpy(-alpha[2], Mpf[0] * x_2['phig'])
+    axpy(b['phig'], -alpha[1], mult(Mpf[0], x_1['phig']))
+    axpy(b['phig'], -alpha[2], mult(Mpf[0], x_2['phig']))
 
     t1.stop()

@@ -21,10 +21,10 @@ from os import makedirs, path
 from numpy import array
 from twoasis.backend import name as backend_name
 from twoasis.backend import (
-    as_vector, assemble, BoundaryMarkers, DOLFIN_EPS, dx, FacetNormal, FiniteElement,
-    Function, FunctionSpace, geometric_dimension, list_timings, Measure, mesh_comm,
-    MixedElement, MPI, parameters, split, TestFunction, TestFunctions, TimingClear,
-    TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
+    as_vector, assemble, BoundaryMarkers, check_periodic_pairing, DOLFIN_EPS, dx, FacetNormal,
+    FiniteElement, Function, FunctionSpace, geometric_dimension, list_timings, Measure,
+    mesh_comm, MixedElement, MPI, parameters, set_default_mesh, split, TestFunction,
+    TestFunctions, TimingClear, TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
 
 import twoasis.common
 import twoasis.common.telemetry
@@ -34,7 +34,8 @@ import twoasis.solvers.TPfracStep
 from twoasis.common import (
     create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
     save_solution)
-from twoasis.common.utilities import check_periodic_pairing, Coefficient, phi_g
+import twoasis.common.dual
+from twoasis.common.utilities import Coefficient, phi_g
 from twoasis.problems import info_green, info_red, initial_memory_use, oasis_memory, OasisTimer
 
 
@@ -126,9 +127,10 @@ if telemetry:
     tel = twoasis.common.telemetry.start(path.join(newfolder, "Stats", "telemetry.jsonl"),
                                          MPI.comm_world)
 else:
-    tel = twoasis.common.telemetry.current
+    tel = twoasis.common.telemetry.start()
 
-# Declare FunctionSpaces and arguments
+# Declare FunctionSpaces and arguments. Constants made without a mesh are the flow mesh's.
+set_default_mesh(mesh)
 V = Q = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 #V = VectorFunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 #S = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
@@ -141,9 +143,13 @@ if phase_field_degree is None:
     phase_field_degree = velocity_degree
 if chemical_potential_degree is None:
     chemical_potential_degree = phase_field_degree
-phi_el = FiniteElement('CG', mesh.ufl_cell(), phase_field_degree)
-g_el = FiniteElement('CG', mesh.ufl_cell(), chemical_potential_degree)
-W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),
+# The phase field's mesh: the flow mesh, or with phase_refine > 0 its uniform refinement
+# (the dual mesh, twoasis/common/dual.py), where W lives.
+dual = twoasis.common.dual.start(mesh, phase_refine, constrained_domain)
+pf_mesh = dual.fine if dual else mesh
+phi_el = FiniteElement('CG', pf_mesh.ufl_cell(), phase_field_degree)
+g_el = FiniteElement('CG', pf_mesh.ufl_cell(), chemical_potential_degree)
+W = FunctionSpace(pf_mesh, MixedElement([phi_el, g_el]),
                   constrained_domain=constrained_domain)
 S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)
 check_periodic_pairing(constrained_domain, [V, Q] + (
@@ -156,6 +162,10 @@ subdomains.set_all(0)
 vars().update(mark_subdomains(**vars()) or {})
 ds = Measure("ds", domain=mesh, subdomain_data=subdomains)
 normal = FacetNormal(mesh)
+# On the dual mesh, the markers' refinement, where integrals of the phase field over
+# marked facets go (twoasis/common/dual.py, retarget)
+if dual:
+    dual.markers(subdomains)
 
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)
@@ -330,6 +340,7 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         pressure_hook(**vars())
         with tel.block("pressure_solve"):
             pressure_solve(**vars())
+        with tel.block("pressure_update"):
             pressure_update(**vars())
             if anderson is not None:
                 anderson(x_['p'], inner_iter)
@@ -339,7 +350,7 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
     # The passes stopped at their limit without converging: worth knowing, since the
     # step then carries the velocity-pressure splitting error of its last pass.
-    if udiff[0] > max(max_error, max_error_rel * unorm[0]):
+    if num_iter > 1 and udiff[0] > max(max_error, max_error_rel * unorm[0]):
         info_red("Warning: timestep {}: {} inner passes without converging (velocity change "
                  "{:.2e}, tolerance {:.2e})".format(tstep, inner_iter, udiff[0],
                                                     max(max_error, max_error_rel * unorm[0])))

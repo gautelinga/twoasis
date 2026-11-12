@@ -10,10 +10,11 @@ import numpy as np
 from twoasis.backend import (
     assemble, Constant, DirichletBC, dx, extent, Faces, Function, function_space,
     geometric_dimension, grad, inner, mark_walls, MPI, PeriodicBox, Point, read_mesh_file,
-    read_function_h5, RectangleMesh, SpatialCoordinate, write_dof_tables, write_function_h5,
+    read_function_h5, RectangleMesh, SpatialCoordinate, sqrt, write_dof_tables, write_function_h5,
     write_mesh_h5)
 
 
+from twoasis.common.dual import phase_on_flow_mesh
 from twoasis.common.utilities import compute_ind, physical_pressure, subfunction, subspace
 
 class PhysicalPressureBC(DirichletBC):
@@ -48,16 +49,9 @@ def centred(L):
     return (-L / 2, L / 2)
 
 
-def load_mesh(fname, periodic=None):
-    """Read the mesh stored as "mesh" in the HDF5 file fname (dolfin's layout):
-    twoasis.backend.read_mesh_file. `periodic` gives the axes (x, y, z) the problem
-    identifies, which dolfin's partition needs under MPI."""
-    return read_mesh_file(fname, periodic)
-
-
-def _info(s):
-    if MPI.rank(MPI.comm_world) == 0:
-        print(s)
+# load_mesh(fname, periodic=None): the mesh "mesh" of HDF5 file fname, `periodic` the
+# axes the problem identifies (twoasis.backend.read_mesh_file).
+load_mesh = read_mesh_file
 
 
 def interface_energy(phi_, sigma, epsilon, dx):
@@ -97,7 +91,6 @@ def hysing_quantities(q_, phi_, mesh, dx, axis=None):
     perimeter by the co-area formula (the integral of |grad c|) -- in 3D its
     sphericity pi^(1/3) (6 A)^(2/3) / S_b, S_b its surface area by the same formula
     (Adelsberger et al.'s 3D benchmark). All processes must call it (it assembles)."""
-    from twoasis.backend import inner, sqrt
     X = SpatialCoordinate(mesh)
     dim = geometric_dimension(mesh)
     axis = dim - 1 if axis is None else axis
@@ -256,7 +249,7 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
     deleted, so that the list is always one run's history."""
     uv()
     h5fname = "up_{}.h5".format(tstep)
-    phi__ = subfunction(q_['phig'], 0)
+    phi__ = phase_on_flow_mesh(q_)      # on the dual mesh, phi at the flow mesh's nodes
     phi__.rename("phi", "phi")
     from partractools import case
     P = physical_pressure(q_, Function(function_space(p_)))

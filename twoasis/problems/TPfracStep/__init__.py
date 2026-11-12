@@ -49,6 +49,9 @@ NS_parameters.update(
     # Phase field parameters
     phase_field_degree=None,         # degree of phi; None means velocity_degree
     chemical_potential_degree=None,  # degree of g; None means phase_field_degree
+    phase_refine=0,      # the dual mesh: solve the phase field on the flow mesh refined
+                         # uniformly this many times (0: on the flow mesh itself); see
+                         # twoasis/common/dual.py
 
     M=0.001,
     epsilon=0.04,

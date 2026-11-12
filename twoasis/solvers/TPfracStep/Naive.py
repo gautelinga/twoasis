@@ -26,10 +26,10 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 import math
 
 from twoasis.backend import (
-    assemble, constant_nullspace, div, dot, dx, element_degree, Function, function_space, grad,
+    assemble, constant_nullspace, div, dot, dx, element_degree, Function, grad,
     inner, lhs, normalize, PETScKrylovSolver, rhs, solve)
 
-from twoasis.common.utilities import homogenize
+from twoasis.common.utilities import axpy, homogenize, pointwise
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     add_contact_angles, PhaseFieldOnVelocitySpace, potential_linear_derivative,
@@ -44,10 +44,14 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
           fpf, bpf, velocity_update_solver, **NS_namespace):
     """Define the forms of all equations."""
     sigma_bar = sigma * 3. / (2 * math.sqrt(2))
+    from twoasis.common import dual
+    if dual.current() is not None:
+        raise NotImplementedError("the Naive solver writes each equation as one form on one "
+                                  "mesh: phase_refine (the dual mesh) needs BDF or IPCS")
 
     # Density, its inverse and viscosity on V, set from the phase field
     rho_, rho_inv_, mu_ = Function(V), Function(V), Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(function_space(q_['phig']), V)
+    phi_V = PhaseFieldOnVelocitySpace(V)
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     # Cahn-Hilliard: conservative advection of phi (the boundary term gives the
@@ -153,5 +157,5 @@ def velocity_update(u_components, u, v, x_, bcs, bcs0, dp_, dpdx, dt, rho_inv_, 
             dpdx.vector().axpy(1., assemble(dp_.dx(i) * v * dx) * ML_inv)
         else:
             solve(u * v * dx == dp_.dx(i) * v * dx, dpdx, bcs0[ui])
-        x_[ui].axpy(-dt, dpdx.vector() * rho_inv_.vector())
+        axpy(x_[ui], -dt, pointwise(dpdx.vector(), rho_inv_.vector()))
         [bc.apply(x_[ui]) for bc in bcs[ui]]

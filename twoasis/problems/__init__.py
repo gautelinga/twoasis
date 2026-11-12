@@ -4,8 +4,7 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from twoasis.backend import Constant, Mesh, mesh_comm, MPI, parameters, Timer
-from twoasis.backend import name as backend_name
+from twoasis.backend import Constant, Mesh, MPI, parameters, repair_partition, Timer
 import inspect
 import pickle
 import difflib
@@ -220,17 +219,8 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     if inspect.isfunction(constrained_domain):
         constrained_domain = constrained_domain(mesh=mesh, **NS_parameters)
 
-    # dolfin's partition can leave a process holding a vertex of a periodic face
-    # without knowing that it is periodic, and the periodic dofmap then gives it a
-    # wrong dof. femtools moves the few cells concerned to another process (most
-    # partitions need no move, and the mesh is then used as it is).
-    # DOLFINx pairs periodic dofs by their coordinates, on any partition.
-    if (backend_name == "dolfin" and MPI.size(mesh_comm(mesh)) > 1
-            and hasattr(constrained_domain, "upper")):
-        from femtools.periodic_partition import repaired
-        mesh = repaired(mesh, constrained_domain.upper, constrained_domain.periodic,
-                        mesh_comm(mesh), log=info_blue,
-                        tol=getattr(constrained_domain, "tol", None))
+    # A partition the periodic dofmap cannot break (moves cells on dolfin when needed).
+    mesh = repair_partition(mesh, constrained_domain, log=info_blue)
 
     # Returned dictionary to be updated in the NS namespace
     d = dict(mesh=mesh, constrained_domain=constrained_domain)

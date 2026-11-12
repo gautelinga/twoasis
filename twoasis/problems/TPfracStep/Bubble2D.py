@@ -51,7 +51,7 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
     NS_parameters.update(
         case=case,
         periodic=True,  # periodic sides; False: free-slip side walls, as in the benchmark
-        hysing_stats=True,  # Stats/benchmark.dat: Hysing's quantities (shared.hysing_quantities)
+        hysing_stats=False,  # True: Stats/benchmark.dat (shared.hysing_quantities)
         T=3.0,
         Lx=1,
         Ly=2,

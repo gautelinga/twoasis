@@ -94,7 +94,7 @@ def create_bcs(V, Q, u0, W, subdomains, injected_phase, **NS_namespace):
 
 
 def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, mesh,
-               constrained_domain, **NS_namespace):
+               **NS_namespace):
     if initial_state is None:
         set_subfunction(q_['phig'], 0, Expression(
             #"tanh((sqrt(pow(x[0], 2)+pow(x[1], 2))-0.45)/(sqrt(2)*epsilon))",
@@ -104,7 +104,7 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Ly, y0, initial_state, 
     elif initial_state.replace("/", "").endswith("Timeseries"):
         # The last state in the Timeseries/ folder of an earlier run.
         info_blue("initializing from: " + initial_state)
-        load_timeseries(initial_state, q_, VV, constrained_domain)
+        load_timeseries(initial_state, q_, VV)
         for key in q_.keys():
             q_1[key].vector()[:] = q_[key].vector()
             q_2[key].vector()[:] = q_[key].vector()

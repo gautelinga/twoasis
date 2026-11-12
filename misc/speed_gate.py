@@ -7,8 +7,8 @@ Each case runs `repeat` times on each backend, the backends interleaved (dolfin,
 dolfinx, dolfin, ...) so that a slow spell of the machine hits both, with telemetry on
 (twoasis/common/telemetry.py). A run's time per step is the mean wall time of its steps
 after the first `warmup` (which take more inner passes and include the JIT compilation);
-a backend's is the smallest over its runs. The gate is that ratio, DOLFINx over dolfin,
-per case. The blocks and solvers are reported the same way, for information only. Exit
+a backend's is its fastest run's. The gate is that ratio, DOLFINx over dolfin, per
+case. The fastest runs' blocks, solvers and iterations are reported, for information. Exit
 status 1 when a case fails the gate.
 """
 import argparse
@@ -33,8 +33,7 @@ def run(problem, dt, backend, steps, nproc, folder):
             "checkpoint=1000000", "plot_interval=1000000", "timestamps_interval=1000000",
             "folder=" + str(folder)]
     if nproc > 1:
-        args = ["mpirun", "-np", str(nproc), "-x", "TWOASIS_BACKEND", "-x", "PYTHONPATH",
-                "-x", "OMP_NUM_THREADS"] + args
+        args = ["mpirun", "-np", str(nproc)] + args     # the ranks inherit `env`
     log = folder.with_suffix(".log")
     with open(log, "w") as f:
         proc = subprocess.run(args, env=env, stdout=f, stderr=subprocess.STDOUT, cwd=folder.parent)
@@ -78,10 +77,8 @@ def main():
                 folder = out / "{}_{}_np{}_{}".format(case, backend, a.np, k)
                 s = summary(run(case, CASES[case], backend, a.steps, a.np, folder), a.warmup)
                 print("  {} {} run {}: {:.4f} s/step".format(case, backend, k, s["wall"]))
-                b = best.setdefault(backend, {})
-                for key, v in s.items():
-                    b[key] = min(b.get(key, v), v) if not key.startswith(("its", "passes")) \
-                        else v
+                if backend not in best or s["wall"] < best[backend]["wall"]:
+                    best[backend] = s
         d, x = best["dolfin"], best["dolfinx"]
         ratio = x["wall"] / d["wall"]
         ok = ratio <= GATE

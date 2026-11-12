@@ -31,13 +31,11 @@ ROLES = {"velocity_krylov_solver": "velocity", "pressure_krylov_solver": "pressu
          "phase_field_krylov_solver": "phase_field", "velocity_update_solver": "projection"}
 BLOCKS = ("phase_field_assemble", "phase_field_solve", "first_inner_assemble",
           "velocity_assemble", "velocity_solve", "pressure_assemble", "pressure_solve",
-          "velocity_update", "hooks")
+          "pressure_update", "velocity_update", "hooks")
 
 
 class _Off:
     """Telemetry switched off."""
-    enabled = False
-
     def solver(self, sol, name):
         return sol
 
@@ -87,8 +85,6 @@ class _RecordedSolver:
 
 class Telemetry:
     """Telemetry written to `path` (on rank 0 of `comm`)."""
-    enabled = True
-
     def __init__(self, path, comm):
         from petsc4py import PETSc
         PETSc.Log.begin()
@@ -99,7 +95,8 @@ class Telemetry:
         self._pc_before = {}
         self._pc_time_before = {}
         self._blocks = dict.fromkeys(BLOCKS, 0.0)
-        self._file = open(path, "w") if comm.rank == 0 else None
+        # appended to: a restart writes into its run's folder, after the steps before it
+        self._file = open(path, "a") if comm.rank == 0 else None
         self._t0 = None
 
     def solver(self, sol, name):
@@ -130,7 +127,7 @@ class Telemetry:
         pc_times = [i["time"] for i in info]
         local = np.array([wall] + list(self._blocks.values())
                          + [self._solvers[r]["seconds"] for r in roles]
-                         + [t - self._pc_time_before.get(r, 0.0) for r, t in zip(roles, pc_times)])
+                         + [pt - self._pc_time_before.get(r, 0.0) for r, pt in zip(roles, pc_times)])
         from mpi4py import MPI
         # Elementwise: the pickle-based allreduce would compare whole arrays.
         times = np.empty_like(local)
@@ -148,9 +145,9 @@ class Telemetry:
                                           pc_seconds=times[nb + len(roles) + k])
             self._file.write(json.dumps(line) + "\n")
             self._file.flush()
-        for r, pc, t in zip(roles, pcs, pc_times):
+        for r, pc, pt in zip(roles, pcs, pc_times):
             self._pc_before[r] = pc
-            self._pc_time_before[r] = t
+            self._pc_time_before[r] = pt
             self._solvers[r].update(solves=0, its=0, seconds=0.0)
         self._blocks = dict.fromkeys(self._blocks, 0.0)
 
@@ -160,14 +157,15 @@ class Telemetry:
             self._file = None
 
 
-#: The telemetry in force: off unless the driver starts it (start).
+#: The telemetry in force, set by the driver (start).
 current = _Off()
 
 
-def start(path, comm):
-    """Switch telemetry on, writing to `path`; returns it."""
+def start(path=None, comm=None):
+    """The run's telemetry, from now on `current`: writing to `path`, or off without
+    one. Returns it."""
     global current
-    current = Telemetry(path, comm)
+    current = Telemetry(path, comm) if path is not None else _Off()
     return current
 
 

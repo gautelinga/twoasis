@@ -10,7 +10,7 @@ from twoasis.backend import DirichletBC, Expression, mesh_coordinates, UnitSquar
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
-from twoasis.problems.TPfracStep.shared import Faces, PeriodicBox
+from twoasis.problems.TPfracStep.shared import PeriodicBox
 
 
 def mesh(Nx=128, Ny=64, **params):
@@ -23,7 +23,8 @@ def constrained_domain(**params):
     return PeriodicBox({0: (0, 2.0)})
 
 
-TOP, BOTTOM = 3, 2  # the walls' markers
+top = "std::abs(x[1]-1) < 1e-8"
+bottom = "std::abs(x[1]) < 1e-8"
 
 
 def problem_parameters(NS_parameters, **NS_namespace):
@@ -48,16 +49,11 @@ def problem_parameters(NS_parameters, **NS_namespace):
     )
 
 
-def mark_subdomains(subdomains, **NS_namespace):
-    Faces(1, 1.0).mark(subdomains, TOP)
-    Faces(1, 0.0).mark(subdomains, BOTTOM)
-
-
-def create_bcs(V, u_wall, subdomains, **NS_namespace):
-    bc_ux_top = DirichletBC(V, u_wall, subdomains, TOP)
-    bc_ux_bottom = DirichletBC(V, -u_wall, subdomains, BOTTOM)
-    bc_uy_top = DirichletBC(V, 0, subdomains, TOP)
-    bc_uy_bottom = DirichletBC(V, 0, subdomains, BOTTOM)
+def create_bcs(V, u_wall, **NS_namespace):
+    bc_ux_top = DirichletBC(V, u_wall, top)
+    bc_ux_bottom = DirichletBC(V, -u_wall, bottom)
+    bc_uy_top = DirichletBC(V, 0, top)
+    bc_uy_bottom = DirichletBC(V, 0, bottom)
     return dict(u0=[bc_ux_top, bc_ux_bottom],
                 u1=[bc_uy_top, bc_uy_bottom],
                 p=[],

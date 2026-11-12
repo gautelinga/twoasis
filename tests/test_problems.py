@@ -103,6 +103,35 @@ def test_problem_runs(tmp_path, problem, solver):
     run_twoasis(tmp_path, problem=problem, solver=solver, dt=1e-4, T=2e-4, **QUIET, **params)
 
 
+def simplepore2d(meshes):
+    """SimplePore2D's lattice, made by meshes/lattice_mesh.py."""
+    pytest.importorskip("gmsh")
+    pytest.importorskip("meshio")
+    subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "lattice_mesh.py"), "-res", "0.1"],
+                   cwd=str(meshes), check=True, capture_output=True, timeout=300)
+    return dict(res=0.1)
+
+
+# The problems the dual-mesh smoke test adds to PROBLEMS and MESH_PROBLEMS, with what
+# makes them small.
+DUAL_EXTRA = dict(PeriodicBubble2D=lambda m: {}, TaylorBubble2D=lambda m: {},
+                  TaylorGreen2D=lambda m: {}, SimplePore2D=simplepore2d,
+                  Bubble3D=lambda m: dict(res=0.25))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("problem", PROBLEMS + sorted(MESH_PROBLEMS) + sorted(DUAL_EXTRA))
+def test_problem_runs_on_dual_mesh(tmp_path, problem):
+    """Every problem with its phase field on the flow mesh refined once
+    (phase_refine=1, twoasis/common/dual.py): its markers, contact angles, Dirichlet
+    conditions, statistics and timestamps on the right meshes."""
+    params = with_mesh(tmp_path, problem)
+    if problem in DUAL_EXTRA:
+        params = DUAL_EXTRA[problem](tmp_path / "meshes")
+    run_twoasis(tmp_path, problem=problem, phase_refine=1, dt=1e-4, T=2e-4, **QUIET,
+                **params)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("problem,nprocs", [("Porous2D", 2), ("Porous3D", 3)])
 def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
@@ -191,7 +220,7 @@ def test_partrac_case_walls(tmp_path):
     from partractools.case import read_params
     from twoasis.problems.TPfracStep.CylArr2D import get_fname
     # The expected walls from dolfin, whichever backend the runs are on
-    from twoasis.backend.dolfin import mark_walls, read_mesh_file as load_mesh
+    from femtools.backend.dolfin import mark_walls, read_mesh_file as load_mesh
     require_mpi(3)
     params = with_mesh(tmp_path, "CylArr2D")
     mesh = load_mesh(str(tmp_path / get_fname(ext="h5", **params)))

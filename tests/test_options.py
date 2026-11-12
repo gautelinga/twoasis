@@ -134,3 +134,17 @@ def test_hysing_case_2_starts(tmp_path):
     td = load_tdata(tmp_path)
     assert np.isfinite(td).all()
     assert td[-1, 5] < 0.1          # E_kin; Bubble2D's tdata.dat has E_grav at 8
+
+
+def test_unconverged_passes_warned_only_with_passes(tmp_path):
+    """The warning that a step's inner passes stopped unconverged is for runs that allow
+    more than one pass; with max_iter=1 every step would print it."""
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    warning = "inner passes without converging"
+    run_twoasis(one, solver="BDF", T=0.006, max_iter=1, iters_on_first_timestep=1, **BUBBLE)
+    assert warning not in (one / "stdout.txt").read_text()
+    run_twoasis(two, solver="BDF", T=0.006, max_iter=2, iters_on_first_timestep=2,
+                max_error=1e-30, max_error_rel=1e-30, **BUBBLE)
+    assert (two / "stdout.txt").read_text().count(warning) == 3

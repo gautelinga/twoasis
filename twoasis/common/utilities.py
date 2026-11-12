@@ -5,10 +5,49 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
 from twoasis.backend import (
-    apply_bc, assemble, assemble_matrix, AssignedVectorFunction, Coefficient, Constant,
+    apply_bc, as_backend_type, assemble, assemble_matrix, AssignedVectorFunction, Coefficient, Constant,
     DirichletBC, div, dx, element_degree, Function, function_space, FunctionSpace,
     geometric_dimension, grad, inner, nodal_values, set_subfunction, space_mesh, split,
     subfunction, subspace, TestFunction, Timer, TrialFunction, Vector, weighted_gradient_matrix)
+
+def _vec(v):
+    """The PETSc Vec of a backend Vector (or the Vec itself)."""
+    return v if hasattr(v, "pointwiseMult") else as_backend_type(v).vec()
+
+
+def _work(owner, slot, create):
+    """A PETSc Vec kept with the PETSc object `owner` under `slot`, made by `create()`
+    the first time."""
+    name = "twoasis_" + slot
+    w = owner.query(name)
+    if w is None:
+        w = create()
+        owner.compose(name, w)
+    return w
+
+
+def mult(A, x, slot="mult"):
+    """A x, in a PETSc Vec kept with A under `slot`: the next product with A in that slot
+    overwrites it."""
+    M = as_backend_type(A).mat()
+    w = _work(M, slot, M.createVecLeft)
+    M.mult(_vec(x), w)
+    return w
+
+
+def pointwise(u, v, slot="pointwise"):
+    """The pointwise product of vectors u and v, in a PETSc Vec kept with u under
+    `slot`."""
+    U = _vec(u)
+    w = _work(U, slot, U.duplicate)
+    w.pointwiseMult(U, _vec(v))
+    return w
+
+
+def axpy(y, a, w):
+    """y += a*w, w a PETSc Vec (from mult or pointwise)."""
+    _vec(y).axpy(a, w)
+
 
 class OasisFunction(Function):
     """Function with more or less efficient projection methods
@@ -71,7 +110,7 @@ class OasisFunction(Function):
         if not self.matvec[0] is None:
             mat, func = self.matvec
             self.rhs.zero()
-            self.rhs.axpy(1.0, mat * func.vector())
+            axpy(self.rhs, 1.0, mult(mat, func.vector()))
 
         else:
             assemble(self.bf, tensor=self.rhs)
@@ -93,7 +132,7 @@ class OasisFunction(Function):
 
         else:
             self.vector().zero()
-            self.vector().axpy(1.0, self.rhs * self.ML)
+            axpy(self.vector(), 1.0, pointwise(self.rhs, self.ML))
 
 
 class GradFunction(OasisFunction):
@@ -134,24 +173,28 @@ class GradFunction(OasisFunction):
 
         """
         if isinstance(u, Coefficient):
-            self.matvec[1] = u
-            self.bf = u.dx(self.i) * self.test * dx()
-
+            self._source(u)
         if not self.matvec[0] is None:
             mat, func = self.matvec
             self.rhs.zero()
-            self.rhs.axpy(1.0, mat * func.vector())
+            axpy(self.rhs, 1.0, mult(mat, func.vector()))
         else:
             assemble(self.bf, tensor=self.rhs)
 
+    def _source(self, u):
+        """Differentiate u from now on; the form is made only where it is assembled
+        (no matrix) and only when u is another Function."""
+        if u is not self.matvec[1]:
+            self.matvec[1] = u
+            if self.matvec[0] is None:
+                self.bf = u.dx(self.i) * self.test * dx()
+
     def __call__(self, u=None, assemb_rhs=True):
         if isinstance(u, Coefficient):
-            self.matvec[1] = u
-            self.bf = u.dx(self.i) * self.test * dx()
-
+            self._source(u)
         if self.method.lower() == "gradient_matrix":
             self.vector().zero()
-            self.vector().axpy(1.0, self.WGM * self.matvec[1].vector())
+            axpy(self.vector(), 1.0, mult(self.WGM, self.matvec[1].vector()))
         else:
             OasisFunction.__call__(self, assemb_rhs=assemb_rhs)
 
@@ -177,20 +220,39 @@ class DivRHS:
         else:
             self.rhs.zero()
             for mat, u in self.matvec:
-                self.rhs.axpy(1.0, mat * u.vector())
+                axpy(self.rhs, 1.0, mult(mat, u.vector()))
 
 
 class PhiGradRHS:
     """The capillary force's component i, the integral of phi*g.dx(i)*v over the
-    domain (v a test function on V), as a Vector `rhs` that assemble_rhs fills."""
+    domain (v a test function on V), as a Vector `rhs` that assemble_rhs fills.
+
+    On the dual mesh (phig on a refinement of V's mesh) it is assembled there, against
+    the test functions of V's element on that mesh, and taken to V's by the transpose
+    of the prolongation (DualMesh.restrict_rhs): V's basis functions are those fine ones
+    combined, so this is the same integral, every quadrature point on the fine mesh."""
 
     def __init__(self, phig_, V, i):
+        from twoasis.common import dual
         phi_, g_ = split(phig_)
-        self.form = phi_ * g_.dx(i) * TestFunction(V) * dx
-        self.rhs = assemble(self.form)
+        self.dual = dual.current()
+        self.V = V
+        if self.dual is None:
+            self.form = phi_ * g_.dx(i) * TestFunction(V) * dx
+            self.rhs = assemble(self.form)
+            return
+        self.Vf = self.dual.fine_space(V)
+        self.form = phi_ * g_.dx(i) * TestFunction(self.Vf) * dx
+        self.fine = assemble(self.form)
+        self.rhs = Vector(Function(V).vector())
+        self.assemble_rhs()
 
     def assemble_rhs(self):
-        assemble(self.form, tensor=self.rhs)
+        if self.dual is None:
+            assemble(self.form, tensor=self.rhs)
+            return
+        assemble(self.form, tensor=self.fine)
+        self.dual.restrict_rhs(self.fine, self.Vf, self.V, self.rhs)
 
 
 class TPsource(Function):
@@ -225,7 +287,11 @@ def phi_g(q_):
     the physical pressure minus phi*g. phi and g are each interpolated onto the
     pressure space (femtools.fast_interpolation, a transfer matrix built once),
     so phi*g is exact at its nodes."""
+    from twoasis.common import dual
     Q = function_space(q_['p'])
+    d = dual.current()
+    if d is not None:     # on the dual mesh: at Q's nodes, which are the fine mesh's too
+        return d.values_at(q_['phig'], 0, Q) * d.values_at(q_['phig'], 1, Q)
     phi, g = q_['phig'].split()
     return nodal_values(phi, Q) * nodal_values(g, Q)
 
@@ -249,26 +315,3 @@ def compute_ind(q_, phase=-1):
     ind_.vector().set_local(3*c_**2 - 2*c_**3)
     ind_.vector().apply("insert")
     return ind_
-
-
-def check_periodic_pairing(constrained_domain, spaces):
-    """Stop a parallel run if dolfin's periodic dofmap has given a node on a
-    periodic face a dof of its own instead of its partner's (it can, depending on
-    the partition; post_import_problem repairs the partition to avoid it). The box
-    must come from PeriodicBox, which carries its bounds. Spaces of degree 1 and 2
-    are checked (a mixed space when its parts have one degree);
-    femtools.periodic_partition.check_space_pairing raises PairingError.
-    """
-    from twoasis.backend import name
-    if name != "dolfin":  # DOLFINx pairs periodic dofs by their coordinates
-        return
-    from dolfin import MPI
-    mesh = spaces[0].mesh()
-    if MPI.size(mesh.mpi_comm()) == 1 or not hasattr(constrained_domain, "upper"):
-        return
-    from femtools.periodic_partition import check_space_pairing
-    for V in (V for V in spaces if V.ufl_element().degree() <= 2):
-        check_space_pairing(V, constrained_domain.upper, constrained_domain.periodic,
-                            mesh.mpi_comm(), what=str(V.ufl_element()),
-                            lower=constrained_domain.lower,
-                            tol=getattr(constrained_domain, "tol", None))

@@ -1,14 +1,14 @@
 """The finite-element backend twoasis's driver and solvers run on.
 
-The driver (TPfracStep.py), the solvers (solvers/TPfracStep) and the projections
-(common/utilities.py) take their finite-element names from here instead of from dolfin, so
-that another backend can provide them: legacy dolfin (twoasis/backend/dolfin.py, whose
-docstring lists the names: the contract) or DOLFINx (twoasis/backend/dolfinx.py).
+The driver (TPfracStep.py), the solvers (solvers/TPfracStep) and the problems take their
+finite-element names from here: femtools.backend's names (femtools.backend.NAMES), from
+femtools.backend.dolfin or femtools.backend.dolfinx, with the dual mesh's measures and
+Dirichlet conditions (twoasis/backend/_dual.py).
 
 Which one is fixed when this module is first imported (`choose`): backend=dolfin,
 backend=dolfinx or backend=auto on the command line, else the environment variable
 TWOASIS_BACKEND, else auto. auto takes the backend a restart's checkpoint recorded
-(params.dat), and dolfin otherwise: dolfin stays the default for now.
+(params.dat), and dolfin otherwise.
 """
 import os
 import sys
@@ -28,12 +28,13 @@ def _argument(argv, key):
 
 def checkpoint_backend(restart_folder):
     """The backend recorded in restart_folder/params.dat, or None (no file, or a
-    checkpoint from before backends were recorded, which is dolfin's)."""
+    checkpoint without the record, which is dolfin's)."""
     import pickle
     try:
         with open(os.path.join(restart_folder, "params.dat"), "rb") as f:
             return pickle.load(f).get("backend")
-    except (OSError, pickle.UnpicklingError, EOFError, AttributeError):
+    except (OSError, pickle.UnpicklingError, EOFError, AttributeError, ImportError,
+            IndexError, TypeError, ValueError):     # what unpickling a stray file raises
         return None
 
 
@@ -52,9 +53,18 @@ def choose(argv=None, environ=None):
     return requested
 
 
-if choose() == "dolfin":
-    from twoasis.backend.dolfin import *  # noqa: F401,F403
-    from twoasis.backend.dolfin import __all__  # noqa: F401
-else:
-    from twoasis.backend.dolfinx import *  # noqa: F401,F403
-    from twoasis.backend.dolfinx import __all__  # noqa: F401
+def _names():
+    import importlib
+    from femtools.backend import NAMES
+    from twoasis.backend._dual import dirichlet_class, measure_class
+    base = importlib.import_module("femtools.backend." + choose())
+    names = {n: getattr(base, n) for n in NAMES}
+    names["Measure"] = measure_class(base.ufl)
+    names["dx"] = names["Measure"]("dx")
+    names["DirichletBC"] = dirichlet_class(base.DirichletBC, base.space_mesh)
+    return names
+
+
+globals().update(_names())
+from femtools.backend import NAMES  # noqa: E402
+__all__ = list(NAMES)

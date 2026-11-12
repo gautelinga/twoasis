@@ -64,7 +64,7 @@ else:
     result = {}
     for time in (None, 0.1):
         try:
-            t = load_timeseries(folder, q_, VV, pb, time=time)
+            t = load_timeseries(folder, q_, VV, time=time)
         except ValueError as e:
             result["error"] = str(e)
             break
@@ -237,7 +237,7 @@ if mode == "write":
 else:
     result = {}
     for time in (None, 0.1):
-        t = load_timeseries(folder, q_, VV, pb, time=time)
+        t = load_timeseries(folder, q_, VV, time=time)
         errors = {}
         for k in us + ["p", "phi", "g"]:
             fn = q_[k] if k in q_ else subfunction(q_["phig"], ("phi", "g").index(k))

@@ -368,7 +368,7 @@ PERIODIC_3D = r"""
 import sys
 from dolfin import FiniteElement, FunctionSpace, MixedElement, MPI, set_log_level
 from femtools.periodic_partition import PairingError
-from twoasis.common.utilities import check_periodic_pairing
+from twoasis.backend import check_periodic_pairing
 from twoasis.problems.TPfracStep.shared import centred, load_mesh, PeriodicBox
 set_log_level(40)
 mesh = load_mesh(sys.argv[1], periodic=(True, True, False))
@@ -396,7 +396,7 @@ import h5py
 import numpy as np
 import dolfin as df
 from femtools.periodic_partition import PairingError
-from twoasis.common.utilities import check_periodic_pairing
+from twoasis.backend import check_periodic_pairing
 from twoasis.problems import post_import_problem
 from twoasis.problems.TPfracStep.shared import centred, PeriodicBox
 df.set_log_level(40)
@@ -530,3 +530,16 @@ def test_physical_pressure_bc():
     x = Q.tabulate_dof_coordinates()[dofs]
     expected = 2.5 - np.tanh(x[:, 0] - 0.5) * (x[:, 1] + 1)
     assert np.abs(p.vector().get_local()[dofs] - expected).max() < 1e-12
+
+
+def test_telemetry_appends_after_a_restart(tmp_path):
+    """A restart writes its steps after the earlier run's in the same telemetry file."""
+    from mpi4py import MPI as _MPI
+    from twoasis.common import telemetry
+    path = str(tmp_path / "telemetry.jsonl")
+    for tstep in (1, 2):                  # the run, then its restart
+        tel = telemetry.Telemetry(path, _MPI.COMM_SELF)
+        tel.start_step()
+        tel.end_step(tstep, 0.1 * tstep, 1)
+        tel.close()
+    assert [r["tstep"] for r in telemetry.read(path)] == [1, 2]

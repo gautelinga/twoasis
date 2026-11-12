@@ -149,14 +149,17 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, Lx, Ly, init_state, che
         [bc.apply(x_2[ui]) for bc in bcs[ui]]
 
 
-def pre_solve_hook(**NS_namespace):
-    return start_timestamps(
-        ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"], **NS_namespace)
+def pre_solve_hook(ds, **NS_namespace):
+    namespace = start_timestamps(
+        ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "rad", "res", "dt"],
+        ds=ds, **NS_namespace)
+    namespace["wall_area"] = assemble(Constant(1.) * ds(1))   # the obstacles' walls
+    return namespace
 
 
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,
                   timestampsfolder, stat_interval, timestamps_interval, uv, mesh, ds,
-                  **NS_namespace):
+                  wall_area, **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim and the energies per
     volume (kinetic, interface gradient and double-well parts); to Stats/wetting.dat:
     tstep, t and the fraction of the obstacles' walls the phase phi = +1 wets (the
@@ -166,7 +169,7 @@ def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, stat
     if tstep % stat_interval == 0:
         write_tdata(statsfolder, tstep, t,
                     standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh))
-        wet = assemble(0.5 * (1 + phi_) * ds(1)) / assemble(Constant(1.) * ds(1))
+        wet = assemble(0.5 * (1 + phi_) * ds(1)) / wall_area
         if MPI.rank(MPI.comm_world) == 0:
             append_row(path.join(statsfolder, "wetting.dat"), tstep,
                        "{:d} {:.8f} {:.10e}\n".format(tstep, t, wet))

@@ -10,9 +10,10 @@ import math
 
 import numpy as np
 from twoasis.backend import (
-    as_vector, assemble, Constant, dot, dx, Function, function_space, grad, inner, Matrix,
+    as_vector, assemble, Constant, dot, dx, Function, grad, inner, Matrix,
     nabla_grad, Timer)
 from twoasis.problems import info_blue
+from twoasis.common.utilities import axpy, mult
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     assemble_phase_field_system, assemble_pressure_matrix,
@@ -39,7 +40,7 @@ def setup(u_components, u, v, p, q, bcs,
     rho_ = Function(V)
     rho_inv_ = Function(V)
     mu_ = Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(function_space(q_['phig']), V)
+    phi_V = PhaseFieldOnVelocitySpace(V)
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     # Mass matrix without density coefficient
@@ -143,13 +144,13 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Mt, Md, scalar_com
     acc_is_uniform = isinstance(acc, Constant)
     if acc_is_uniform:
         acc_vals = acc.values()
-        b_rho = Md * rho_.vector()
+        b_rho = mult(Md, rho_.vector(), "b_rho")
 
     for i, ui in enumerate(u_components):
         # start with (gravitational) acceleration
         if acc_is_uniform:
             b_tmp[ui].zero()
-            b_tmp[ui].axpy(acc_vals[i], b_rho)
+            axpy(b_tmp[ui], acc_vals[i], b_rho)
         else:
             assemble(rho_ * bg0[ui] * dx, tensor=b_tmp[ui])
         # add the mean pressure gradient (a hook may change it during the run)
@@ -160,7 +161,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Mt, Md, scalar_com
             b_tmp[ui].axpy(-1., b0[ui])
 
         # Add transient, convection and diffusion
-        b_tmp[ui].axpy(1. / dt, Mt[0] * x_1[ui])
+        axpy(b_tmp[ui], 1. / dt, mult(Mt[0], x_1[ui]))
         if not matched_mu:
             TPT.assemble_rhs(i)
             b_tmp[ui].axpy(1., TPT.vector())
@@ -222,5 +223,5 @@ def phase_field_assemble(dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha, b,
     assemble_phase_field_system(1. / dt, Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
                                 Lpft, b['phig'], bpf, fpf, t)
     # Add mass
-    b['phig'].axpy(1. / dt, Mpf[0] * x_1['phig'])
+    axpy(b['phig'], 1. / dt, mult(Mpf[0], x_1['phig']))
     t1.stop()

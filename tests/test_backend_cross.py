@@ -12,7 +12,7 @@ import sys
 import numpy as np
 import pytest
 
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, once
 
 pytest.importorskip("dolfinx")
 
@@ -24,8 +24,8 @@ SOLUTION_TOL = 1e-9
 # round-off. name: (row space, column space) of a matrix, the space of a vector.
 OPERATORS = {
     "Md": ("V", "V"), "divu_0": ("Q", "V"), "divu_1": ("Q", "V"), "gradp_0": ("V", "Q"),
-    "gradp_M": ("V", "V"), "Mpf_0": ("W", "W"), "Mpf_1": ("W", "W"),
-    "Apf_const": ("W", "W"), "Apf": ("W", "W"), "WGM": ("V", "Q"),
+    "gradp_M": ("V", "V"), "Mpf": ("W", "W"), "Mpf_form": ("W", "W"),
+    "Apf_form": ("W", "W"), "Apf": ("W", "W"), "WGM": ("V", "Q"),
     "Fv": "V", "mass_Q_inv": "Q", "rho_": "V", "mu_": "V", "b_phig": "W"}
 # Built from the phase field after its solve, and the solutions: equal to the
 # solvers' tolerance.
@@ -40,13 +40,13 @@ def results(tmp_path_factory):
     """{backend: (arrays, {space: permutation to the common order})}."""
     out = {}
     for backend in ("dolfin", "dolfinx"):
-        path = tmp_path_factory.mktemp(backend) / "out.npz"
-        env = dict(os.environ, TWOASIS_BACKEND=backend, PYTHONPATH=str(REPO_ROOT),
-                   OMP_NUM_THREADS="1")
-        proc = subprocess.run([sys.executable, str(WORKER), str(path)], env=env,
-                              capture_output=True, text=True, timeout=900)
-        assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-4000:]
-        data = dict(np.load(path))
+        def make(wd):
+            env = dict(os.environ, TWOASIS_BACKEND=backend, PYTHONPATH=str(REPO_ROOT),
+                       OMP_NUM_THREADS="1")
+            proc = subprocess.run([sys.executable, str(WORKER), str(wd / "out.npz")], env=env,
+                                  capture_output=True, text=True, timeout=900)
+            assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-4000:]
+        data = dict(np.load(once(tmp_path_factory, "cross_" + backend, make) / "out.npz"))
         perms = {}
         for space in "VQW":
             k = np.round(data["keys_" + space], 9)

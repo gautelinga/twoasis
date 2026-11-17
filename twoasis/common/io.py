@@ -14,7 +14,7 @@ from femtools.swap import new_folder, recover, swap_in
 from twoasis.common import dual
 from twoasis.backend import (
     Function, function_space, MPI, space_id, TimeSeriesFile, write_dof_tables,
-    write_function_h5)
+    write_functions_h5)
 from twoasis.backend import name as backend_name
 from twoasis.common.utilities import phi_g, physical_pressure, set_subfunction, subfunction
 from twoasis.problems import info_red
@@ -75,20 +75,27 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
 
 def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
                   NS_parameters, tstepfiles, u_, u_components, scalar_components,
-                  constrained_domain,
-                  AssignedVectorFunction, killtime, total_timer, **NS_namespace):
-    """Called at end of timestep. Check for kill and save solution if required."""
+                  constrained_domain, AssignedVectorFunction, killtime, total_timer,
+                  checkpoint_minutes=None, **NS_namespace):
+    """Called at end of timestep. Save the time series every save_step steps; pause
+    while a pause file is there; checkpoint every `checkpoint` steps, when
+    checkpoint_minutes of wall time have passed since the last checkpoint, and when
+    the run stops (kill file or killtime). Returns whether it stops."""
     NS_parameters.update(t=t, tstep=tstep)
     if tstep % save_step == 0:
         save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction,
                                NS_parameters)
 
-    while check_if_pause(folder, newfolder):
+    look = _look_now(newfolder)
+    while check_if_pause(folder, newfolder, look=look):
         time.sleep(5)
+        look = True
 
-    killoasis = check_if_kill(folder, killtime, total_timer, newfolder=newfolder)
-    if tstep % checkpoint == 0 or killoasis:
+    killoasis, due = check_controls(folder, killtime, total_timer, newfolder=newfolder,
+                                    look=look, checkpoint_minutes=checkpoint_minutes)
+    if tstep % checkpoint == 0 or killoasis or due:
         save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters)
+        _clock(newfolder)["checkpoint"] = time.monotonic()
 
     return killoasis
 
@@ -177,11 +184,13 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
                 except OSError:     # Checkpoint/ moved away, or no hard links here
                     unlinked.add(key)
     written -= comm.bcast(unlinked, root=0)
+    previous = _restart_reads_previous(NS_parameters)
     for ui in q_:
         if ui in lattice:
             filename = path.join(tmpfolder, ui + ".h5")
             d.write_function(filename, q_[ui], "current", mode="w")
-            d.write_function(filename, q_1[ui], "previous")
+            if previous:
+                d.write_function(filename, q_1[ui], "previous")
             continue
         V = function_space(q_[ui])
         name = tables[space_id(V)]
@@ -189,18 +198,50 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
             write_dof_tables(path.join(tmpfolder, name), V, "dofs")
             written.add(space_id(V))
         filename = path.join(tmpfolder, ui + ".h5")
-        write_function_h5(filename, q_[ui], "current", mode="w", dofs=(name, "dofs"))
-        write_function_h5(filename, q_1[ui], "previous", dofs=(name, "dofs"))
+        levels = [(q_[ui], "current")] + ([(q_1[ui], "previous")] if previous else [])
+        write_functions_h5(filename, levels, mode="w", dofs=(name, "dofs"))
     MPI.barrier(comm)
     if MPI.rank(comm) == 0:
         swap_in(tmpfolder, checkpointfolder)
     MPI.barrier(comm)
 
 
+def _restart_reads_previous(NS_parameters):
+    """Whether a restart reads a checkpoint's previous level: for BDF of second order,
+    and for the Adams-Bashforth pressure projection. (A checkpoint without it restarts
+    with the current level in its place, as after a first-order step.)"""
+    p = NS_parameters
+    return ((p.get("solver") == "BDF" and p.get("bdf_order", 2) != 1)
+            or bool(p.get("AB_projection_pressure")))
+
+
 def recover_checkpoint(checkpointfolder):
     """Put back the last complete checkpoint if a run stopped between the two
     renames of save_checkpoint_solution_h5 (femtools.swap.recover)."""
     recover(checkpointfolder)
+
+
+#: Rank 0 looks for the control files (kill, pause) at most this often, in seconds of
+#: wall time: on a parallel file system each look costs metadata requests that every
+#: rank waits for.
+CONTROL_INTERVAL = 10.0
+_CLOCK = {}     # per run folder, rank 0's wall times: the last look, the last checkpoint
+
+
+def _clock(newfolder):
+    """The run's wall times (newfolder: its folder), started at its first use."""
+    return _CLOCK.setdefault(newfolder, {"checkpoint": time.monotonic()})
+
+
+def _look_now(newfolder):
+    """Whether rank 0 is to look for the control files at this step of the run in
+    newfolder: at its first, then once CONTROL_INTERVAL has passed since the last look
+    (rank 0's answer)."""
+    now, clock = time.monotonic(), _clock(newfolder)
+    if now - clock.get("look", -float("inf")) >= CONTROL_INTERVAL:
+        clock["look"] = now
+        return True
+    return False
 
 
 def _control_file(key, folder, newfolder):
@@ -212,13 +253,17 @@ def _control_file(key, folder, newfolder):
     return None
 
 
-def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=None):
-    """Whether to stop the run cleanly: a file named key in the run's folder or
-    in folder (a file in folder stops the first run to see it), or killtime
-    reached. Rank 0 decides, and every rank gets its answer in one broadcast."""
-    stop = None
+def check_controls(folder, killtime, total_timer, key='killtwoasis', newfolder=None,
+                   look=True, checkpoint_minutes=None):
+    """`(stop, checkpoint_due)`. stop: whether to stop the run cleanly, for a file named
+    key in the run's folder or in folder (looked for when `look`; a file in folder
+    stops the first run to see it), or killtime reached. checkpoint_due: whether
+    checkpoint_minutes of wall time have passed since the last checkpoint. Rank 0
+    decides, and every rank gets its answer in one broadcast."""
+    answer = None
     if MPI.rank(MPI.comm_world) == 0:
-        found = _control_file(key, folder, newfolder)
+        found = _control_file(key, folder, newfolder) if look else None
+        stop = False
         if found:
             remove(found)
             info_red(key + ' found! Stopping simulations cleanly...')
@@ -226,16 +271,23 @@ def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=No
         elif killtime is not None and killtime <= total_timer.elapsed()[0]:
             info_red('Given killtime reached! Stopping simulations cleanly...')
             stop = True
-        else:
-            stop = False
-    return MPI.comm_world.bcast(stop, root=0)
+        due = (checkpoint_minutes is not None and time.monotonic()
+               - _clock(newfolder)["checkpoint"] >= 60 * checkpoint_minutes)
+        answer = (stop, due)
+    return MPI.comm_world.bcast(answer, root=0)
 
 
-def check_if_pause(folder, newfolder=None, key='pausetwoasis'):
+def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=None):
+    """Whether to stop the run cleanly (check_controls' first answer)."""
+    return check_controls(folder, killtime, total_timer, key, newfolder)[0]
+
+
+def check_if_pause(folder, newfolder=None, key='pausetwoasis', look=True):
     """Whether a file named key (pausetwoasis) in the run's folder or in folder
-    pauses the run. Rank 0 decides; one broadcast."""
+    pauses the run, when rank 0 is to `look` (else no). Rank 0 decides; one
+    broadcast."""
     found = None
-    if MPI.rank(MPI.comm_world) == 0:
+    if MPI.rank(MPI.comm_world) == 0 and look:
         found = _control_file(key, folder, newfolder)
         if found:
             info_red(key + ' found! Simulations paused. Remove ' + found + ' to resume simulations...')
@@ -382,7 +434,8 @@ def load_timeseries(folder, q_, VV, time=None):
     a series without that record holds p."""
     from femtools.xdmf import continued, grids
     from twoasis.backend import (
-        geometric_dimension, read_series_step, read_vector_series_step, space_mesh)
+        geometric_dimension, mesh_comm, read_series_step, read_vector_series_step,
+        space_mesh)
     from twoasis.common.utilities import subspace
 
     mesh = space_mesh(VV['p'])
@@ -394,7 +447,7 @@ def load_timeseries(folder, q_, VV, time=None):
         the same time)."""
         per_file = []
         for f in series_files(folder, name):
-            picked = [g for g in grids(f) if name in g["attributes"]]
+            picked = [g for g in grids(f, mesh_comm(mesh)) if name in g["attributes"]]
             per_file.append([(g["time"], f, k) for k, g in enumerate(picked)])
         steps = continued(per_file, lambda s: s[0])
         if not steps:

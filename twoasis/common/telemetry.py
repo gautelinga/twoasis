@@ -14,7 +14,8 @@ the largest over the processes. `solvers` are the Krylov solvers by role (veloci
 pressure, phase_field, projection): solves, iterations, preconditioner setups (PETSc's
 PCSetUp events in the solver's log stage, nested ones included, such as the Schur
 preconditioner's inner AMG), the time in their solves and the part of it in those
-setups (pc_seconds). Both backends' solvers are
+setups (pc_seconds). Inner solvers inside another's preconditioner (phase_field_H, the
+Schur preconditioner's H solves) have solves and iterations only. Both backends' solvers are
 PETSc KSPs, so the counts mean the same on each.
 
 Telemetry off (the default), nothing is wrapped or timed: `solver` returns the solver
@@ -42,6 +43,9 @@ class _Off:
     @contextmanager
     def block(self, name):
         yield
+
+    def count(self, role, its):
+        pass
 
     def start_step(self):
         pass
@@ -95,6 +99,7 @@ class Telemetry:
         self._pc_before = {}
         self._pc_time_before = {}
         self._blocks = dict.fromkeys(BLOCKS, 0.0)
+        self._inner = {}
         # appended to: a restart writes into its run's folder, after the steps before it
         self._file = open(path, "a") if comm.rank == 0 else None
         self._t0 = None
@@ -107,6 +112,13 @@ class Telemetry:
             self._solvers[role] = dict(solves=0, its=0, seconds=0.0)
             self._pc_before[role] = 0
         return _RecordedSolver(sol, self._solvers[role], self._stages[role])
+
+    def count(self, role, its):
+        """One solve of `its` iterations by an inner solver (inside another's
+        preconditioner), recorded under `role` with solves and its only."""
+        r = self._inner.setdefault(role, dict(solves=0, its=0))
+        r["solves"] += 1
+        r["its"] += int(its)
 
     @contextmanager
     def block(self, name):
@@ -143,6 +155,8 @@ class Telemetry:
                                           pc_setups=int(pc - self._pc_before[r]),
                                           seconds=times[nb + k],
                                           pc_seconds=times[nb + len(roles) + k])
+            for r, s in sorted(self._inner.items()):
+                line["solvers"][r] = dict(s)
             self._file.write(json.dumps(line) + "\n")
             self._file.flush()
         for r, pc, pt in zip(roles, pcs, pc_times):
@@ -150,6 +164,7 @@ class Telemetry:
             self._pc_time_before[r] = pt
             self._solvers[r].update(solves=0, its=0, seconds=0.0)
         self._blocks = dict.fromkeys(self._blocks, 0.0)
+        self._inner = {}
 
     def close(self):
         if self._file is not None:

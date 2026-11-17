@@ -14,7 +14,7 @@ import importlib.util
 import numpy as np
 import pytest
 
-from conftest import load_tdata, QUIET, require_mpi, run_twoasis
+from conftest import load_tdata, once, QUIET, require_mpi, run_twoasis
 
 PARAMS = dict(QUIET, problem="PeriodicBubble2D", res=1 / 16, dt=0.002, epsilon=0.05, R=0.25,
               M=0.000125, T=0.02, phase_refine=1)
@@ -30,40 +30,55 @@ def _run(path, monkeypatch, backend, nprocs=1, **params):
     return load_tdata(path)
 
 
+def _baseline(tmp_path_factory, backend):
+    """PARAMS on one rank on `backend`, run once per session (several tests compare
+    with it)."""
+    wd = once(tmp_path_factory, "dual_" + backend,
+              lambda wd: run_twoasis(wd, backend=backend, **PARAMS))
+    return load_tdata(wd)
+
+
+@pytest.fixture(scope="session")
+def dual_dolfin(tmp_path_factory):
+    return _baseline(tmp_path_factory, "dolfin")
+
+
+@pytest.fixture(scope="session")
+def dual_dolfinx(tmp_path_factory):
+    return _baseline(tmp_path_factory, "dolfinx")
+
+
 @pytest.mark.skipif(not HAS_DOLFINX, reason="needs DOLFINx")
-def test_backends_agree(tmp_path, monkeypatch):
-    a = _run(tmp_path / "dolfin", monkeypatch, "dolfin")
-    b = _run(tmp_path / "dolfinx", monkeypatch, "dolfinx")
+def test_backends_agree(dual_dolfin, dual_dolfinx):
+    a, b = dual_dolfin, dual_dolfinx
     assert a.shape == b.shape == (10, a.shape[1])
     np.testing.assert_allclose(a, b, **CLOSE)
 
 
 @pytest.mark.parametrize("backend", ["dolfin"] + (["dolfinx"] if HAS_DOLFINX else []))
-def test_ranks_agree(tmp_path, monkeypatch, backend):
+def test_ranks_agree(tmp_path, monkeypatch, request, backend):
     require_mpi(3)
-    a = _run(tmp_path / "1", monkeypatch, backend)
+    a = request.getfixturevalue("dual_" + backend)
     b = _run(tmp_path / "3", monkeypatch, backend, nprocs=3)
     np.testing.assert_allclose(a, b, **CLOSE)
 
 
 @pytest.mark.skipif(not HAS_DOLFINX, reason="needs DOLFINx")
-def test_restart_on_other_backend_and_ranks(tmp_path, monkeypatch):
+def test_restart_on_other_backend_and_ranks(tmp_path, monkeypatch, dual_dolfin):
     """A dual-mesh checkpoint from dolfin on one rank, at step 6, restarted on DOLFINx on
     two ranks, ends as the uninterrupted run."""
     require_mpi(2)
-    whole = _run(tmp_path / "whole", monkeypatch, "dolfin")
     _run(tmp_path / "r", monkeypatch, "dolfin", T=0.012, checkpoint=6)
     restarted = _run(tmp_path / "r", monkeypatch, "dolfinx", nprocs=2,
                      restart_folder="results/data/1/Checkpoint")
-    np.testing.assert_allclose(restarted, whole, **CLOSE)
+    np.testing.assert_allclose(restarted, dual_dolfin, **CLOSE)
 
 
-def test_close_to_one_fine_mesh(tmp_path, monkeypatch):
+def test_close_to_one_fine_mesh(tmp_path, monkeypatch, dual_dolfin):
     """The bubble's area, height and velocity (the last three columns) on the dual mesh
     and on one mesh at the phase field's resolution."""
-    dual = _run(tmp_path / "dual", monkeypatch, "dolfin")
     fine = _run(tmp_path / "fine", monkeypatch, "dolfin", res=1 / 32, phase_refine=0)
-    np.testing.assert_allclose(dual[:, -3:], fine[:, -3:], rtol=1e-3, atol=1e-6)
+    np.testing.assert_allclose(dual_dolfin[:, -3:], fine[:, -3:], rtol=1e-3, atol=1e-6)
 
 
 def test_restart_needs_its_phase_refine(tmp_path, monkeypatch):

@@ -156,13 +156,22 @@ VELOCITY_UPDATE_SCHEME = ("method", "low_memory_version")
 
 def checkpoint_parameters(restart_folder):
     """The parameters stored with the checkpoint in restart_folder (params.dat),
-    after putting back the checkpoint of an interrupted swap (recover_checkpoint)."""
+    after putting back the checkpoint of an interrupted swap (recover_checkpoint).
+    Rank 0 reads them and broadcasts them; a failure raises on every rank."""
     from twoasis.common.io import recover_checkpoint
-    if MPI.rank(MPI.comm_world) == 0:
-        recover_checkpoint(restart_folder)
-    MPI.barrier(MPI.comm_world)
-    with open(path.join(restart_folder, "params.dat"), "rb") as f:
-        return pickle.load(f)
+    comm = MPI.comm_world
+    answer = None
+    if MPI.rank(comm) == 0:
+        try:
+            recover_checkpoint(restart_folder)
+            with open(path.join(restart_folder, "params.dat"), "rb") as f:
+                answer = (pickle.load(f), None)
+        except Exception as e:
+            answer = (None, e)
+    params, error = comm.bcast(answer, root=0)
+    if error is not None:
+        raise error
+    return params
 
 
 def post_import_problem(NS_parameters, mesh, commandline_kwargs,
@@ -185,6 +194,18 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
     if commandline_kwargs.get("restart_folder") is not None:
         restart_folder = path.abspath(commandline_kwargs["restart_folder"])
         saved = dict(dict(rotational=False), **checkpoint_parameters(restart_folder))
+        # A checkpoint that leaves the phase field's degree unset holds it in the
+        # velocity's degree, the rule it was written under.
+        if saved.get("phase_field_degree") is None and "velocity_degree" in saved:
+            saved["phase_field_degree"] = saved["velocity_degree"]
+        # A checkpoint without inner_norm stopped its inner passes on the sum of the
+        # components' l2 norms of their dofs: its max_error means something else (it
+        # grows with the square root of the number of dofs), so this code's is kept.
+        if saved.get("inner_norm") != NS_parameters.get("inner_norm") and "max_error" in saved:
+            info_red("Restart: the checkpoint's max_error ({}) is for another norm of the "
+                     "velocity's change; using max_error={} (or set it on the command "
+                     "line)".format(saved["max_error"], NS_parameters.get("max_error")))
+            saved = {k: v for k, v in saved.items() if k not in ("max_error", "inner_norm")}
         NS_parameters.update({k: v for k, v in saved.items() if k not in KRYLOV_SETTINGS})
         update = saved.get("velocity_update_solver", {})
         NS_parameters["velocity_update_solver"] = dict(

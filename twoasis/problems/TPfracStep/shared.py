@@ -8,7 +8,7 @@ from os import listdir, makedirs, path, remove
 
 import numpy as np
 from twoasis.backend import (
-    assemble, Constant, DirichletBC, dx, extent, Faces, Function, function_space,
+    assemble, Constant, DirichletBC, div, dx, extent, Faces, Function, function_space,
     geometric_dimension, grad, inner, mark_walls, MPI, PeriodicBox, Point, read_mesh_file,
     read_function_h5, RectangleMesh, SpatialCoordinate, sqrt, write_dof_tables, write_function_h5,
     write_mesh_h5)
@@ -168,6 +168,25 @@ def append_row(fname, tstep, line):
         f.write(line)
 
 
+class DivergenceStats:
+    """The L2 norms of the velocity's divergence and of its gradient on the flow mesh,
+    appended as "tstep t |div u| |grad u|" to newfolder/Stats/divergence.dat (on rank
+    0). Their ratio measures how far the velocity is from divergence free, which the
+    velocity-pressure splitting error shows in long before the benchmark quantities do."""
+
+    def __init__(self, u_, mesh, newfolder):
+        self.fname = path.join(newfolder, "Stats", "divergence.dat")
+        makedirs_on_root(path.dirname(self.fname))
+        dX = dx(domain=mesh)
+        self.forms = (div(u_)**2 * dX, inner(grad(u_), grad(u_)) * dX)
+
+    def __call__(self, tstep, t):
+        """Append the row of timestep tstep at time t. All processes must call it."""
+        norms = [max(assemble(f), 0.)**0.5 for f in self.forms]
+        if MPI.rank(MPI.comm_world) == 0:
+            append_row(self.fname, tstep, "{:d} {:.8f} {:.8e} {:.8e}\n".format(tstep, t, *norms))
+
+
 def write_tdata(statsfolder, tstep, t, entries):
     """Append the line "tstep t entries..." to statsfolder/tdata.dat (on rank 0),
     with 8 decimals for t and each entry (append_row)."""
@@ -265,6 +284,11 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
                        mode="a" if i else "w", dofs=(tables, name))
     if MPI.rank(MPI.comm_world) == 0:
         stamps = path.join(timestampsfolder, "timestamps.dat")
+        last = _STAMP_LAST.get(timestampsfolder)
+        _STAMP_LAST[timestampsfolder] = tstep
+        if last is not None and last < tstep:    # this process wrote the list's last line
+            case.write_stamps(stamps, [("{:.6f}".format(t), h5fname)], mode="a")
+            return
         listed = case.read_stamps(stamps) if path.exists(stamps) else []
         keep = [(nums, f) for nums, f in listed if _stamp_step(f) < tstep]
         if len(keep) == len(listed):
@@ -277,6 +301,11 @@ def write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder):
                 if path.exists(path.join(timestampsfolder, f)):
                     remove(path.join(timestampsfolder, f))
             case.write_stamps(stamps, keep + [("{:.6f}".format(t), h5fname)], mode="w")
+
+
+#: per Timestamps folder, the step this process last listed there (rank 0): a later step
+#: is appended without reading the list again
+_STAMP_LAST = {}
 
 
 def _stamp_step(fname):

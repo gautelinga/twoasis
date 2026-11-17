@@ -99,7 +99,8 @@ def dense(A):
     """A as a dense array (a converted copy: convert() alone works in place)."""
     from petsc4py import PETSc
     D = PETSc.Mat()
-    be.as_backend_type(A).mat().convert("dense", D)
+    M = A if isinstance(A, PETSc.Mat) else be.as_backend_type(A).mat()
+    M.convert("dense", D)
     return D.getDenseArray().copy()
 
 
@@ -193,8 +194,8 @@ def main(out):
                divu_0=dense(ns["divu"].matvec[0][0]), divu_1=dense(ns["divu"].matvec[1][0]),
                gradp_0=dense(ns["gradp"]["u0"].matvec[0]),
                gradp_M=dense(ns["gradp"]["u0"].A),
-               Mpf_0=dense(ns["Mpf"][0]), Mpf_1=dense(ns["Mpf"][1]),
-               Apf_const=dense(ns["Apf_const"]),
+               Mpf=dense(ns["Mpf"][0]), Mpf_form=dense(be.assemble(ns["Mpf"][1])),
+               Apf_form=dense(be.assemble(ns["a_pf_full"][0])),
                WGM=dense(be.weighted_gradient_matrix(V, Q, 0)))
 
     # One time step, as the driver takes it, with three inner passes.

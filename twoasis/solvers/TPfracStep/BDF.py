@@ -11,7 +11,7 @@ import math
 import numpy as np
 from twoasis.backend import (
     as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad,
-    inner, nabla_grad, Timer)
+    inner, Timer)
 from twoasis.problems import info_blue
 from twoasis.common.utilities import axpy, mult, pointwise
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
@@ -21,8 +21,10 @@ from twoasis.solvers.TPfracStep import (
     incremental_pressure_solve as pressure_solve,
     incremental_velocity_update as velocity_update, krylov_get_solvers,
     phase_field_system, PhaseFieldOnVelocitySpace, pressure_matrix, projection_solver,
-    rotational_fields, rotational_pressure_update as pressure_update, set_mixed_fields,
-    velocity_matrices)
+    krylov_solver_parameters, rebuild_step, rotational_fields,
+    rotational_pressure_update as pressure_update, set_mixed_fields, velocity_matrices,
+    convection_form)
+from twoasis.solvers.TPfracStep import coupled as _coupled
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -49,7 +51,8 @@ def setup(u_components, u, v, p, q, bcs, #dt,
           angles, ds, bdf_order, constant_poisson_coefficient, normal,
           initial_step_1st_order, tstep, rotational,
           velocity_update_solver, assemble_matrix, homogenize, acc, gradp_avg,
-          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, **NS_namespace):
+          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, b,
+          velocity_pressure_solve, coupled_krylov_solver, skew_convection, **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
 
@@ -76,13 +79,13 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # Setup for solving convection
     u_adv = as_vector([Function(V) for _ in range(len(u_components))])
     #rho_ * u_1 - M * drho_ * grad(g_)
-    a_conv = inner(v, dot(u_adv, nabla_grad(u))) * dx
+    a_conv = convection_form(u_adv, u, v, skew_convection)
 
     # Phase-field matrices and forms. phase_field_assemble adds the time-derivative
-    # term alpha[0]*Mpf[0] to the constant part whenever alpha[0] changes: on the
-    # first step, and when switching from BDF1 to BDF2.
+    # term alpha[0] times phi's mass matrix to the constant part whenever alpha[0]
+    # changes: on the first step, and when switching from BDF1 to BDF2.
     pf = phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
-                            epsilon, angles, ds, assemble_matrix)
+                            epsilon, angles, ds)
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
@@ -147,7 +150,29 @@ def setup(u_components, u, v, p, q, bcs, #dt,
              **pressure_matrix(constant_poisson_coefficient, rho, rho_inv_, p, q, Q, bcs))
 
     d.update(u_adv=u_adv, a_conv=a_conv, a_conv_visc=a_conv + a_visc, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
+
+    coupled = None
+    if velocity_pressure_solve == "coupled":
+        name = "coupled_krylov_solver"
+        coupled = _coupled.CoupledVelocityPressure(
+            u_components, x_, b, A, Ai, gradp, divu, d['Ap'], d['p_null'], bcs, Q, mu_,
+            homogenize, _coupled.solver_options(coupled_krylov_solver, len(u_components)),
+            krylov_solver_parameters(name, coupled_krylov_solver, krylov_solvers))
+    d.update(coupled=coupled)
     return d
+
+
+def coupled_solve(coupled, b_tmp, rho_inv_, alpha, dp_, tstep, velocity_preconditioner_steps,
+                  pressure_preconditioner_steps, constant_poisson_coefficient,
+                  **NS_namespace):
+    """Solve the step's velocity and pressure as one system (coupled.py), after
+    assemble_first_inner_iter; the preconditioners are rebuilt as for the passes.
+    Returns the number of iterations."""
+    return coupled.solve(
+        b_tmp, rho_inv_, alpha, dp_, tstep,
+        reuse_velocity=not rebuild_step(tstep, velocity_preconditioner_steps),
+        reuse_pressure=((constant_poisson_coefficient and tstep > 1)
+                        or not rebuild_step(tstep, pressure_preconditioner_steps)))
 
 get_solvers = krylov_get_solvers
 
@@ -252,7 +277,7 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve the scalar equations: none, scalars are not supported."""
     pass
 
-def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha,
+def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_alpha,
                          b, x_1, x_2, u_adv, u_components, alpha,
                          beta, bdf_order, bdf1_tstep, fpf, bpf, NS_parameters,
                          **NS_namespace):
@@ -290,7 +315,7 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
         u_adv[i].vector().axpy(beta[1], x_2[ui])
 
     t1 = Timer("Phase field assemble")
-    assemble_phase_field_system(alpha[0], Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
+    assemble_phase_field_system(alpha[0], Apf, a_pf_full, Apf_alpha, Mpf,
                                 Lpft, b['phig'], bpf, fpf, t)
 
     # Add mass

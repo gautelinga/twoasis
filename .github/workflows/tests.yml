@@ -51,17 +51,18 @@ jobs:
           sudo apt-get update -qq
           # libdolfin-dev, pybind11-dev and g++: dolfin compiles every form at run time;
           # libparmetis-dev: femtools compiles its ParMETIS partitioner the same way.
+          # python3-cppimport: femtools compiles its gradient matrix and probes with it.
           # gmsh, meshio and meshtools (with scipy, skimage and meshpy): the SimplePore2D
           # mesh. h5py: the checkpoint tests; python3-h5py is the wrapper that makes
           # `import h5py` load the MPI build.
           sudo apt-get install -y --no-install-recommends \
             python3-dolfin python3-dolfinx python3-mpi4py python3-h5py python3-h5py-mpi python3-matplotlib \
             python3-gmsh python3-meshio python3-pytest python3-pip \
-            python3-scipy python3-skimage \
+            python3-scipy python3-skimage python3-cppimport \
             libdolfin-dev libparmetis-dev pybind11-dev g++ pkg-config
           # --no-deps throughout: a pip numpy or mpi4py would not be the one dolfin uses.
           python3 -m pip install --break-system-packages --no-deps meshpy \
-            git+https://github.com/gautelinga/femtools.git@2026.2.3 \
+            git+https://github.com/gautelinga/femtools.git@696f85bbe45164b854f666239174279eb990c906 \
             git+https://github.com/gautelinga/partractools.git@2026.2.1 \
             git+https://github.com/gautelinga/meshtools.git@2026.2.0
           python3 -m pip install --break-system-packages --no-deps .
@@ -70,7 +71,7 @@ jobs:
         run: |
           command -v twoasis
           python3 -c "import dolfin, h5py, gmsh, meshio, matplotlib, twoasis; h5py.File; print(dolfin.__version__)"
-          python3 -c "import femtools.periodic, femtools.xdmf, partractools.case, meshtools.io"
+          python3 -c "import cppimport, femtools.periodic, femtools.xdmf, partractools.case, meshtools.io"
           python3 -c "import dolfinx, femtools.dolfinx.unique; print(dolfinx.__version__)"
       # dijitso and FFCx key by a hash of the generated code, so a stale entry is a
       # miss, not a wrong answer. A cold cache pays for every form in the suite.

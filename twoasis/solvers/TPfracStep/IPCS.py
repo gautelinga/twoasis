@@ -11,7 +11,7 @@ import math
 import numpy as np
 from twoasis.backend import (
     as_vector, assemble, Constant, dot, dx, Function, grad, inner, Matrix,
-    nabla_grad, Timer)
+    Timer)
 from twoasis.problems import info_blue
 from twoasis.common.utilities import axpy, mult
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
@@ -22,7 +22,7 @@ from twoasis.solvers.TPfracStep import (
     incremental_velocity_update as velocity_update, krylov_get_solvers,
     phase_field_system, PhaseFieldOnVelocitySpace, pressure_matrix, projection_solver,
     rotational_fields, rotational_pressure_update as pressure_update, set_mixed_fields,
-    velocity_matrices)
+    velocity_matrices, convection_form)
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -33,7 +33,8 @@ def setup(u_components, u, v, p, q, bcs,
           rho, mu, phi_, phi_1, u_1, g_, sigma, epsilon, M, phi, xi, g, eta,
           angles, ds, normal, rotational,
           velocity_update_solver, assemble_matrix, homogenize,
-          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, **NS_namespace):
+          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, skew_convection,
+          **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
 
@@ -60,10 +61,10 @@ def setup(u_components, u, v, p, q, bcs,
     # Convecting velocity, set every timestep; used for both phase-field and momentum advection.
     u_adv = as_vector([Function(V) for _ in range(len(u_components))])
 
-    # Phase-field matrices and forms. The time-derivative term (1/dt)*Mpf[0] is
-    # added to the constant part on the first step.
+    # Phase-field matrices and forms. The time-derivative term (1/dt) times phi's mass
+    # matrix is added to the constant part on the first step.
     pf = phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
-                            epsilon, angles, ds, assemble_matrix)
+                            epsilon, angles, ds)
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
@@ -86,7 +87,7 @@ def setup(u_components, u, v, p, q, bcs,
              alpha=np.zeros(1), **rotational_fields(rotational, q, Q, V, mu_), **pf)
 
     # Convection form
-    a_conv = inner(v, rho_ * dot(u_adv, nabla_grad(u))) * dx
+    a_conv = convection_form(u_adv, u, v, skew_convection, rho_)
 
     TPT = TPsource(mu_, u_adv, V, name="N")
 
@@ -209,7 +210,7 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve the scalar equations: none, scalars are not supported."""
     pass
 
-def phase_field_assemble(dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha, b, x_1,
+def phase_field_assemble(dt, Apf, Mpf, Lpft, a_pf_full, Apf_alpha, b, x_1,
                          u_components, u_adv, t, fpf, bpf, alpha, **NS_namespace):
     """Assemble phase field equation (backward Euler in time)."""
     alpha[0] = 1. / dt
@@ -220,7 +221,7 @@ def phase_field_assemble(dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha, b,
         u_adv[i].vector().axpy(1.0, x_1[ui])
 
     t1 = Timer("Phase field assemble")
-    assemble_phase_field_system(1. / dt, Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
+    assemble_phase_field_system(1. / dt, Apf, a_pf_full, Apf_alpha, Mpf,
                                 Lpft, b['phig'], bpf, fpf, t)
     # Add mass
     axpy(b['phig'], 1. / dt, mult(Mpf[0], x_1['phig']))

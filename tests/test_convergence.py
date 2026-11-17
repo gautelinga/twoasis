@@ -9,21 +9,22 @@ p = log2(|q(dt) - q(dt/2)| / |q(dt/2) - q(dt/4)|) must be ~2 for BDF2.
 Inner-loop and Krylov tolerances are tightened so temporal error dominates:
 with the defaults, solver noise (~1e-6) would drown the finest difference.
 
-Calibration on the reference platform gave orders 2.02-2.23 with the finest
-differences >= 1.3e-6, two orders of magnitude above the 1e-8 precision of
+Calibration on the reference platform gave orders 2.06-2.30 with the finest
+differences >= 1.0e-6, two orders of magnitude above the 1e-8 precision of
 tdata.dat, so the bounds below have a wide margin in both directions. A
 first-order regression (e.g. a term lagged inconsistently) measures ~1.
 """
+import functools
 import json
 import math
 
 import numpy as np
 import pytest
 
-from conftest import BUBBLE, COLS, load_tdata, run_twoasis
+from conftest import BUBBLE, COLS, load_tdata, run_concurrently, run_twoasis
 
 TIGHT = dict(
-    max_error=1e-9,
+    max_error=1e-11,
     max_iter=200,
     velocity_krylov_solver=json.dumps({"relative_tolerance": 1e-10, "maximum_iterations": 2000}),
     pressure_krylov_solver=json.dumps({"relative_tolerance": 1e-10, "maximum_iterations": 500}),
@@ -36,15 +37,15 @@ TIGHT = dict(
 def test_bdf2_temporal_order(tmp_path):
     T = 0.032
     dts = [0.008, 0.004, 0.002]
-    finals = []
-    for dt in dts:
+
+    def final(dt):
         wd = tmp_path / "dt_{}".format(dt)
         wd.mkdir()
-        params = dict(BUBBLE, dt=dt, checkpoint=1000000, **TIGHT)
-        run_twoasis(wd, solver="BDF", T=T, **params)
-        row = load_tdata(wd)[-1]
+        run_twoasis(wd, solver="BDF", T=T, **dict(BUBBLE, dt=dt, checkpoint=1000000, **TIGHT))
+        return load_tdata(wd)[-1]
+    finals = run_concurrently(*(functools.partial(final, dt) for dt in dts))
+    for row in finals:
         assert abs(row[COLS["t"]] - T) < 1e-12
-        finals.append(row)
 
     orders = {}
     for name in ["u0m", "E_kin", "E_int"]:
@@ -63,32 +64,41 @@ def test_bdf2_temporal_order(tmp_path):
 # TaylorGreen2D has an analytic solution for the velocity, the pressure and the
 # phase field, and writes the L2 errors to tdata.dat. The parameters make the
 # solution decay fast enough (mu = 0.1, phi0 = 0.5) and the mesh fine enough
-# (P2 velocity, N = 64) that the temporal error dominates the spatial one down
-# to dt = 0.01. Calibration: velocity orders 1.94 and 1.91, phase-field orders
+# (P2 velocity and phase field, N = 64) that the temporal error dominates the
+# spatial one down to dt = 0.01. Calibration: velocity orders 1.94 and 1.91, phase-field orders
 # 2.05 and 2.02.
 TG_ERR_COLS = dict(u0=4, u1=5, p=6, phi=7)
 TAYLOR_GREEN = dict(problem="TaylorGreen2D", solver="BDF", mu=[0.1, 0.1], phi0=0.5, N=64,
-                    velocity_degree=2, plot_interval=1000000, timestamps_interval=1000000,
-                    save_step=1000000, checkpoint=1000000, folder="results")
+                    velocity_degree=2, phase_field_degree=2, plot_interval=1000000,
+                    timestamps_interval=1000000, save_step=1000000, checkpoint=1000000,
+                    folder="results")
+
+
+# The coupled velocity-pressure solve, as tight as TIGHT's passes.
+TIGHT_COUPLED = dict(TIGHT, velocity_pressure_solve="coupled",
+                     coupled_krylov_solver=json.dumps({"relative_tolerance": 1e-11}))
 
 
 @pytest.mark.slow
-def test_bdf2_taylor_green_exact(tmp_path):
-    """BDF2 errors against the exact solution decrease as dt^2.
+@pytest.mark.parametrize("tight", [TIGHT, TIGHT_COUPLED], ids=["passes", "coupled"])
+def test_bdf2_taylor_green_exact(tmp_path, tight):
+    """BDF2 errors against the exact solution decrease as dt^2, with the step converged
+    by passes or solved coupled.
 
     initialize() provides the exact solution at t - dt, so the run must also
     take a second-order first step.
     """
     T = 0.2
-    errors = []
-    for dt in [0.04, 0.02, 0.01]:
+
+    def final(dt):
         wd = tmp_path / "dt_{}".format(dt)
         wd.mkdir()
-        proc = run_twoasis(wd, T=T, dt=dt, stat_interval=round(T / dt), **TAYLOR_GREEN, **TIGHT)
+        proc = run_twoasis(wd, T=T, dt=dt, stat_interval=round(T / dt), **TAYLOR_GREEN, **tight)
         assert "BDF1 on first timestep: False" in proc.stdout
-        row = load_tdata(wd)[-1]
+        return load_tdata(wd)[-1]
+    errors = run_concurrently(*(functools.partial(final, dt) for dt in [0.04, 0.02, 0.01]))
+    for row in errors:
         assert abs(row[1] - T) < 1e-12
-        errors.append(row)
 
     orders = {}
     for name in ["u0", "phi"]:
@@ -132,16 +142,17 @@ def test_bdf2_variable_step(tmp_path):
     the exact solution still decrease as h^2, which takes the coefficients for
     the actual ratio of successive steps. T is an even number of steps of h."""
     T = 0.24
-    errors = []
-    for h in [0.04, 0.02, 0.01]:
+
+    def final(h):
         wd = tmp_path / "h_{}".format(h)
         wd.mkdir()
         (wd / "Alternating.py").write_text(ALTERNATING)
         run_twoasis(wd, T=T, h=h, dt=0.5 * h, stat_interval=round(T / h),
                     **dict(TAYLOR_GREEN, problem="Alternating"), **TIGHT)
-        row = load_tdata(wd)[-1]
+        return load_tdata(wd)[-1]
+    errors = run_concurrently(*(functools.partial(final, h) for h in [0.04, 0.02, 0.01]))
+    for row in errors:
         assert abs(row[1] - T) < 1e-12
-        errors.append(row)
     orders = {}
     for name in ["u0", "phi"]:
         e = [row[TG_ERR_COLS[name]] for row in errors]

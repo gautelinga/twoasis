@@ -76,7 +76,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         print_intermediate_info=10,
         solver="BDF",
         max_iter=10,
-        max_error=1e-6,
+        max_error=2e-8,
         iters_on_first_timestep=20,
         AB_projection_pressure=False,)
 

@@ -52,7 +52,7 @@ def summary(records, warmup):
     for k in r[0]["blocks"]:
         out["block " + k] = sum(x["blocks"][k] for x in r) / n
     for s in r[0]["solvers"]:
-        out["solver " + s] = sum(x["solvers"][s]["seconds"] for x in r) / n
+        out["solver " + s] = sum(x["solvers"][s].get("seconds", 0.0) for x in r) / n
         out["its " + s] = sum(x["solvers"][s]["its"] for x in r) / n
     return out
 

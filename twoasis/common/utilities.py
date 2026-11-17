@@ -26,13 +26,40 @@ def _work(owner, slot, create):
     return w
 
 
+def _mat(A):
+    """The PETSc Mat of a backend Matrix (or the Mat itself)."""
+    return A if hasattr(A, "createVecLeft") else as_backend_type(A).mat()
+
+
+def nonzero_part(A):
+    """A PETSc Mat of A's layout holding only A's nonzero entries: for products with a
+    matrix stored on a larger pattern than its values need (one block of a mixed
+    space's matrix, say). Its products equal A's."""
+    import numpy as np
+    from petsc4py import PETSc
+    M = _mat(A)
+    indptr, cols, vals = M.getValuesCSR()
+    keep = vals != 0
+    rows = np.repeat(np.arange(len(indptr) - 1), np.diff(indptr))
+    kept = np.zeros(len(indptr), dtype=indptr.dtype)
+    kept[1:] = np.cumsum(np.bincount(rows[keep], minlength=len(indptr) - 1))
+    return PETSc.Mat().createAIJ(M.getSizes(), csr=(kept, cols[keep], vals[keep]),
+                                 comm=M.getComm())
+
+
 def mult(A, x, slot="mult"):
     """A x, in a PETSc Vec kept with A under `slot`: the next product with A in that slot
     overwrites it."""
-    M = as_backend_type(A).mat()
+    M = _mat(A)
     w = _work(M, slot, M.createVecLeft)
     M.mult(_vec(x), w)
     return w
+
+
+def mass_norm2(M, x):
+    """x^T M x: with M a mass matrix, the square of the L2 norm of the field whose
+    dofs x holds. Collective."""
+    return _vec(x).dot(mult(M, x, "mass_norm2"))
 
 
 def pointwise(u, v, slot="pointwise"):

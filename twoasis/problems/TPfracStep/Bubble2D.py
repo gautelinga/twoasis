@@ -4,13 +4,13 @@ side walls as in the benchmark.
 
 case=1 (the default) is test case 1: densities 1000 and 100, viscosities 10 and 1,
 surface tension 24.5. case=2 is test case 2: densities 1000 and 1, viscosities 10 and
-0.1, surface tension 1.96. Case 2 needs the phase field and the chemical potential
-in P1, the pressure's space (phase_field_degree = chemical_potential_degree = 1):
-in P2 the capillary force -phi*grad(g) leaves bulk forces the P1 pressure cannot
-cancel, and in the light phase (density 1) they blow the run up within the first
-hundredth of a time unit, whatever the step. It also needs a finer mesh than case 1:
-at res=1/64 (epsilon = 1.3 cells) the run blows up at t ~ 0.37. case=2 sets
-res=1/128 and dt=0.001; any of its values can still be given on the command line.
+0.1, surface tension 1.96. Case 2 needs the phase field and the chemical potential in
+the pressure's space, the default: in P2 the capillary force -phi*grad(g) leaves bulk
+forces the P1 pressure cannot cancel, and in the light phase (density 1) they blow the
+run up within the first hundredth of a time unit, whatever the step. It also needs a
+finer mesh than case 1: at res=1/64 (epsilon = 1.3 cells) the run blows up at
+t ~ 0.37. case=2 sets res=1/128 and dt=0.001; any of its values can still be given on
+the command line.
 
 S. Hysing, S. Turek, D. Kuzmin, N. Parolini, E. Burman, S. Ganesan and L. Tobiska,
 Quantitative benchmark computations of two-dimensional bubble dynamics, Int. J. Numer.
@@ -76,7 +76,7 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         print_intermediate_info=10,
         solver="BDF",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
+        max_error=5e-9,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=200,  # Number of iterations on first timestep
     )
     if case == 2:
@@ -86,8 +86,6 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
             sigma=1.96,
             res=1./128,
             dt=0.001,
-            phase_field_degree=1,
-            chemical_potential_degree=1,
             anderson_depth=2,
             folder="bubble2d_case2_results",
         )

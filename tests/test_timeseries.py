@@ -15,7 +15,7 @@ import sys
 import numpy as np
 import pytest
 
-from conftest import REPO_ROOT, require_mpi
+from conftest import REPO_ROOT, once, require_mpi
 
 pytest.importorskip("h5py")
 
@@ -97,7 +97,9 @@ def helper(tmp_path, mode, folder, nprocs=1, res=0.0625, vdeg=2, pdeg=1, dim=2):
            str(dim)]
     if nprocs > 1:
         cmd = ["mpirun", "-np", str(nprocs)] + cmd
-    env = dict(os.environ, PYTHONPATH=str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    # the helper's spaces are dolfin's: the dolfin backend, whichever the suite runs on
+    env = dict(os.environ, TWOASIS_BACKEND="dolfin",
+               PYTHONPATH=str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""))
     proc = subprocess.run(cmd, cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=600)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-3000:]
     return json.loads(out.read_text()) if mode == "read" else None
@@ -106,8 +108,7 @@ def helper(tmp_path, mode, folder, nprocs=1, res=0.0625, vdeg=2, pdeg=1, dim=2):
 @pytest.fixture(scope="module")
 def series(tmp_path_factory):
     """Time series written in serial, with P2 velocity and a P1 phase field."""
-    wd = tmp_path_factory.mktemp("series")
-    helper(wd, "write", wd / "results")
+    wd = once(tmp_path_factory, "series", lambda wd: helper(wd, "write", wd / "results"))
     return wd, wd / "results" / "data" / "1" / "Timeseries"
 
 
@@ -175,8 +176,7 @@ def test_other_mesh_is_an_error(tmp_path, series):
 @pytest.fixture(scope="module")
 def series_3d(tmp_path_factory):
     """A 3D time series (XDMFFile2), with P2 velocity and a P1 phase field."""
-    wd = tmp_path_factory.mktemp("series_3d")
-    helper(wd, "write", wd / "results", res=0.25, dim=3)
+    wd = once(tmp_path_factory, "series_3d", lambda wd: helper(wd, "write", wd / "results", res=0.25, dim=3))
     return wd, wd / "results" / "data" / "1" / "Timeseries"
 
 

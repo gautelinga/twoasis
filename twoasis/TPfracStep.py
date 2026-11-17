@@ -21,15 +21,16 @@ from os import makedirs, path
 from numpy import array
 from twoasis.backend import name as backend_name
 from twoasis.backend import (
-    as_vector, assemble, BoundaryMarkers, check_periodic_pairing, DOLFIN_EPS, dx, FacetNormal,
-    FiniteElement, Function, FunctionSpace, geometric_dimension, list_timings, Measure,
-    mesh_comm, MixedElement, MPI, parameters, set_default_mesh, split, TestFunction,
+    as_vector, assemble, BoundaryMarkers, check_periodic_pairing, collect_garbage, DOLFIN_EPS,
+    dx, FacetNormal, FiniteElement, Function, FunctionSpace, geometric_dimension, list_timings,
+    Measure, mesh_comm, MixedElement, MPI, parameters, set_default_mesh, split, TestFunction,
     TestFunctions, TimingClear, TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
 
 import twoasis.common
 import twoasis.common.telemetry
 import twoasis.problems
 import twoasis.problems.TPfracStep
+import twoasis.problems.TPfracStep.shared
 import twoasis.solvers.TPfracStep
 from twoasis.common import (
     create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
@@ -107,6 +108,18 @@ if rotational and not hasattr(solver, "pressure_update"):
         raise ValueError("rotational=True: the {} solver has no rotational pressure "
                          "update".format(solver.__name__.split(".")[-1]))
     rotational = False
+if velocity_pressure_solve not in ("passes", "coupled"):
+    raise ValueError("velocity_pressure_solve={!r}: 'passes' or 'coupled'".format(
+        velocity_pressure_solve))
+if velocity_pressure_solve == "coupled":
+    if not hasattr(solver, "coupled_solve"):
+        raise ValueError("velocity_pressure_solve='coupled': the {} solver has none; "
+                         "use solver='BDF'".format(solver.__name__.split(".")[-1]))
+    if velocity_degree <= pressure_degree:
+        raise ValueError("velocity_pressure_solve='coupled' needs an inf-sup stable pair, "
+                         "velocity_degree > pressure_degree (here {} and {}): the coupled "
+                         "equal-order system is not stabilised".format(velocity_degree,
+                                                                       pressure_degree))
 
 # Create lists of components solved for
 dim = geometric_dimension(mesh)
@@ -137,12 +150,19 @@ V = Q = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constraine
 if velocity_degree != pressure_degree:
     Q = FunctionSpace(mesh, 'CG', pressure_degree,
                       constrained_domain=constrained_domain)
-# The phase field and the chemical potential may use a lower degree than the
-# velocity (e.g. P1 with P2 velocity); by default they use the velocity's.
+# The phase field and the chemical potential use the pressure's degree by default: on one
+# mesh the capillary force -phi*grad(g) then lies in the gradients the pressure can
+# balance. With a higher degree it leaves bulk forces the pressure cannot cancel, which
+# blow a run up where the densities or viscosities differ strongly or the interface meets
+# walls. The dual mesh (phase_refine > 0) is richer than the pressure in the same way and
+# needs a smaller step.
 if phase_field_degree is None:
-    phase_field_degree = velocity_degree
+    phase_field_degree = pressure_degree
 if chemical_potential_degree is None:
     chemical_potential_degree = phase_field_degree
+# Recorded in the checkpoints, so a restart builds the spaces they were written in
+NS_parameters.update(phase_field_degree=phase_field_degree,
+                     chemical_potential_degree=chemical_potential_degree)
 # The phase field's mesh: the flow mesh, or with phase_refine > 0 its uniform refinement
 # (the dual mesh, twoasis/common/dual.py), where W lives.
 dual = twoasis.common.dual.start(mesh, phase_refine, constrained_domain)
@@ -279,6 +299,11 @@ anderson = (twoasis.solvers.TPfracStep.AndersonPressure(anderson_depth)
 
 # Anything problem specific
 vars().update(pre_solve_hook(**vars()))
+# The PETSc objects that setup made and dropped (petsc4py keeps them until this)
+collect_garbage()
+
+# |div u| and |grad u| each stat_interval timesteps (Stats/divergence.dat)
+divergence_stats = twoasis.problems.TPfracStep.shared.DivergenceStats(u_, mesh, newfolder)
 
 tx = OasisTimer('Timestep timer')
 tx.start()
@@ -314,11 +339,24 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
             bc.update_physical(phig_values)
 
     # Iterate until the velocity changes by less than max_error, or by less than
-    # max_error_rel relative to its norm; the absolute test decides for a fluid
-    # (nearly) at rest.
+    # max_error_rel relative to its norm, both L2 norms (independent of the mesh); the
+    # absolute test decides for a fluid (nearly) at rest.
+    growing = 0           # passes in a row whose velocity change grew, above the first's
+    if velocity_pressure_solve == "coupled":
+        # One system for the step's velocity and pressure; the passes below then do
+        # not run (no velocity change left), nor does the velocity update.
+        inner_iter = 1
+        t0 = OasisTimer("Coupled velocity-pressure solve")
+        with tel.block("first_inner_assemble"):
+            assemble_first_inner_iter(**vars())
+        with tel.block("coupled_solve"):
+            coupled_solve(**vars())
+        t0.stop()
+        udiff[0] = 0.0
     while (udiff[0] > max(max_error, max_error_rel * unorm[0])
            and inner_iter < num_iter):
         inner_iter += 1
+        udiff_last = udiff[0]
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
@@ -333,6 +371,18 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
             with tel.block("velocity_solve"):
                 velocity_tentative_solve(**vars())
             t1.stop()
+        udiff[0], unorm[0] = udiff[0] ** 0.5, unorm[0] ** 0.5
+        # Growth counts only above the first pass's change: a change that grows
+        # but stays below it is the solves' noise near convergence, not divergence.
+        if inner_iter == 1:
+            udiff_first = udiff[0]
+        growing = (growing + 1 if inner_iter > 1 and udiff_last < udiff[0]
+                   and udiff[0] > udiff_first else 0)
+        if diverging_passes and growing >= diverging_passes:
+            raise RuntimeError(
+                "timestep {}: the inner passes diverge (the velocity change grew {} passes "
+                "in a row, to {:.2e}); a smaller dt may help. The last checkpoint is kept."
+                .format(tstep, growing, udiff[0]))
 
         t0 = OasisTimer("Pressure solve", print_solve_info)
         with tel.block("pressure_assemble"):
@@ -342,7 +392,11 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
             pressure_solve(**vars())
         with tel.block("pressure_update"):
             pressure_update(**vars())
-            if anderson is not None:
+            # Mix only when another pass follows: the velocity update after the
+            # last pass uses that pass's own pressure change, so the stored
+            # pressure must be the one it came from.
+            if (anderson is not None and inner_iter < num_iter
+                    and udiff[0] > max(max_error, max_error_rel * unorm[0])):
                 anderson(x_['p'], inner_iter)
         t0.stop()
 
@@ -356,10 +410,14 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
                                                     max(max_error, max_error_rel * unorm[0])))
 
     # Update velocity
-    t0 = OasisTimer("Velocity update")
-    with tel.block("velocity_update"):
-        velocity_update(**vars())
-    t0.stop()
+    if velocity_pressure_solve == "passes":
+        t0 = OasisTimer("Velocity update")
+        with tel.block("velocity_update"):
+            velocity_update(**vars())
+        t0.stop()
+    if tstep % stat_interval == 0:
+        with tel.block("hooks"):
+            divergence_stats(tstep, t)
 
     # Solve for scalars
     if len(scalar_components) > 0:
@@ -399,6 +457,7 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     for ci in scalar_components:
         x_1[ci].zero()
         x_1[ci].axpy(1., x_[ci])
+    collect_garbage()  # what this step dropped
 
     # Print some information
     if tstep % print_intermediate_info == 0:

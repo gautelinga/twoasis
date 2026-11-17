@@ -8,8 +8,8 @@ Stats/benchmark.dat holds the benchmark's quantities (shared.hysing_quantities):
 bubble's volume, centroid height z_c, rise velocity and sphericity. Their reference
 values: largest rise velocity 0.355 near t = 0.9, sphericity 0.955 at t = 3.
 
-The phase field and the chemical potential are P1 (the velocity P2); res = 1/16 is the
-coarsest mesh that resolves the interface in 3D.
+The phase field and the chemical potential are P1, as the pressure (the velocity P2);
+res = 1/16 is the coarsest mesh that resolves the interface in 3D.
 
 J. Adelsberger, P. Esser, M. Griebel, S. Gross, M. Klitz and A. Rüttgers, 3D incompressible
 two-phase flow benchmark computations for rising droplets, Proc. WCCM XI (2014)."""
@@ -60,8 +60,6 @@ def problem_parameters(NS_parameters, **NS_namespace):
         F0=[0., 0., 0.],
         g0=[0., 0., -0.98],
         velocity_degree=2,
-        phase_field_degree=1,
-        chemical_potential_degree=1,
         periodic=True,   # periodic sides; False: free-slip side walls, as in the benchmark
         folder="bubble3d_results",
         plot_interval=10,
@@ -72,7 +70,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         print_intermediate_info=10,
         solver="BDF",
         max_iter=100,
-        max_error=1e-6,
+        max_error=3e-9,
         iters_on_first_timestep=200,
     )
 

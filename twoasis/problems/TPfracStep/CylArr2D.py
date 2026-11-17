@@ -43,7 +43,6 @@ def problem_parameters(NS_parameters, commandline_kwargs, **NS_namespace):
         F0=[0., -10.],
         g0=[0., 0.],
         velocity_degree=2,
-        phase_field_degree=1,  # phi = 1 is represented exactly at any degree
         folder="cylarr2d_results",
         plot_interval=10,
         stat_interval=10,

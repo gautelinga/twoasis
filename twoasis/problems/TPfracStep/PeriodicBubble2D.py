@@ -1,8 +1,10 @@
 """A bubble carried by flow in a channel with no-slip walls, periodic along the channel
 and driven by a body force along it.
 
-The default dt is at the capillary time-step limit sqrt(rho h^3/(2 pi sigma)) ~ 2.5e-4
-(h = res/2 for P2): with dt = 5e-4 or more the run blows up within ~0.03 time units."""
+The default dt is the capillary time-step estimate sqrt(rho h^3/(2 pi sigma)), h = res.
+With the phase field and the chemical potential in P1, the pressure's degree (the
+default), the run is stable at several times that step; with phase_refine=1, whose phase
+field has half the node spacing, not at twice it."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2024-04-09"
 __copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
@@ -55,7 +57,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         print_intermediate_info=80,
         solver="BDF",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-6,               # Tolerance for inner iterations (pressure velocity iterations)
+        max_error=5e-9,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=200  # Number of iterations on first timestep
     )
 

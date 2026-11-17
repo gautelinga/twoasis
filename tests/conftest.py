@@ -28,6 +28,9 @@ import numpy as np
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# Children run unbound to cores: under pytest-xdist several mpirun jobs at once would
+# otherwise each bind from core 0.
+os.environ.setdefault("OMPI_MCA_hwloc_base_binding_policy", "none")
 # Unit tests import twoasis in-process; make sure it is this checkout.
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -37,6 +40,12 @@ sys.path.insert(0, str(REPO_ROOT))
 # columns differ.
 COLS = dict(tstep=0, t=1, u0m=2, u1m=3, phim=4, E_kin=5, E_int=6, E_pot=7,
             vol_c=8, y_cm=9, V_c=10)
+
+# Tests that use dolfin's objects in the test process itself, or a dolfin-only format:
+# with the suite on DOLFINx (TWOASIS_BACKEND=dolfinx) they are skipped, the default run
+# covers them.
+dolfin_only = pytest.mark.skipif(os.environ.get("TWOASIS_BACKEND") == "dolfinx",
+                                 reason="uses dolfin itself; runs with the dolfin backend")
 
 # Write statistics every step and no other output. BUBBLE turns checkpoints
 # back on, since the restart test needs them.
@@ -80,6 +89,16 @@ def run_twoasis(workdir, nprocs=1, timeout=900, **params):
     return proc
 
 
+def run_concurrently(*calls):
+    """Call each of `calls` (without arguments) at the same time, each in a thread of
+    its own (as each waits on a child process); their results, in order. An error is
+    raised once all have ended."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(len(calls)) as pool:
+        futures = [pool.submit(call) for call in calls]
+    return [f.result() for f in futures]
+
+
 def passes(workdir):
     """The number of inner passes of the run in workdir, whose output prints one
     line per pass (print_velocity_pressure_convergence)."""
@@ -116,54 +135,83 @@ def load_tdata(workdir, run=1):
     return data.reshape(1, -1) if data.ndim == 1 else data
 
 
+def once(tmp_path_factory, name, make):
+    """The folder `name`, filled by `make(folder)` once per test session, also when
+    pytest-xdist spreads the session over workers: the first worker to ask makes it,
+    under a file lock in the session's shared temporary folder, and the others wait
+    for it and use it (or fail, if making it failed)."""
+    import contextlib
+    base = tmp_path_factory.getbasetemp()
+    shared = bool(os.environ.get("PYTEST_XDIST_WORKER"))
+    if shared:
+        from filelock import FileLock
+        base = base.parent
+    wd, done, failed = (base / (name + end) for end in ("", ".done", ".failed"))
+    with FileLock(str(wd) + ".lock") if shared else contextlib.nullcontext():
+        if failed.exists():
+            pytest.fail("making {} failed in another worker:\n{}".format(name, failed.read_text()))
+        if not done.exists():
+            wd.mkdir()
+            try:
+                make(wd)
+            except BaseException as e:
+                failed.write_text(str(e)[-5000:])
+                raise
+            done.touch()
+    return wd
+
+
+def bubble_run(tmp_path_factory, name, **params):
+    """A coarse bubble run made once per session: (workdir, tdata)."""
+    wd = once(tmp_path_factory, name, lambda wd: run_twoasis(wd, **params))
+    return wd, load_tdata(wd)
+
+
 @pytest.fixture(scope="session")
 def bubble_bdf(tmp_path_factory):
     """10 BDF2 steps of the coarse periodic bubble; also the restart source."""
-    wd = tmp_path_factory.mktemp("bubble_bdf")
-    run_twoasis(wd, solver="BDF", T=0.02, **BUBBLE)
-    return wd, load_tdata(wd)
+    return bubble_run(tmp_path_factory, "bubble_bdf", solver="BDF", T=0.02, **BUBBLE)
 
 
 @pytest.fixture(scope="session")
 def bubble_ipcs(tmp_path_factory):
-    wd = tmp_path_factory.mktemp("bubble_ipcs")
-    run_twoasis(wd, solver="IPCS", T=0.02, **BUBBLE)
-    return wd, load_tdata(wd)
+    return bubble_run(tmp_path_factory, "bubble_ipcs", solver="IPCS", T=0.02, **BUBBLE)
 
 
 @pytest.fixture(scope="session")
 def bubble_p1_bdf(tmp_path_factory):
     """10 BDF1 steps of the bubble with unequal properties and P1 velocity."""
-    wd = tmp_path_factory.mktemp("bubble_p1_bdf")
-    run_twoasis(wd, solver="BDF", T=0.02, **BUBBLE_P1)
-    return wd, load_tdata(wd)
+    return bubble_run(tmp_path_factory, "bubble_p1_bdf", solver="BDF", T=0.02, **BUBBLE_P1)
 
 
 @pytest.fixture(scope="session")
 def bubble_p1_ipcs(tmp_path_factory):
-    wd = tmp_path_factory.mktemp("bubble_p1_ipcs")
-    run_twoasis(wd, solver="IPCS", T=0.02, **BUBBLE_P1)
-    return wd, load_tdata(wd)
+    return bubble_run(tmp_path_factory, "bubble_p1_ipcs", solver="IPCS", T=0.02, **BUBBLE_P1)
 
 
 @pytest.fixture(scope="session")
 def bubble_bdf_long(tmp_path_factory):
     """20 uninterrupted BDF2 steps; reference for the restart test."""
-    wd = tmp_path_factory.mktemp("bubble_bdf_long")
-    run_twoasis(wd, solver="BDF", T=0.04, **BUBBLE)
-    return wd, load_tdata(wd)
+    return bubble_run(tmp_path_factory, "bubble_bdf_long", solver="BDF", T=0.04, **BUBBLE)
+
+
+def restarted(tmp_path_factory, name, run, prepare=lambda ckpt: None):
+    """Steps 11-20 restarted from `run`'s checkpoint at step 10, on a copy of it (the
+    restart appends to the run folder the checkpoint path names, which must stay
+    pristine); `prepare(checkpoint folder)` first. Returns (workdir, tdata, stdout)."""
+    def make(wd):
+        shutil.copytree(str(Path(run[0]) / "results"), str(wd / "results"))
+        ckpt = wd / "results" / "data" / "1" / "Checkpoint"
+        prepare(ckpt)
+        run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
+    wd = once(tmp_path_factory, name, make)
+    return wd, load_tdata(wd), (wd / "stdout.txt").read_text()
 
 
 @pytest.fixture(scope="session")
 def bubble_bdf_restarted(tmp_path_factory, bubble_bdf):
-    """Steps 11-20 restarted from bubble_bdf's checkpoint at step 10.
-
-    The restart machinery appends to the run folder named by the checkpoint
-    path (data/1), so run on a copy to keep the bubble_bdf fixture pristine.
-    """
-    wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted", bubble_bdf)
-    proc = run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
-    return wd, load_tdata(wd), proc.stdout
+    """Steps 11-20 restarted from bubble_bdf's checkpoint at step 10."""
+    return restarted(tmp_path_factory, "bubble_bdf_restarted", bubble_bdf)
 
 
 @pytest.fixture(scope="session")
@@ -171,10 +219,8 @@ def bubble_bdf_restarted_bare_vectors(tmp_path_factory, bubble_bdf):
     """Like bubble_bdf_restarted, from a checkpoint of bare dof vectors, with
     only the current level for the pressure and the phase field.
     Returns (workdir, tdata, stdout)."""
-    wd, ckpt = copy_run(tmp_path_factory, "bubble_bdf_restarted_bare_vectors", bubble_bdf)
-    to_bare_vectors(ckpt, drop_previous=("p", "phig"))
-    proc = run_twoasis(wd, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
-    return wd, load_tdata(wd), proc.stdout
+    return restarted(tmp_path_factory, "bubble_bdf_restarted_bare_vectors", bubble_bdf,
+                     lambda ckpt: to_bare_vectors(ckpt, drop_previous=("p", "phig")))
 
 
 def to_bare_vectors(ckpt, drop_previous=()):
@@ -217,18 +263,20 @@ def lattice_meshes(tmp_path_factory):
     """Folder with the SimplePore2D mesh for PORE, made by meshes/lattice_mesh.py."""
     pytest.importorskip("gmsh")
     pytest.importorskip("meshio")
-    meshdir = tmp_path_factory.mktemp("lattice") / "meshes"
-    meshdir.mkdir()
-    subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "lattice_mesh.py"),
-                    "-res", str(PORE["res"])],
-                   cwd=str(meshdir), check=True, capture_output=True, timeout=300)
-    return meshdir
+
+    def make(wd):
+        (wd / "meshes").mkdir()
+        subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "lattice_mesh.py"),
+                        "-res", str(PORE["res"])],
+                       cwd=str(wd / "meshes"), check=True, capture_output=True, timeout=300)
+    return once(tmp_path_factory, "lattice", make) / "meshes"
 
 
 def run_pore(tmp_path_factory, lattice_meshes, solver):
-    wd = tmp_path_factory.mktemp("pore_" + solver.lower())
-    shutil.copytree(str(lattice_meshes), str(Path(wd) / "meshes"))
-    run_twoasis(wd, solver=solver, **PORE)
+    def make(wd):
+        shutil.copytree(str(lattice_meshes), str(wd / "meshes"))
+        run_twoasis(wd, solver=solver, **PORE)
+    wd = once(tmp_path_factory, "pore_" + solver.lower(), make)
     return wd, load_tdata(wd)
 
 

@@ -47,15 +47,23 @@ jobs:
       - &install
         name: legacy dolfin and DOLFINx from the FEniCS PPA, and twoasis
         run: |
-          sudo add-apt-repository -y ppa:fenics-packages/fenics
-          sudo apt-get update -qq
+          # Launchpad (the PPA's API and archive) is down for minutes at a time, and a
+          # download can stall: each attempt gets 15 minutes, a failed index download
+          # counts as a failure, and an interrupted install is finished before the next.
+          retry() {
+            for i in 1 2 3 4 5 6; do
+              timeout 900 "$@" && return 0
+              echo "attempt $i failed"; sudo dpkg --configure -a || true; sleep 150
+            done; return 1; }
+          retry sudo add-apt-repository -y -n ppa:fenics-packages/fenics
+          retry sudo apt-get update -qq -o APT::Update::Error-Mode=any
           # libdolfin-dev, pybind11-dev and g++: dolfin compiles every form at run time;
           # libparmetis-dev: femtools compiles its ParMETIS partitioner the same way.
           # python3-cppimport: femtools compiles its gradient matrix and probes with it.
           # gmsh, meshio and meshtools (with scipy, skimage and meshpy): the SimplePore2D
           # mesh. h5py: the checkpoint tests; python3-h5py is the wrapper that makes
           # `import h5py` load the MPI build.
-          sudo apt-get install -y --no-install-recommends \
+          retry sudo apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
             python3-dolfin python3-dolfinx python3-mpi4py python3-h5py python3-h5py-mpi python3-matplotlib \
             python3-gmsh python3-meshio python3-pytest python3-pip \
             python3-scipy python3-skimage python3-cppimport \

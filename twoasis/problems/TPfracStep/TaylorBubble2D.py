@@ -15,7 +15,7 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
-from dolfin import assemble, DirichletBC, dx, Expression
+from twoasis.backend import assemble, DirichletBC, dx, Expression
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
@@ -65,7 +65,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         controller=None,
         solver="IPCS",
         max_iter=100,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+        max_error=1e-5,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=200,  # Number of iterations on first timestep
     )
 

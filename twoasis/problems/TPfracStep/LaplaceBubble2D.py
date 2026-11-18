@@ -9,7 +9,7 @@ Stats/steady.dat:  t dP sigma/R dP/(sigma/R)-1 max|u| R_eq dP/(sigma/R_eq)-1
   and the far field; p itself is constant at equilibrium.
 - R_eq is the radius the bubble settles at: the bulk phase field shifts
   slightly from +-1, so the bubble shrinks (first order in epsilon/R, more for
-  small bubbles in a large box). dP matches sigma/R_eq to 0.1%.
+  small bubbles in a large box). dP matches sigma/R_eq to 0.5%.
 - max|u| at steady state reflects the solver tolerances only: at rest, g is
   constant and the force -phi*grad(g) vanishes. Moving interfaces are untested.
 - Steady state: dP and max|u| change by less than steady_tol over
@@ -31,7 +31,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
+from twoasis.backend import (
     assemble, conditional, DirichletBC, dx, Expression, gt, lt, MPI, SpatialCoordinate, sqrt,
     SubDomain)
 
@@ -62,6 +62,8 @@ def problem_parameters(NS_parameters, **NS_namespace):
         F0=[0., 0.],
         g0=[0., 0.],
         velocity_degree=2,
+        phase_refine=1,  # the P1 phase field on the flow mesh refined once: the
+                         # interface as resolved as by the velocity's P2 nodes
         solver="BDF",
         folder="laplacebubble2d_results",
         plot_interval=10,
@@ -71,7 +73,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         checkpoint=10,
         print_intermediate_info=10,
         max_iter=100,
-        max_error=1e-6,
+        max_error=5e-9,
         iters_on_first_timestep=200,
     )
 

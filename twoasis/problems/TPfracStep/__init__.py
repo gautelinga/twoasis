@@ -4,7 +4,7 @@ __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import Constant
+from twoasis.backend import Constant, geometric_dimension
 
 from twoasis.problems import NS_parameters
 
@@ -32,6 +32,13 @@ NS_parameters.update(
     # makes the inner iterations converge where they otherwise stall. The Naive
     # solver has none.
     rotational=True,
+    # Convection of the velocity in the skew-symmetric form, (w.grad)u + 1/2 (div w) u
+    # with w the convecting velocity: w is extrapolated from discretely
+    # divergence-free fields, so it is not exactly divergence-free, and the plain form
+    # (w.grad)u (skew_convection=False) lets convection add kinetic energy. The
+    # stability argument in docs/notes/coupled-velocity-phase-field-stability.tex
+    # needs the skew form.
+    skew_convection=True,
     # Anderson acceleration of the inner passes on the pressure, with this many
     # earlier passes (0: off).
     anderson_depth=0,
@@ -40,11 +47,36 @@ NS_parameters.update(
     # starts from (0: the solver's own relative tolerance). It pays where the
     # velocity solves dominate. With anderson_depth it takes more passes.
     velocity_tolerance_factor=0,
+    # Rebuild the velocity and pressure preconditioners only every this many
+    # timesteps, reusing them for the timesteps between (1: every timestep). The
+    # pressure's is kept for the whole run anyway when its matrix is constant.
+    velocity_preconditioner_steps=1,
+    pressure_preconditioner_steps=1,
+    # Stop the run with an error when the velocity change of the inner passes has
+    # grown this many passes in a row while larger than the first pass's change: the
+    # passes diverge, and the step's result would be garbage (0: never). The last
+    # checkpoint is kept.
+    diverging_passes=5,
+    # How a BDF step solves for its velocity and pressure: "passes", the
+    # pressure-correction passes above (max_iter of them, or until max_error), or
+    # "coupled", the velocity and pressure in one system to coupled_krylov_solver's
+    # tolerance (twoasis/solvers/TPfracStep/coupled.py): the step the passes converge
+    # to, in a number of iterations meant not to grow as the mesh is refined.
+    # "coupled" needs an inf-sup stable pair, velocity_degree > pressure_degree, and
+    # leaves rotational and the passes' settings unused.
+    velocity_pressure_solve="passes",
+    backend="auto",      # dolfin, dolfinx, or auto: a restart's checkpoint's, else dolfin
+                         # (chosen when twoasis.backend is imported; see its docstring)
+    telemetry=False,     # write Stats/telemetry.jsonl: per-step times, Krylov iterations and
+                         # preconditioner setups (twoasis/common/telemetry.py)
     quadrature_degree=None,        # quadrature degree for all forms; None means 2*velocity_degree + 1
 
     # Phase field parameters
-    phase_field_degree=None,         # degree of phi; None means velocity_degree
+    phase_field_degree=None,         # degree of phi; None means pressure_degree
     chemical_potential_degree=None,  # degree of g; None means phase_field_degree
+    phase_refine=0,      # the dual mesh: solve the phase field on the flow mesh refined
+                         # uniformly this many times (0: on the flow mesh itself); see
+                         # twoasis/common/dual.py
 
     M=0.001,
     epsilon=0.04,
@@ -60,9 +92,11 @@ NS_parameters.update(
 
     # Parameters used to tweak solver
     max_iter=1,                 # Number of inner pressure velocity iterations on timestep
-    max_error=1e-6,             # Tolerance for inner iterations (pressure velocity iterations):
-                                # stop when the velocity changes by less than this (l2 norm
-    max_error_rel=0.,           # of the dofs), or by less than max_error_rel times its norm
+    max_error=1e-8,             # Tolerance for inner iterations (pressure velocity iterations):
+                                # stop when the velocity changes by less than this (its L2
+    max_error_rel=0.,           # norm over the domain), or by less than max_error_rel times
+                                # the velocity's L2 norm
+    inner_norm='L2',            # the norm max_error is in (recorded with checkpoints)
                                 # (e.g. 1e-3: integral statistics change by ~1e-5 or less;
                                 # not for small velocities measured pointwise)
     iters_on_first_timestep=2,  # Number of iterations on each of the first 10 timesteps
@@ -74,6 +108,8 @@ NS_parameters.update(
     stat_interval=10,       # Write statistics (Stats/) each stat_interval timesteps
     timestamps_interval=10, # ... and fields to Timestamps/, in problems that write them
     checkpoint=10,       # Overwrite solution in Checkpoint folder each checkpoint
+    checkpoint_minutes=None,  # ... and also once this many minutes of wall time have
+                              # passed since the last checkpoint (None: by steps only)
     save_step=10,        # Store solution each save_step
     restart_folder=None, # If restarting solution, set the folder holding the solution to start from here
 
@@ -110,16 +146,28 @@ NS_parameters.update(
 
     velocity_krylov_solver=dict(
         solver_type='bicgstab',
-        preconditioner_type='bjacobi'),
+        preconditioner_type='auto'),  # 'hypre_amg' where the viscous term dominates
+                                      # (dt*nu/h^2 above VISCOUS_DOMINATED, h the velocity's
+                                      # smallest node spacing, nu the largest mu/rho), where
+                                      # block Jacobi's iterations grow as the mesh is refined;
+                                      # else 'bjacobi', which is cheaper there
 
     pressure_krylov_solver=dict(
         solver_type='gmres',
         preconditioner_type='hypre_amg'),  # scales better than 'petsc_amg' on large meshes;
                                            # femtools.ksp.BOOMERAMG_3D's settings in 3D
+                                           # (as any BoomerAMG has there)
 
     phase_field_krylov_solver=dict(
         solver_type='fgmres',
-        preconditioner_type='schur')  # PhaseFieldSchur: iterations independent of h and dt
+        preconditioner_type='schur'),  # PhaseFieldSchur: iterations independent of h and dt
+
+    # velocity_pressure_solve="coupled": FGMRES with a block preconditioner, one
+    # BoomerAMG cycle per velocity component and on the pressure matrix. Its
+    # petsc_options take the outer solver's PETSc options, and the inner ones under
+    # u_ and p_ (e.g. {"u_pc_hypre_boomeramg_strong_threshold": 0.5}).
+    coupled_krylov_solver=dict(
+        solver_type='fgmres')
 )
 
 # Default relative tolerance and iteration limit for each Krylov solver, used
@@ -132,6 +180,8 @@ KRYLOV_TOLERANCES = dict(
     pressure_krylov_solver=dict(relative_tolerance=1e-6, maximum_iterations=100),
     # Tight, since it sets the accuracy of the interface.
     phase_field_krylov_solver=dict(relative_tolerance=1e-8, maximum_iterations=1000),
+    # Tight: it sets the accuracy of the step's velocity and pressure.
+    coupled_krylov_solver=dict(relative_tolerance=1e-8, maximum_iterations=200),
 )
 
 def velocity_tentative_hook(**NS_namespace):
@@ -173,9 +223,10 @@ def contact_angles(theta, **NS_namespace):
 def average_pressure_gradient(F0, mesh, **NS_namespace):
     """The mean pressure gradient, -F0: F0 is the force per volume it drives the
     flow with."""
-    return Constant(tuple(-f for f in F0) if F0 is not None else (0.,) * mesh.geometry().dim())
+    return Constant(tuple(-f for f in F0) if F0 is not None
+                    else (0.,) * geometric_dimension(mesh))
 
 
 def acceleration(g0, mesh, **NS_namespace):
     """Body acceleration g0 (e.g. gravity)."""
-    return Constant(tuple(g0) if g0 is not None else (0.,) * mesh.geometry().dim())
+    return Constant(tuple(g0) if g0 is not None else (0.,) * geometric_dimension(mesh))

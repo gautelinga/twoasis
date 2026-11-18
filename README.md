@@ -1,7 +1,7 @@
 twoasis
 =======
 
-*twoasis* simulates two-phase flow using the incompressible Cahn–Hilliard–Navier–Stokes model, solved with the finite element method in legacy [FEniCS](https://fenicsproject.org/download/archive/) (dolfin 2019.2). 
+*twoasis* simulates two-phase flow using the incompressible Cahn–Hilliard–Navier–Stokes model, solved with the finite element method on legacy [FEniCS](https://fenicsproject.org/download/archive/) (dolfin 2019.2) or on [FEniCSx](https://fenicsproject.org) (DOLFINx 0.11): one code, with its forms in UFL, the same algorithm and defaults on both (see [Backends](#backends)). 
 It is a stripped-down fork of [Oasis](https://github.com/mikaem/Oasis) by Mikael Mortensen, and is closely related to [Bernaise](https://github.com/gautelinga/BERNAISE), which simulates two-phase electrohydrodynamic flow (see [Publications](#publications)).
 
 ## Installation
@@ -12,15 +12,23 @@ On Ubuntu 24.04, install legacy dolfin from the FEniCS PPA, then twoasis:
 sudo add-apt-repository ppa:fenics-packages/fenics
 sudo apt-get install python3-dolfin python3-mpi4py python3-h5py \
     python3-h5py-mpi python3-cppimport python3-pybind11 libparmetis-dev \
-    python3-matplotlib python3-gmsh python3-meshio python3-pytest
+    python3-matplotlib python3-gmsh python3-meshio python3-pytest python3-pytest-xdist
 git clone https://github.com/gautelinga/twoasis.git
 cd twoasis
 python3 -m pip install --user --break-system-packages --no-deps -e .
 ```
 
+For the DOLFINx backend, add DOLFINx from the same PPA (it shares dolfin's PETSc), and
+CMake, a C++ compiler and nanobind, with which femtools builds its DOLFINx extensions on
+first use:
+
+```
+sudo apt-get install python3-dolfinx libdolfinx-dev python3-nanobind nanobind-dev cmake g++
+```
+
 twoasis also needs 
 
-* [femtools](https://github.com/gautelinga/femtools): periodic boundary conditions, improved output, partition of periodic 3D meshes in parallel
+* [femtools](https://github.com/gautelinga/femtools): the two backends' common API (`femtools.backend`), periodic boundary conditions, improved output, partition of periodic 3D meshes in parallel
 * [partractools](https://github.com/gautelinga/partractools): output for [partrac](https://github.com/gautelinga/partrac)
 * [meshtools](https://github.com/gautelinga/meshtools): for the mesh scripts in `meshes/`
 
@@ -32,13 +40,23 @@ python3 -m pip install --user --break-system-packages --no-deps meshpy
 for repo in femtools partractools meshtools; do
     git clone https://github.com/gautelinga/$repo.git
 done
-git -C femtools checkout 2026.2.2
+git -C femtools checkout 696f85b
 git -C partractools checkout 2026.2.1
 git -C meshtools checkout 2026.2.0
 for repo in femtools partractools meshtools; do
     python3 -m pip install --user --break-system-packages --no-deps -e $repo
 done
 ```
+
+Checkpoints and time series are written by all ranks in parallel through MPI-IO when h5py
+has MPI support (`python3-h5py-mpi` above; on a cluster, an h5py built against its MPI and a
+parallel HDF5). Without it rank 0 writes everything, which does not scale to large runs;
+femtools then says so on rank 0's stderr.
+
+The `twoasis` command runs one OpenMP and BLAS thread per process (it sets
+`OMP_NUM_THREADS=1` and `OPENBLAS_NUM_THREADS=1` unless they are set): with one MPI rank
+per core, threaded BLAS in each rank oversubscribes the cores and slows every step.
+Set the same variables when calling twoasis's modules from your own script.
 
 ## Running a simulation
 
@@ -65,8 +83,14 @@ The most central ones:
 | `rho`, `mu`             | densities and viscosities of the two fluids, `[phi=1, phi=-1]` |
 | `sigma`, `epsilon`, `M` | surface tension, interface width, mobility |
 | `velocity_degree`       | polynomial degree of the velocity (1 or 2) |
+| `phase_field_degree`    | polynomial degree of the phase field and chemical potential (default: the pressure's, P1) |
+| `backend`               | `dolfin`, `dolfinx` or `auto` (see [Backends](#backends)) |
+| `phase_refine`          | solve the phase field on the flow mesh refined this many times (0: the same mesh; BDF and IPCS) |
 | `folder`                | where results are written |
-| `save_step`, `checkpoint`, `stat_interval` | how often to write fields, checkpoints and statistics |
+| `save_step`, `checkpoint`, `stat_interval` | how often to write fields, checkpoints and statistics (in steps) |
+| `checkpoint_minutes`    | also checkpoint once this many minutes of wall time have passed since the last checkpoint |
+| `max_iter`, `max_error` | inner pressure-velocity passes per step, at most, and the L2 norm of the velocity's change below which they stop |
+| `velocity_pressure_solve` | `passes` (default: the pressure-correction passes above) or `coupled`: each BDF step's velocity and pressure solved as one system, to `coupled_krylov_solver`'s tolerance, in a number of iterations meant not to grow as the mesh is refined; needs `velocity_degree` > `pressure_degree` |
 
 Problems that run without further setup:
 
@@ -91,6 +115,28 @@ twoasis TPfracStep problem=SimplePore2D
 
 In parallel, start it with MPI: `mpirun -np 4 twoasis TPfracStep problem=...`.
 
+## Backends
+
+The backend is chosen by `backend=` on the command line, else the environment variable
+`TWOASIS_BACKEND`, else `auto`: a restart takes the backend its checkpoint recorded, a new
+run dolfin. The backend is printed at start-up and recorded in `params.dat`:
+
+```
+twoasis TPfracStep problem=PeriodicBubble2D backend=dolfinx
+```
+
+Both run every problem and solver, serially or in parallel, and agree to the solvers'
+tolerances. They write the same files: checkpoints in dolfin's HDF5 layout, which restart
+on either backend and on any number of processes, and time series in the same XDMF
+layout. A DOLFINx run does not import dolfin. The differences:
+
+- A problem's C++ `Expression` strings are compiled on DOLFINx too (on first use, cached).
+- Checkpoints of dolfin's older format (bare vectors) restart on dolfin only.
+
+The finite-element calls go through `twoasis.backend`, which takes its names from
+`femtools.backend.dolfin` or `femtools.backend.dolfinx` (one API, dolfin's, on both).
+A problem file imports them from `twoasis.backend`, not from `dolfin`, to run on both.
+
 ## Output
 
 Each run writes to a new numbered folder, `<folder>/data/1/`, `.../2/`, ...:
@@ -108,6 +154,10 @@ To continue a run, point to its checkpoint and give a later end time:
 twoasis TPfracStep problem=PeriodicBubble2D restart_folder=<folder>/data/1/Checkpoint T=1.0
 ```
 
+A checkpoint holds each field's previous level only when the restart needs it (BDF of
+second order); a run checks for the files `killtwoasis` (stop, with a checkpoint) and
+`pausetwoasis` in its folder every 10 s or so.
+
 The restart may use another number of processes. It takes its parameters from the checkpoint, except the Krylov solvers' settings; the command line can still change any of them, while the problem file's values are those the run started with.
 
 ## Your own problem
@@ -120,9 +170,23 @@ A problem file defines the mesh (`mesh`), its parameters (`problem_parameters`),
 
 ```
 cd tests
-python3 -m pytest           # fast tests, ~2 minutes
+python3 -m pytest           # fast tests
 python3 -m pytest -m slow   # convergence studies and a run of every problem
+python3 -m pytest -n 8      # in parallel (pytest-xdist)
 ```
+
+The cross-backend tests run both backends whatever is chosen; the others run on the
+backend `TWOASIS_BACKEND` names (dolfin by default):
+
+```
+TWOASIS_BACKEND=dolfinx python3 -m pytest
+```
+
+Tests that use dolfin's objects themselves (`test_units.py`) or its bare-vector checkpoints
+run with dolfin only, and are skipped on DOLFINx.
+
+In parallel, a run several tests compare with is made once, by the first worker that
+needs it (`once` in tests/conftest.py), and the others wait for it.
 
 ## Publications
 

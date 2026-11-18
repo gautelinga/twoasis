@@ -9,12 +9,11 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 import math
 
 import numpy as np
-from dolfin import (
-    as_vector, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad, inner, nabla_grad,
-    Timer)
-
-from femtools.fast_assembly import assemble
+from twoasis.backend import (
+    as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad,
+    inner, Timer)
 from twoasis.problems import info_blue
+from twoasis.common.utilities import axpy, mult, pointwise
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     assemble_phase_field_system, assemble_pressure_matrix,
@@ -22,8 +21,10 @@ from twoasis.solvers.TPfracStep import (
     incremental_pressure_solve as pressure_solve,
     incremental_velocity_update as velocity_update, krylov_get_solvers,
     phase_field_system, PhaseFieldOnVelocitySpace, pressure_matrix, projection_solver,
-    rotational_fields, rotational_pressure_update as pressure_update, set_mixed_fields,
-    velocity_matrices)
+    krylov_solver_parameters, rebuild_step, rotational_fields,
+    rotational_pressure_update as pressure_update, set_mixed_fields, velocity_matrices,
+    convection_form)
+from twoasis.solvers.TPfracStep import coupled as _coupled
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
@@ -50,14 +51,15 @@ def setup(u_components, u, v, p, q, bcs, #dt,
           angles, ds, bdf_order, constant_poisson_coefficient, normal,
           initial_step_1st_order, tstep, rotational,
           velocity_update_solver, assemble_matrix, homogenize, acc, gradp_avg,
-          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, **NS_namespace):
+          GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, b,
+          velocity_pressure_solve, coupled_krylov_solver, skew_convection, **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
 
     rho_ = Function(V)
     rho_inv_ = Function(V)
     mu_ = Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(q_['phig'].function_space(), V)
+    phi_V = PhaseFieldOnVelocitySpace(V)
 
     # If things need to be precomputed
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
@@ -77,13 +79,13 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # Setup for solving convection
     u_adv = as_vector([Function(V) for _ in range(len(u_components))])
     #rho_ * u_1 - M * drho_ * grad(g_)
-    a_conv = inner(v, dot(u_adv, nabla_grad(u))) * dx
+    a_conv = convection_form(u_adv, u, v, skew_convection)
 
     # Phase-field matrices and forms. phase_field_assemble adds the time-derivative
-    # term alpha[0]*Mpf[0] to the constant part whenever alpha[0] changes: on the
-    # first step, and when switching from BDF1 to BDF2.
+    # term alpha[0] times phi's mass matrix to the constant part whenever alpha[0]
+    # changes: on the first step, and when switching from BDF1 to BDF2.
     pf = phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
-                            epsilon, angles, ds, assemble_matrix)
+                            epsilon, angles, ds)
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
@@ -148,7 +150,29 @@ def setup(u_components, u, v, p, q, bcs, #dt,
              **pressure_matrix(constant_poisson_coefficient, rho, rho_inv_, p, q, Q, bcs))
 
     d.update(u_adv=u_adv, a_conv=a_conv, a_conv_visc=a_conv + a_visc, TPT=TPT, rho_=rho_, mu_=mu_, rho_inv_=rho_inv_, phi_V=phi_V, sigma_bar=sigma_bar)
+
+    coupled = None
+    if velocity_pressure_solve == "coupled":
+        name = "coupled_krylov_solver"
+        coupled = _coupled.CoupledVelocityPressure(
+            u_components, x_, b, A, Ai, gradp, divu, d['Ap'], d['p_null'], bcs, Q, mu_,
+            homogenize, _coupled.solver_options(coupled_krylov_solver, len(u_components)),
+            krylov_solver_parameters(name, coupled_krylov_solver, krylov_solvers))
+    d.update(coupled=coupled)
     return d
+
+
+def coupled_solve(coupled, b_tmp, rho_inv_, alpha, dp_, tstep, velocity_preconditioner_steps,
+                  pressure_preconditioner_steps, constant_poisson_coefficient,
+                  **NS_namespace):
+    """Solve the step's velocity and pressure as one system (coupled.py), after
+    assemble_first_inner_iter; the preconditioners are rebuilt as for the passes.
+    Returns the number of iterations."""
+    return coupled.solve(
+        b_tmp, rho_inv_, alpha, dp_, tstep,
+        reuse_velocity=not rebuild_step(tstep, velocity_preconditioner_steps),
+        reuse_pressure=((constant_poisson_coefficient and tstep > 1)
+                        or not rebuild_step(tstep, pressure_preconditioner_steps)))
 
 get_solvers = krylov_get_solvers
 
@@ -178,7 +202,7 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_compone
         acc_vals = acc.values()
     if gradp_is_uniform:
         gradp_vals = gradp_avg.values()
-        b_gp = Md * rho_inv_.vector()  # equals assemble(v*rho_inv_*dx)
+        b_gp = mult(Md, rho_inv_.vector(), "b_gp")  # equals assemble(v*rho_inv_*dx)
 
     for i, ui in enumerate(u_components):
         # zero out rhs
@@ -190,22 +214,22 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_compone
             assemble(bg0[ui] * dx, tensor=b_tmp[ui])
         # add average pressure gradient
         if gradp_is_uniform:
-            b_tmp[ui].axpy(-gradp_vals[i], b_gp)
+            axpy(b_tmp[ui], -gradp_vals[i], b_gp)
         else:
             b0[ui].zero()
             assemble(bgp0[ui] * rho_inv_ * dx, tensor=b0[ui])
             b_tmp[ui].axpy(-1., b0[ui])
-        b_tmp[ui].axpy(-alpha[1], Md * x_1[ui])
-        b_tmp[ui].axpy(-alpha[2], Md * x_2[ui])
+        axpy(b_tmp[ui], -alpha[1], mult(Md, x_1[ui]))
+        axpy(b_tmp[ui], -alpha[2], mult(Md, x_2[ui]))
 
         if not matched_mu:
             TPT.assemble_rhs(i)
-            b_tmp[ui].axpy(1., TPT.vector() * rho_inv_.vector())
+            axpy(b_tmp[ui], 1., pointwise(TPT.vector(), rho_inv_.vector()))
 
         # Capillary force. The phase field is solved before the inner
         # iterations, so this term is fixed within the timestep.
         phigradg[ui].assemble_rhs()
-        b_tmp[ui].axpy(-1., phigradg[ui].rhs * rho_inv_.vector())
+        axpy(b_tmp[ui], -1., pointwise(phigradg[ui].rhs, rho_inv_.vector()))
 
     # assemble semi-implicit convection, diffusion etc. for lhs
     if matched_properties:
@@ -239,7 +263,7 @@ def velocity_tentative_assemble(ui, b, b_tmp, p_, gradp, rho_inv_, **NS_namespac
     b[ui].zero()
     b[ui].axpy(1., b_tmp[ui])
     gradp[ui].assemble_rhs(p_)
-    b[ui].axpy(-1., gradp[ui].rhs * rho_inv_.vector())
+    axpy(b[ui], -1., pointwise(gradp[ui].rhs, rho_inv_.vector()))
 
 
 def scalar_assemble(a_scalar, a_conv, Ta, dt, M, scalar_components, Schmidt_T, KT,
@@ -253,7 +277,7 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve the scalar equations: none, scalars are not supported."""
     pass
 
-def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf_alpha,
+def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_alpha,
                          b, x_1, x_2, u_adv, u_components, alpha,
                          beta, bdf_order, bdf1_tstep, fpf, bpf, NS_parameters,
                          **NS_namespace):
@@ -291,11 +315,11 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_const, Apf
         u_adv[i].vector().axpy(beta[1], x_2[ui])
 
     t1 = Timer("Phase field assemble")
-    assemble_phase_field_system(alpha[0], Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
+    assemble_phase_field_system(alpha[0], Apf, a_pf_full, Apf_alpha, Mpf,
                                 Lpft, b['phig'], bpf, fpf, t)
 
     # Add mass
-    b['phig'].axpy(-alpha[1], Mpf[0] * x_1['phig'])
-    b['phig'].axpy(-alpha[2], Mpf[0] * x_2['phig'])
+    axpy(b['phig'], -alpha[1], mult(Mpf[0], x_1['phig']))
+    axpy(b['phig'], -alpha[2], mult(Mpf[0], x_2['phig']))
 
     t1.stop()

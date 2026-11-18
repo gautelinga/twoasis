@@ -6,6 +6,10 @@ import pytest
 
 dolfin = pytest.importorskip("dolfin")
 
+from conftest import dolfin_only  # noqa: E402
+
+pytestmark = dolfin_only          # dolfin's meshes and spaces, with the dolfin backend
+
 
 # --- Krylov tolerances ------------------------------------------------------
 
@@ -74,10 +78,46 @@ def test_krylov_solver_sets_what_is_asked(solver_type, pc, expected):
 
 def test_krylov_solver_defaults_build():
     from twoasis.problems.TPfracStep import NS_parameters
+    from twoasis.solvers.TPfracStep import for_dimension
     for name, cfg in NS_parameters.items():
         # 'schur' is built by phase_field_schur_solver
         if name.endswith("_solver") and cfg.get("preconditioner_type", "schur") != "schur":
-            ksp_of(**{k: cfg[k] for k in ("solver_type", "preconditioner_type")})
+            for dim in (2, 3):
+                c = for_dimension(cfg, dim)
+                if c["preconditioner_type"] == "auto":
+                    c = dict(c, preconditioner_type="bjacobi")
+                ksp_of(**{k: c[k] for k in ("solver_type", "preconditioner_type")})
+
+
+def test_auto_velocity_preconditioner_by_dt_nu_over_h2():
+    """'auto' is block Jacobi where the mass term dominates and BoomerAMG where the
+    viscous term does (dt*nu/h^2 against VISCOUS_DOMINATED, nu the largest mu/rho, h the
+    smallest cell over the degree); another choice is kept."""
+    from twoasis.solvers.TPfracStep import VISCOUS_DOMINATED, velocity_preconditioner
+    mesh = dolfin.UnitSquareMesh(16, 16)          # hmin = sqrt(2)/16
+    auto = dict(solver_type="bicgstab", preconditioner_type="auto")
+    h2 = (mesh.hmin() / 2) ** 2                    # P2's node spacing
+    pick = lambda dt, rho, mu: velocity_preconditioner(auto, dt, rho, mu, mesh, 2)[
+        "preconditioner_type"]
+    assert pick(0.5 * VISCOUS_DOMINATED * h2, [1, 1], [1, 1]) == "bjacobi"
+    assert pick(2 * VISCOUS_DOMINATED * h2, [1, 1], [1, 1]) == "hypre_amg"
+    assert pick(0.5 * VISCOUS_DOMINATED * h2, [1000, 1], [1, 4]) == "hypre_amg"  # nu: 4
+    ilu = dict(auto, preconditioner_type="bjacobi")
+    assert velocity_preconditioner(ilu, 1e3, [1, 1], [1, 1], mesh, 2) == ilu
+
+
+def test_boomeramg_takes_the_3d_settings_in_3d():
+    """In 3D a BoomerAMG takes femtools.ksp.BOOMERAMG_3D's settings (the solver's own
+    petsc_options win); in 2D, and another preconditioner, none."""
+    from femtools import ksp
+    from twoasis.solvers.TPfracStep import for_dimension
+    amg = dict(solver_type="bicgstab", preconditioner_type="hypre_amg")
+    assert ksp.BOOMERAMG_3D.items() <= for_dimension(amg, 3)["petsc_options"].items()
+    assert "petsc_options" not in for_dimension(amg, 2)
+    ilu = dict(amg, preconditioner_type="bjacobi")
+    assert for_dimension(ilu, 3) == ilu
+    own = dict(amg, petsc_options={"pc_hypre_boomeramg_coarsen_type": "PMIS"})
+    assert for_dimension(own, 3)["petsc_options"]["pc_hypre_boomeramg_coarsen_type"] == "PMIS"
 
 
 def schur_solve(n, fixed=False, petsc_options=None, alpha=1., mobility=1e-2):
@@ -136,7 +176,8 @@ def test_phase_field_schur_inner_solvers():
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
     assert inner(phase_field_schur_solver(
-        W, dict(solver_type="fgmres", preconditioner_type="schur"), {}, [])) == ("cg", "jacobi")
+        W, dict(solver_type="fgmres", preconditioner_type="schur"), {}, [])) \
+        == ("preonly", "hypre")
 
 
 def test_phase_field_schur_solver_needs_a_flexible_method():
@@ -145,8 +186,8 @@ def test_phase_field_schur_solver_needs_a_flexible_method():
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
     with pytest.raises(ValueError, match="flexible"):
-        phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur"),
-                                 {}, [])
+        phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur",
+                                         petsc_options={"H_ksp_type": "cg"}), {}, [])
 
 
 def test_krylov_solver_petsc_options_reach_the_blocks():
@@ -181,7 +222,9 @@ def solvers(mesh, **cfg):
         "CG", mesh.ufl_cell(), 1)] * 2))
     params = {k: NS_parameters[k] for k in (
         "krylov_solvers", "velocity_krylov_solver", "velocity_update_solver",
-        "pressure_krylov_solver", "phase_field_krylov_solver", "velocity_tolerance_factor")}
+        "pressure_krylov_solver", "phase_field_krylov_solver", "velocity_tolerance_factor",
+        "dt", "velocity_degree")}
+    params.update(rho=[1., 1.], mu=[1., 1.])     # a problem's; matched fluids here
     params.update(cfg)
     return krylov_get_solvers(q_=dict(phig=dolfin.Function(W)), mesh=mesh, bcs=dict(phig=[]),
                               **params)
@@ -209,7 +252,9 @@ def test_velocity_tolerance_factor(factor):
         return r.norm("l2")
 
     r0 = residual()
-    solvers(mesh, velocity_tolerance_factor=factor)[0].solve(A, x, b)
+    # block Jacobi, whose residual falls slowly enough to stop between the bounds
+    solvers(mesh, velocity_tolerance_factor=factor, velocity_krylov_solver=dict(
+        solver_type="bicgstab", preconditioner_type="bjacobi"))[0].solve(A, x, b)
     if factor:
         assert 1e-3 < residual() / r0 <= factor
     else:
@@ -368,7 +413,7 @@ PERIODIC_3D = r"""
 import sys
 from dolfin import FiniteElement, FunctionSpace, MixedElement, MPI, set_log_level
 from femtools.periodic_partition import PairingError
-from twoasis.common.utilities import check_periodic_pairing
+from twoasis.backend import check_periodic_pairing
 from twoasis.problems.TPfracStep.shared import centred, load_mesh, PeriodicBox
 set_log_level(40)
 mesh = load_mesh(sys.argv[1], periodic=(True, True, False))
@@ -396,7 +441,7 @@ import h5py
 import numpy as np
 import dolfin as df
 from femtools.periodic_partition import PairingError
-from twoasis.common.utilities import check_periodic_pairing
+from twoasis.backend import check_periodic_pairing
 from twoasis.problems import post_import_problem
 from twoasis.problems.TPfracStep.shared import centred, PeriodicBox
 df.set_log_level(40)
@@ -500,9 +545,7 @@ def test_bubble2d_cases():
     Bubble2D.problem_parameters(NS_parameters=one, commandline_kwargs={})
     Bubble2D.problem_parameters(NS_parameters=two, commandline_kwargs={"case": 2})
     assert (one["case"], one["rho"], one["mu"], one["sigma"]) == (1, [1000., 100.], [10., 1.], 24.5)
-    assert one.get("phase_field_degree") is None
     assert (two["case"], two["rho"], two["mu"], two["sigma"]) == (2, [1000., 1.], [10., 0.1], 1.96)
-    assert (two["phase_field_degree"], two["chemical_potential_degree"]) == (1, 1)
     assert (two["res"], two["dt"]) == (1. / 128, 0.001)
     with pytest.raises(ValueError, match="case=3"):
         Bubble2D.problem_parameters(NS_parameters={}, commandline_kwargs={"case": 3})
@@ -530,3 +573,43 @@ def test_physical_pressure_bc():
     x = Q.tabulate_dof_coordinates()[dofs]
     expected = 2.5 - np.tanh(x[:, 0] - 0.5) * (x[:, 1] + 1)
     assert np.abs(p.vector().get_local()[dofs] - expected).max() < 1e-12
+
+
+def test_telemetry_appends_after_a_restart(tmp_path):
+    """A restart writes its steps after the earlier run's in the same telemetry file."""
+    from mpi4py import MPI as _MPI
+    from twoasis.common import telemetry
+    path = str(tmp_path / "telemetry.jsonl")
+    for tstep in (1, 2):                  # the run, then its restart
+        tel = telemetry.Telemetry(path, _MPI.COMM_SELF)
+        tel.start_step()
+        tel.end_step(tstep, 0.1 * tstep, 1)
+        tel.close()
+    assert [r["tstep"] for r in telemetry.read(path)] == [1, 2]
+
+
+# --- convection form --------------------------------------------------------
+
+def test_skew_convection_adds_no_energy():
+    """The skew-symmetric convection form x^T C x vanishes for a velocity component x
+    that is zero on the boundary, also when the convecting field w is not divergence
+    free; the plain form leaves -1/2 int (div w) x^2."""
+    from twoasis.solvers.TPfracStep import convection_form
+    mesh = dolfin.UnitSquareMesh(8, 8)
+    V = dolfin.FunctionSpace(mesh, "Lagrange", 2)
+    W = dolfin.VectorFunctionSpace(mesh, "Lagrange", 2)
+    w = dolfin.interpolate(dolfin.Expression(("x[0]*x[0] + x[1]", "x[0]*x[1]"), degree=2), W)
+    u, v = dolfin.TrialFunction(V), dolfin.TestFunction(V)
+    rng = np.random.default_rng(3)
+    x = dolfin.Function(V)
+    x.vector().set_local(rng.standard_normal(V.dim()))
+    dolfin.DirichletBC(V, 0.0, "on_boundary").apply(x.vector())
+    energy = {}
+    for skew in (True, False):
+        C = dolfin.assemble(convection_form(w, u, v, skew))
+        y = x.vector().copy()
+        C.mult(x.vector(), y)
+        energy[skew] = x.vector().inner(y)
+    plain = -0.5 * dolfin.assemble(dolfin.div(w) * x * x * dolfin.dx)
+    assert abs(energy[True]) < 1e-12 * abs(plain)
+    assert abs(energy[False] - plain) < 1e-10 * abs(plain)

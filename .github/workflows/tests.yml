@@ -1,7 +1,10 @@
 name: tests
 
-# Legacy dolfin 2019.2 from the FEniCS PPA, installed with apt on the Ubuntu 24.04
-# runner -- the same setup as the development machine and as stokes-beadpack's CI.
+# Legacy dolfin 2019.2 and DOLFINx 0.11 from the FEniCS PPA, installed with apt on the
+# Ubuntu 24.04 runner -- the same setup as the development machine and as
+# stokes-beadpack's CI. The suite runs on dolfin (the default backend); a second step
+# runs the tests of the problems and solvers the DOLFINx backend supports on DOLFINx
+# (TWOASIS_BACKEND=dolfinx), and the cross-backend tests run in both jobs' suites.
 # Everything else comes from apt too, so h5py uses dolfin's (parallel) HDF5, NumPy
 # is the one dolfin was built against, and mpirun is Ubuntu's Open MPI.
 #
@@ -15,6 +18,14 @@ on:
   schedule:
     - cron: "0 3 * * 1"
   workflow_dispatch:
+
+# The tests that run on the DOLFINx backend: every problem, solver and option, but not
+# dolfin's old bare-vector checkpoints, which restart on dolfin alone.
+env:
+  DOLFINX_FILES: >-
+    test_laplace.py test_rayleigh_taylor.py test_convergence.py test_TPfracStep.py
+    test_options.py test_problems.py test_open_boundary.py
+  DOLFINX_SKIP: not bare_vectors
 
 # A new push or PR update cancels the previous run of the same kind; the weekly
 # and manual (slow) runs are in their own group, so a push does not cancel them.
@@ -34,23 +45,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - &install
-        name: legacy dolfin from the FEniCS PPA, and twoasis
+        name: legacy dolfin and DOLFINx from the FEniCS PPA, and twoasis
         run: |
           sudo add-apt-repository -y ppa:fenics-packages/fenics
           sudo apt-get update -qq
           # libdolfin-dev, pybind11-dev and g++: dolfin compiles every form at run time;
           # libparmetis-dev: femtools compiles its ParMETIS partitioner the same way.
+          # python3-cppimport: femtools compiles its gradient matrix and probes with it.
           # gmsh, meshio and meshtools (with scipy, skimage and meshpy): the SimplePore2D
           # mesh. h5py: the checkpoint tests; python3-h5py is the wrapper that makes
           # `import h5py` load the MPI build.
           sudo apt-get install -y --no-install-recommends \
-            python3-dolfin python3-mpi4py python3-h5py python3-h5py-mpi python3-matplotlib \
+            python3-dolfin python3-dolfinx python3-mpi4py python3-h5py python3-h5py-mpi python3-matplotlib \
             python3-gmsh python3-meshio python3-pytest python3-pip \
-            python3-scipy python3-skimage \
+            python3-scipy python3-skimage python3-cppimport \
             libdolfin-dev libparmetis-dev pybind11-dev g++ pkg-config
           # --no-deps throughout: a pip numpy or mpi4py would not be the one dolfin uses.
           python3 -m pip install --break-system-packages --no-deps meshpy \
-            git+https://github.com/gautelinga/femtools.git@2026.2.2 \
+            git+https://github.com/gautelinga/femtools.git@696f85bbe45164b854f666239174279eb990c906 \
             git+https://github.com/gautelinga/partractools.git@2026.2.1 \
             git+https://github.com/gautelinga/meshtools.git@2026.2.0
           python3 -m pip install --break-system-packages --no-deps .
@@ -59,19 +71,27 @@ jobs:
         run: |
           command -v twoasis
           python3 -c "import dolfin, h5py, gmsh, meshio, matplotlib, twoasis; h5py.File; print(dolfin.__version__)"
-          python3 -c "import femtools.periodic, femtools.xdmf, partractools.case, meshtools.io"
-      # dijitso keys by a hash of the generated code, so a stale entry is a miss,
-      # not a wrong answer. A cold cache pays for every form in the suite.
+          python3 -c "import cppimport, femtools.periodic, femtools.xdmf, partractools.case, meshtools.io"
+          python3 -c "import dolfinx, femtools.dolfinx.unique; print(dolfinx.__version__)"
+      # dijitso and FFCx key by a hash of the generated code, so a stale entry is a
+      # miss, not a wrong answer. A cold cache pays for every form in the suite.
       - &cache
         name: JIT cache
         uses: actions/cache@v4
         with:
-          path: ~/.cache/dijitso
+          path: |
+            ~/.cache/dijitso
+            ~/.cache/fenics
           key: dijitso-${{ runner.os }}-${{ hashFiles('twoasis/**/*.py') }}
           restore-keys: dijitso-${{ runner.os }}-
       - name: fast tests
         working-directory: tests
         run: python3 -m pytest -v -rs --durations=10
+      - name: fast tests on DOLFINx
+        working-directory: tests
+        env:
+          TWOASIS_BACKEND: dolfinx
+        run: python3 -m pytest -v -rs --durations=10 $DOLFINX_FILES -k "$DOLFINX_SKIP"
 
   slow:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -89,3 +109,10 @@ jobs:
       - name: slow tests
         working-directory: tests
         run: python3 -m pytest -m slow -v -rs --durations=10
+      - name: slow tests on DOLFINx
+        working-directory: tests
+        env:
+          TWOASIS_BACKEND: dolfinx
+        run: >-
+          python3 -m pytest -m slow -v -rs --durations=10 $DOLFINX_FILES
+          -k "$DOLFINX_SKIP and not refinement and not spurious and not hysing"

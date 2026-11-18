@@ -2,6 +2,12 @@
 
 import sys, os
 
+# One BLAS/OpenMP thread a process unless the environment says otherwise: MPI ranks
+# already fill the cores, and threaded BLAS in every rank oversubscribes them. Set
+# before numpy and PETSc load their BLAS.
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
 sys.path.append(os.getcwd())
 
 def main():

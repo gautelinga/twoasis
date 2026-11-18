@@ -10,7 +10,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 from os import path
 
 import numpy as np
-from dolfin import (
+from twoasis.backend import (
     assemble, dx, Expression, interpolate, MPI, Point, RectangleMesh)
 
 from twoasis.common.utilities import set_subfunction, subspace
@@ -76,7 +76,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         print_intermediate_info=10,
         solver="BDF",
         max_iter=10,
-        max_error=1e-6,
+        max_error=2e-8,
         iters_on_first_timestep=20,
         AB_projection_pressure=False,)
 

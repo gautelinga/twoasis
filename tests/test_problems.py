@@ -13,7 +13,8 @@ import sys
 import numpy as np
 import pytest
 
-from conftest import QUIET, REPO_ROOT, load_tdata, require_mpi, run_twoasis
+from conftest import (MASS_TOL, QUIET, REPO_ROOT, assert_mass_conserved, load_tdata, require_mpi,
+                      run_twoasis)
 
 # Problems that build their own mesh. PeriodicBubble2D (the bubble fixtures),
 # TaylorBubble2D (test_taylorbubble_smoke) and TaylorGreen2D (test_convergence)
@@ -102,6 +103,35 @@ def test_problem_runs(tmp_path, problem, solver):
     run_twoasis(tmp_path, problem=problem, solver=solver, dt=1e-4, T=2e-4, **QUIET, **params)
 
 
+def simplepore2d(meshes):
+    """SimplePore2D's lattice, made by meshes/lattice_mesh.py."""
+    pytest.importorskip("gmsh")
+    pytest.importorskip("meshio")
+    subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "lattice_mesh.py"), "-res", "0.1"],
+                   cwd=str(meshes), check=True, capture_output=True, timeout=300)
+    return dict(res=0.1)
+
+
+# The problems the dual-mesh smoke test adds to PROBLEMS and MESH_PROBLEMS, with what
+# makes them small.
+DUAL_EXTRA = dict(PeriodicBubble2D=lambda m: {}, TaylorBubble2D=lambda m: {},
+                  TaylorGreen2D=lambda m: {}, SimplePore2D=simplepore2d,
+                  Bubble3D=lambda m: dict(res=0.25))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("problem", PROBLEMS + sorted(MESH_PROBLEMS) + sorted(DUAL_EXTRA))
+def test_problem_runs_on_dual_mesh(tmp_path, problem):
+    """Every problem with its phase field on the flow mesh refined once
+    (phase_refine=1, twoasis/common/dual.py): its markers, contact angles, Dirichlet
+    conditions, statistics and timestamps on the right meshes."""
+    params = with_mesh(tmp_path, problem)
+    if problem in DUAL_EXTRA:
+        params = DUAL_EXTRA[problem](tmp_path / "meshes")
+    run_twoasis(tmp_path, problem=problem, phase_refine=1, dt=1e-4, T=2e-4, **QUIET,
+                **params)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("problem,nprocs", [("Porous2D", 2), ("Porous3D", 3)])
 def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
@@ -120,7 +150,9 @@ def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
                 restart_folder="results/data/1/Checkpoint", **params)
     td, td_ref = load_tdata(tmp_path), load_tdata(reference)
     assert td.shape == td_ref.shape
-    np.testing.assert_allclose(td, td_ref, rtol=1e-6, atol=1e-10)
+    # atol: one unit of the 8th decimal the statistics are printed with, which the
+    # order of a parallel sum can flip
+    np.testing.assert_allclose(td, td_ref, rtol=1e-6, atol=1.1e-8)
 
 
 def test_bubble_without_gravity(tmp_path):
@@ -187,7 +219,8 @@ def test_partrac_case_walls(tmp_path):
     from femtools.boundaries import read
     from partractools.case import read_params
     from twoasis.problems.TPfracStep.CylArr2D import get_fname
-    from twoasis.problems.TPfracStep.shared import load_mesh, mark_walls
+    # The expected walls from dolfin, whichever backend the runs are on
+    from femtools.backend.dolfin import mark_walls, read_mesh_file as load_mesh
     require_mpi(3)
     params = with_mesh(tmp_path, "CylArr2D")
     mesh = load_mesh(str(tmp_path / get_fname(ext="h5", **params)))
@@ -211,3 +244,21 @@ def test_partrac_case_walls(tmp_path):
                                 for cell in cells)
     assert facets[1] == facets[3]
     print("wall facets:", expected)
+
+
+def test_porous2d_wetting_direction(tmp_path):
+    """The contact angle drives the wetting the right way (twoasisx's Porous2D gate):
+    from the same start, theta = pi/4 (phase phi = +1 wets the obstacles) raises the
+    fraction of the walls that phase covers and theta = 3*pi/4 lowers it, and the mass
+    of each phase is kept."""
+    params = dict(QUIET, problem="Porous2D", T=0.25, **with_mesh(tmp_path, "Porous2D"))
+    change = {}
+    for theta in (np.pi / 4, 3 * np.pi / 4):
+        wd = tmp_path / "theta{:.3f}".format(theta)
+        wd.mkdir()
+        (wd / "meshes").symlink_to(tmp_path / "meshes")
+        run_twoasis(wd, theta=theta, **params)
+        wet = np.loadtxt(wd / "results" / "data" / "1" / "Stats" / "wetting.dat", ndmin=2)
+        change[theta] = wet[-1, 2] - wet[0, 2]
+        assert_mass_conserved(load_tdata(wd), MASS_TOL)
+    assert change[np.pi / 4] > 0.05 and change[3 * np.pi / 4] < -0.05, change

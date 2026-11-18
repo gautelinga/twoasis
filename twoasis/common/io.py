@@ -10,10 +10,12 @@ import pickle
 import time
 import glob
 
-from dolfin import MPI, Function, HDF5File
-from femtools.dolfin_layout import write_dofs, write_function
 from femtools.swap import new_folder, recover, swap_in
-from femtools.xdmf import continued, merge_series, XDMFFile2
+from twoasis.common import dual
+from twoasis.backend import (
+    Function, function_space, MPI, space_id, TimeSeriesFile, write_dof_tables,
+    write_functions_h5)
+from twoasis.backend import name as backend_name
 from twoasis.common.utilities import phi_g, physical_pressure, set_subfunction, subfunction
 from twoasis.problems import info_red
 
@@ -62,33 +64,38 @@ def create_initial_folders(folder, restart_folder, sys_comp, tstep, info_red,
             stem = "_from_tstep_{}_r{}".format(tstep, k)
     stem = MPI.comm_world.bcast(stem, root=0)
 
-    # XDMFFile2 (femtools) writes what dolfin's XDMFFile writes, but keeps the
-    # midside nodes of a P2 field and compresses the data.
+    # One time series file per field (twoasis.backend.TimeSeriesFile: XDMF that keeps a
+    # P2 field's midside nodes, in the same layout on both backends).
     tstepfiles = {}
     for ui in comps:
-        tstepfiles[ui] = XDMFFile2(MPI.comm_world, path.join(tstepfolder, ui + stem + ".xdmf"))
-        tstepfiles[ui].parameters["rewrite_function_mesh"] = False
-        tstepfiles[ui].parameters["flush_output"] = True
+        tstepfiles[ui] = TimeSeriesFile(MPI.comm_world, path.join(tstepfolder, ui + stem + ".xdmf"))
 
     return newfolder, tstepfiles
 
 
 def save_solution(tstep, t, q_, q_1, folder, newfolder, save_step, checkpoint,
                   NS_parameters, tstepfiles, u_, u_components, scalar_components,
-                  constrained_domain,
-                  AssignedVectorFunction, killtime, total_timer, **NS_namespace):
-    """Called at end of timestep. Check for kill and save solution if required."""
+                  constrained_domain, AssignedVectorFunction, killtime, total_timer,
+                  checkpoint_minutes=None, **NS_namespace):
+    """Called at end of timestep. Save the time series every save_step steps; pause
+    while a pause file is there; checkpoint every `checkpoint` steps, when
+    checkpoint_minutes of wall time have passed since the last checkpoint, and when
+    the run stops (kill file or killtime). Returns whether it stops."""
     NS_parameters.update(t=t, tstep=tstep)
     if tstep % save_step == 0:
         save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunction,
                                NS_parameters)
 
-    while check_if_pause(folder, newfolder):
+    look = _look_now(newfolder)
+    while check_if_pause(folder, newfolder, look=look):
         time.sleep(5)
+        look = True
 
-    killoasis = check_if_kill(folder, killtime, total_timer, newfolder=newfolder)
-    if tstep % checkpoint == 0 or killoasis:
+    killoasis, due = check_controls(folder, killtime, total_timer, newfolder=newfolder,
+                                    look=look, checkpoint_minutes=checkpoint_minutes)
+    if tstep % checkpoint == 0 or killoasis or due:
         save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters)
+        _clock(newfolder)["checkpoint"] = time.monotonic()
 
     return killoasis
 
@@ -113,7 +120,7 @@ def save_tstep_solution_h5(t, q_, u_, newfolder, tstepfiles, AssignedVectorFunct
                     pickle.dump(dict(NS_parameters, timeseries_pressure="physical"), f)
         out = dict(u=AssignedVectorFunction(u_, name="u"))
         if MPI.comm_world.bcast(physical, root=0):
-            out["p"] = Function(q_['p'].function_space())
+            out["p"] = Function(function_space(q_['p']))
             out["p"].rename("p", "p")
         _TIMESERIES_OUTPUT[id(tstepfiles)] = out
     out = dict(_TIMESERIES_OUTPUT[id(tstepfiles)])
@@ -158,8 +165,11 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     written = _tables_written.setdefault(checkpointfolder, set())
     tables = {}             # space id -> the file of its tables
     unlinked = set()
+    d = dual.current()
+    lattice = {"phig"} if d is not None else set()   # the dual mesh's fields, by cell
     for ui in q_:
-        tables.setdefault(q_[ui].function_space().id(), "dofs_{}.h5".format(ui))
+        if ui not in lattice:
+            tables.setdefault(space_id(function_space(q_[ui])), "dofs_{}.h5".format(ui))
     if MPI.rank(comm) == 0:
         recover_checkpoint(checkpointfolder)
         # Left over if an earlier run stopped while writing.
@@ -174,25 +184,64 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
                 except OSError:     # Checkpoint/ moved away, or no hard links here
                     unlinked.add(key)
     written -= comm.bcast(unlinked, root=0)
+    previous = _restart_reads_previous(NS_parameters)
     for ui in q_:
-        V = q_[ui].function_space()
-        name = tables[V.id()]
-        if V.id() not in written:
-            write_dofs(path.join(tmpfolder, name), V, "dofs")
-            written.add(V.id())
+        if ui in lattice:
+            filename = path.join(tmpfolder, ui + ".h5")
+            d.write_function(filename, q_[ui], "current", mode="w")
+            if previous:
+                d.write_function(filename, q_1[ui], "previous")
+            continue
+        V = function_space(q_[ui])
+        name = tables[space_id(V)]
+        if space_id(V) not in written:
+            write_dof_tables(path.join(tmpfolder, name), V, "dofs")
+            written.add(space_id(V))
         filename = path.join(tmpfolder, ui + ".h5")
-        write_function(filename, q_[ui], "current", mode="w", dofs=(name, "dofs"))
-        write_function(filename, q_1[ui], "previous", dofs=(name, "dofs"))
+        levels = [(q_[ui], "current")] + ([(q_1[ui], "previous")] if previous else [])
+        write_functions_h5(filename, levels, mode="w", dofs=(name, "dofs"))
     MPI.barrier(comm)
     if MPI.rank(comm) == 0:
         swap_in(tmpfolder, checkpointfolder)
     MPI.barrier(comm)
 
 
+def _restart_reads_previous(NS_parameters):
+    """Whether a restart reads a checkpoint's previous level: for BDF of second order,
+    and for the Adams-Bashforth pressure projection. (A checkpoint without it restarts
+    with the current level in its place, as after a first-order step.)"""
+    p = NS_parameters
+    return ((p.get("solver") == "BDF" and p.get("bdf_order", 2) != 1)
+            or bool(p.get("AB_projection_pressure")))
+
+
 def recover_checkpoint(checkpointfolder):
     """Put back the last complete checkpoint if a run stopped between the two
     renames of save_checkpoint_solution_h5 (femtools.swap.recover)."""
     recover(checkpointfolder)
+
+
+#: Rank 0 looks for the control files (kill, pause) at most this often, in seconds of
+#: wall time: on a parallel file system each look costs metadata requests that every
+#: rank waits for.
+CONTROL_INTERVAL = 10.0
+_CLOCK = {}     # per run folder, rank 0's wall times: the last look, the last checkpoint
+
+
+def _clock(newfolder):
+    """The run's wall times (newfolder: its folder), started at its first use."""
+    return _CLOCK.setdefault(newfolder, {"checkpoint": time.monotonic()})
+
+
+def _look_now(newfolder):
+    """Whether rank 0 is to look for the control files at this step of the run in
+    newfolder: at its first, then once CONTROL_INTERVAL has passed since the last look
+    (rank 0's answer)."""
+    now, clock = time.monotonic(), _clock(newfolder)
+    if now - clock.get("look", -float("inf")) >= CONTROL_INTERVAL:
+        clock["look"] = now
+        return True
+    return False
 
 
 def _control_file(key, folder, newfolder):
@@ -204,13 +253,17 @@ def _control_file(key, folder, newfolder):
     return None
 
 
-def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=None):
-    """Whether to stop the run cleanly: a file named key in the run's folder or
-    in folder (a file in folder stops the first run to see it), or killtime
-    reached. Rank 0 decides, and every rank gets its answer in one broadcast."""
-    stop = None
+def check_controls(folder, killtime, total_timer, key='killtwoasis', newfolder=None,
+                   look=True, checkpoint_minutes=None):
+    """`(stop, checkpoint_due)`. stop: whether to stop the run cleanly, for a file named
+    key in the run's folder or in folder (looked for when `look`; a file in folder
+    stops the first run to see it), or killtime reached. checkpoint_due: whether
+    checkpoint_minutes of wall time have passed since the last checkpoint. Rank 0
+    decides, and every rank gets its answer in one broadcast."""
+    answer = None
     if MPI.rank(MPI.comm_world) == 0:
-        found = _control_file(key, folder, newfolder)
+        found = _control_file(key, folder, newfolder) if look else None
+        stop = False
         if found:
             remove(found)
             info_red(key + ' found! Stopping simulations cleanly...')
@@ -218,16 +271,23 @@ def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=No
         elif killtime is not None and killtime <= total_timer.elapsed()[0]:
             info_red('Given killtime reached! Stopping simulations cleanly...')
             stop = True
-        else:
-            stop = False
-    return MPI.comm_world.bcast(stop, root=0)
+        due = (checkpoint_minutes is not None and time.monotonic()
+               - _clock(newfolder)["checkpoint"] >= 60 * checkpoint_minutes)
+        answer = (stop, due)
+    return MPI.comm_world.bcast(answer, root=0)
 
 
-def check_if_pause(folder, newfolder=None, key='pausetwoasis'):
+def check_if_kill(folder, killtime, total_timer, key='killtwoasis', newfolder=None):
+    """Whether to stop the run cleanly (check_controls' first answer)."""
+    return check_controls(folder, killtime, total_timer, key, newfolder)[0]
+
+
+def check_if_pause(folder, newfolder=None, key='pausetwoasis', look=True):
     """Whether a file named key (pausetwoasis) in the run's folder or in folder
-    pauses the run. Rank 0 decides; one broadcast."""
+    pauses the run, when rank 0 is to `look` (else no). Rank 0 decides; one
+    broadcast."""
     found = None
-    if MPI.rank(MPI.comm_world) == 0:
+    if MPI.rank(MPI.comm_world) == 0 and look:
         found = _control_file(key, folder, newfolder)
         if found:
             info_red(key + ' found! Simulations paused. Remove ' + found + ' to resume simulations...')
@@ -248,34 +308,96 @@ def init_from_restart(restart_folder, sys_comp, uc_comp,
     comm = MPI.comm_world
     if MPI.rank(comm) == 0:
         info_red('Restarting from checkpoint at time step {}'.format(tstep))
+    _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm, num_processes)
+
+
+def _checkpoint_kind(filename, comm):
+    """`(kind, has_previous)` of a field's checkpoint file: kind "function" (dolfin's
+    layout of a Function), "dual-lattice" (a phase field on the dual mesh,
+    DualMesh.write_function) or "bare" (dolfin's old bare vectors). Read on rank 0; an
+    error there is raised on every rank. Collective."""
+    import h5py
+    found = None
+    if MPI.rank(comm) == 0:
+        try:
+            with h5py.File(filename, "r") as h5:
+                node = h5["current"]
+                layout = node.attrs.get("layout")
+                layout = layout.decode() if isinstance(layout, bytes) else layout
+                if layout == "dual-lattice":
+                    kind = layout
+                elif isinstance(node, h5py.Group) and "signature" in node.attrs:
+                    kind = "function"
+                else:
+                    kind = "bare"
+                found = (kind, "previous" in h5)
+        except (OSError, KeyError) as e:
+            found = "{}: not a checkpoint of a field ({})".format(filename, e)
+    found = comm.bcast(found, root=0)
+    if isinstance(found, str):
+        raise ValueError(found)
+    return found
+
+
+def _restart_fields(restart_folder, sys_comp, q_, q_1, q_2, comm, num_processes=None):
+    """init_from_restart's fields: each field's current and previous levels, stored as
+    Functions in dolfin's layout (by either backend, on any number of processes; read
+    by twoasis.backend.read_function_h5), or on the dual mesh the phase field by
+    flow-mesh cell (DualMesh.read_function). A checkpoint of bare vectors (dolfin's old
+    format) restarts on dolfin alone, on the number of processes that wrote it."""
+    from twoasis.backend import read_function_h5
+    d = dual.current()
     for ui in sys_comp:
         filename = path.join(restart_folder, ui + '.h5')
-        with HDF5File(comm, filename, "r") as hdf5_file:
-            # A Function is a group carrying its element's signature; a bare
-            # vector a dataset carrying its partition.
-            if "signature" in hdf5_file.attributes("/current").list_attributes():
-                read = lambda u, name: hdf5_file.read(u, name)
-            else:
-                if num_processes is not None and num_processes != MPI.size(comm):
-                    raise ValueError(
-                        "The checkpoint in {} was written by {} processes as bare vectors; "
-                        "restart it with the same number (got {})".format(
-                            restart_folder, num_processes, MPI.size(comm)))
-                read = lambda u, name: hdf5_file.read(u.vector(), name, False)
-            read(q_[ui], "/current")
-            q_[ui].vector().apply('insert')
-            q_1[ui].vector().zero()
-            q_1[ui].vector().axpy(1., q_[ui].vector())
-            q_1[ui].vector().apply('insert')
-            # A checkpoint may hold only the current level of a field. In that
-            # case use it for the previous level too; the BDF solver then takes
-            # a first-order first step.
-            if hdf5_file.has_dataset("/previous"):
-                read(q_2[ui], "/previous")
-            else:
-                q_2[ui].vector().zero()
-                q_2[ui].vector().axpy(1., q_[ui].vector())
+        kind, has_previous = _checkpoint_kind(filename, comm)
+        on_dual = d is not None and ui == "phig"
+        if kind == "dual-lattice" and not on_dual:
+            raise ValueError("{}: a phase field on the dual mesh; restart it with the "
+                             "phase_refine it was written with".format(filename))
+        if on_dual and kind != "dual-lattice":
+            raise ValueError("{}: a phase field on the flow mesh; restart it without "
+                             "phase_refine".format(filename))
+        if on_dual:
+            def read(u, name):
+                d.read_function(filename, name, u)
+        elif kind == "function":
+            def read(u, name):
+                read_function_h5(filename, u, name)
+        else:
+            read = _bare_vector_reader(filename, restart_folder, num_processes, comm)
+        read(q_[ui], "current")
+        q_1[ui].vector().zero()
+        q_1[ui].vector().axpy(1., q_[ui].vector())
+        q_1[ui].vector().apply('insert')       # dolfin's ghosts
+        # A checkpoint may hold only the current level of a field. In that case use
+        # it for the previous level too; the BDF solver then takes a first-order
+        # first step.
+        if has_previous:
+            read(q_2[ui], "previous")
+        else:
+            q_2[ui].vector().zero()
+            q_2[ui].vector().axpy(1., q_[ui].vector())
             q_2[ui].vector().apply('insert')
+
+
+def _bare_vector_reader(filename, restart_folder, num_processes, comm):
+    """A reader of dolfin's old checkpoints, bare vectors in the dof order of the run
+    that wrote them: on dolfin, on as many processes."""
+    if backend_name != "dolfin":
+        raise ValueError("{}: a checkpoint of bare vectors (dolfin's old format); "
+                         "restart it with backend=dolfin".format(filename))
+    if num_processes is not None and num_processes != MPI.size(comm):
+        raise ValueError(
+            "The checkpoint in {} was written by {} processes as bare vectors; "
+            "restart it with the same number (got {})".format(
+                restart_folder, num_processes, MPI.size(comm)))
+    from dolfin import HDF5File
+
+    def read(u, name):
+        with HDF5File(comm, filename, "r") as hdf5_file:
+            hdf5_file.read(u.vector(), "/" + name, False)
+        u.vector().apply('insert')
+    return read
 
 
 def series_files(folder, name):
@@ -288,6 +410,7 @@ def series_files(folder, name):
 def merge_visualization_files(newfolder, **namespace):
     """Merge the time series of each field written by a run and the restarts that
     continued it into the first run's file (femtools.xdmf.merge_series)."""
+    from femtools.xdmf import merge_series
     if MPI.rank(MPI.comm_world) == 0:
         timefolder = path.join(newfolder, 'Timeseries')
         for name in ["u", "p", "phi", "g"]:
@@ -296,7 +419,7 @@ def merge_visualization_files(newfolder, **namespace):
                 merge_series(files)
 
 
-def load_timeseries(folder, q_, VV, constrained_domain, time=None):
+def load_timeseries(folder, q_, VV, time=None):
     """Set q_ (velocity, pressure, phase field and chemical potential) from the
     XDMF time series in folder, the Timeseries/ of an earlier run: at the last
     saved time of the velocity, or at its saved time closest to `time`; the
@@ -304,16 +427,19 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
 
     The steps of a field are those of the run's files and of the restarts that
     continued it (femtools.xdmf.continued). Each field is read by femtools
-    (XDMFFile2.read_checkpoint): from its nodal values, P1 or P2, on any number of
-    processes, onto the field's space of any degree. A series whose params.dat marks
+    (twoasis.backend.read_series_step: XDMFFile2.read_checkpoint on dolfin): from its
+    nodal values, P1 or P2, on any number of processes, onto the field's space of any
+    degree, whichever backend wrote it. A series whose params.dat marks
     its pressure as the physical one (timeseries_pressure) gives p = P - phi*g;
     a series without that record holds p."""
-    from dolfin import FunctionAssigner, VectorFunctionSpace
-    from femtools.xdmf import grids
+    from femtools.xdmf import continued, grids
+    from twoasis.backend import (
+        geometric_dimension, mesh_comm, read_series_step, read_vector_series_step,
+        space_mesh)
     from twoasis.common.utilities import subspace
 
-    mesh = VV['p'].mesh()
-    gdim = mesh.geometry().dim()
+    mesh = space_mesh(VV['p'])
+    gdim = geometric_dimension(mesh)
 
     def step(name, t_exact=None):
         """(time, file, counter) of the step of series name at the requested time,
@@ -321,7 +447,7 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
         the same time)."""
         per_file = []
         for f in series_files(folder, name):
-            picked = [g for g in grids(f) if name in g["attributes"]]
+            picked = [g for g in grids(f, mesh_comm(mesh)) if name in g["attributes"]]
             per_file.append([(g["time"], f, k) for k, g in enumerate(picked)])
         steps = continued(per_file, lambda s: s[0])
         if not steps:
@@ -336,19 +462,14 @@ def load_timeseries(folder, q_, VV, constrained_domain, time=None):
 
     def read(function, name, t_exact=None):
         t, f, counter = step(name, t_exact)
-        with XDMFFile2(mesh.mpi_comm(), f) as xdmf:
-            xdmf.read_checkpoint(function, name, counter)
+        read_series_step(f, name, counter, function)
         return t
 
-    V = VV['u0']
     us = [q_['u{}'.format(i)] for i in range(gdim)]
-    el = V.ufl_element()
-    uv = Function(VectorFunctionSpace(mesh, el.family(), el.degree(),
-                                      constrained_domain=constrained_domain))
-    t = read(uv, "u")
-    FunctionAssigner([V] * gdim, uv.function_space()).assign(us, uv)
+    t, f, counter = step("u")
+    read_vector_series_step(f, "u", counter, us)
     read(q_['p'], "p", t)
-    W = q_['phig'].function_space()
+    W = function_space(q_['phig'])
     for i, name in enumerate(["phi", "g"]):
         f = Function(subspace(W, i))
         read(f, name, t)

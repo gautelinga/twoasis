@@ -4,25 +4,17 @@ __copyright__ = "Copyright (C) 2013 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 # Modified for two-phase flow by Gaute Linga, 2022-2026.
 
-from dolfin import (
-    as_backend_type, Constant, dot, dx, Function, grad, IndexMap, inner, lhs, Matrix, MPI, norm,
-    normalize, PETScKrylovSolver, rhs, TestFunctions, Timer, TrialFunctions, Vector)
-from femtools.fast_assembly import assemble
-from femtools.fast_bc import apply as apply_bc
-from femtools.fast_interpolation import interpolate
-from femtools import ksp
-from femtools.nullspace import constant_nullspace
+from twoasis.backend import (
+    apply_bc, as_backend_type, assemble, Constant, constant_nullspace, constant_on, div, dot, dx,
+    element_degree, fixed_dofs, Function, function_space, geometric_dimension, grad, hmin,
+    inner, interpolate, ksp, lhs, Matrix, MPI, nabla_grad, norm, normalize, owned_dofs,
+    PETScKrylovSolver, rhs, space_mesh, TestFunctions, Timer, TrialFunctions, ufl, Vector)
+from twoasis.common import dual, telemetry
 from twoasis.problems import info_blue
+from twoasis.common.utilities import axpy, mass_norm2, mult, nonzero_part, pointwise
 from twoasis.solvers import scalar_assemble, scalar_solve, setup
 import math
 import numpy as np
-# Use the UFL that dolfin was built with (ufl_legacy in recent installations).
-try:
-    import ufl_legacy as ufl
-    if not isinstance(Constant(0.), ufl.Coefficient):
-        raise ImportError
-except ImportError:
-    import ufl
 
 
 """Define all functions required by fractional step solver."""
@@ -35,7 +27,7 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "wall_potential_linear_derivative",
            "weighted_arithmetic_mean", "weighted_geometric_mean",
            "krylov_solver_parameters", "krylov_solver", "krylov_get_solvers", "projection_solver",
-           "phase_field_schur_solver", "phase_field_krylov_solve"]
+           "phase_field_schur_solver", "phase_field_krylov_solve", "coupled_solve"]
 
 
 def krylov_solver_parameters(name, cfg, krylov_solvers):
@@ -69,7 +61,7 @@ def krylov_solver(name, cfg, krylov_solvers, pc_options=None):
     sol = PETScKrylovSolver()
     ksp.configure(sol.ksp(), name + "_", options)
     sol.parameters.update(krylov_solver_parameters(name, cfg, krylov_solvers))
-    return sol
+    return telemetry.current.solver(sol, name)  # the solver itself unless telemetry is on
 
 
 def projection_solver(velocity_update_solver, krylov_solvers):
@@ -83,9 +75,40 @@ def projection_solver(velocity_update_solver, krylov_solvers):
     return sol
 
 
+# dt*nu/h^2 above which the tentative velocity takes BoomerAMG: block Jacobi ILU(0) needs
+# about 4*sqrt(dt*nu/h^2) iterations once the viscous term dominates, some 30 here, where
+# one AMG setup a step and its few cycles cost less
+VISCOUS_DOMINATED = 50.
+
+
+def velocity_preconditioner(cfg, dt, rho, mu, mesh, velocity_degree):
+    """The tentative velocity's solver settings `cfg`, preconditioner 'auto' resolved:
+    BoomerAMG when dt*nu/h^2 exceeds VISCOUS_DOMINATED (nu the largest of the phases'
+    mu/rho, h the smallest cell diameter over the velocity's degree), block Jacobi
+    otherwise. Collective (the mesh's smallest cell)."""
+    if cfg.get('preconditioner_type') != 'auto':
+        return cfg
+    nu = max(m / r for m, r in zip(mu, rho))
+    h = hmin(mesh) / velocity_degree
+    number = dt * nu / h ** 2
+    pc = 'hypre_amg' if number > VISCOUS_DOMINATED else 'bjacobi'
+    info_blue("Velocity preconditioner: {} (dt*nu/h^2 = {:.3g}, {} {})".format(
+        pc, number, "above" if pc == 'hypre_amg' else "at most", VISCOUS_DOMINATED))
+    return dict(cfg, preconditioner_type=pc)
+
+
+def for_dimension(cfg, dim):
+    """A Krylov solver's settings `cfg` for a mesh of dimension `dim`: in 3D a BoomerAMG
+    takes femtools.ksp.BOOMERAMG_3D's settings, which cfg's petsc_options override."""
+    if dim == 3 and ksp.PC_NAMES.get(cfg['preconditioner_type']) == ksp.BOOMERAMG:
+        cfg = dict(cfg, petsc_options=dict(ksp.BOOMERAMG_3D, **cfg.get('petsc_options', {})))
+    return cfg
+
+
 def krylov_get_solvers(krylov_solvers, q_, mesh, bcs, velocity_krylov_solver,
                        velocity_update_solver, pressure_krylov_solver,
-                       phase_field_krylov_solver, velocity_tolerance_factor, **NS_namespace):
+                       phase_field_krylov_solver, velocity_tolerance_factor, dt, rho, mu,
+                       velocity_degree, **NS_namespace):
     """Linear solvers for the BDF and IPCS schemes, in the order tentative
     velocity, pressure, phase field, scalar. Scalars are not supported, so the
     scalar solver is None. The velocity update's solvers belong to the
@@ -98,19 +121,17 @@ def krylov_get_solvers(krylov_solvers, q_, mesh, bcs, velocity_krylov_solver,
     needs to within that factor, so the passes still converge and their test on
     the change stays valid, while the early passes, which change the velocity
     most, are solved loosely."""
-    u_cfg = velocity_krylov_solver
+    dim = geometric_dimension(mesh)
+    u_cfg = for_dimension(velocity_preconditioner(velocity_krylov_solver, dt, rho, mu, mesh,
+                                                  velocity_degree), dim)
     if velocity_tolerance_factor:
         u_cfg = dict(u_cfg, relative_tolerance=velocity_tolerance_factor, petsc_options=dict(
             {'ksp_converged_use_initial_residual_norm': True}, **u_cfg.get('petsc_options', {})))
     u_sol = krylov_solver("velocity_krylov_solver", u_cfg, krylov_solvers)
-    p_cfg = pressure_krylov_solver
-    if (mesh.geometry().dim() == 3
-            and ksp.PC_NAMES.get(p_cfg['preconditioner_type']) == ksp.BOOMERAMG):
-        p_cfg = dict(p_cfg, petsc_options=dict(ksp.BOOMERAMG_3D,
-                                               **p_cfg.get('petsc_options', {})))
+    p_cfg = for_dimension(pressure_krylov_solver, dim)
     p_sol = krylov_solver("pressure_krylov_solver", p_cfg, krylov_solvers)
     if phase_field_krylov_solver['preconditioner_type'] == 'schur':
-        pf_sol = phase_field_schur_solver(q_['phig'].function_space(), phase_field_krylov_solver,
+        pf_sol = phase_field_schur_solver(function_space(q_['phig']), phase_field_krylov_solver,
                                           krylov_solvers, bcs['phig'])
     else:
         pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
@@ -135,29 +156,39 @@ class PhaseFieldSchur:
     def __init__(self, W, prefix, bcs):
         from petsc4py import PETSc
 
-        def dofs(i):
-            return np.asarray(W.sub(i).dofmap().dofs(), dtype=PETSc.IntType)
-
         def block(form):
             return as_backend_type(assemble(form)).mat().createSubMatrix(self.is_phi, self.is_phi)
+        self.block = block
 
-        phi_dofs = dofs(0)
+        phi_dofs = owned_dofs(W, 0)
         self.is_phi = PETSc.IS().createGeneral(phi_dofs, comm=PETSc.COMM_WORLD)
-        self.is_g = PETSc.IS().createGeneral(dofs(1), comm=PETSc.COMM_WORLD)
+        self.is_g = PETSc.IS().createGeneral(owned_dofs(W, 1), comm=PETSc.COMM_WORLD)
         phi, _ = TrialFunctions(W)
         xi, _ = TestFunctions(W)
         self.Mphi = block(phi * xi * dx)
-        self.Kphi = block(inner(grad(phi), grad(xi)) * dx)
+        # phi's stiffness matrix, assembled only to build H (when its coefficients change)
+        self.Kphi_form = inner(grad(phi), grad(xi)) * dx
         # phi's Dirichlet dofs as rows of the phi block
-        start, owned = W.dofmap().ownership_range()[0], W.dofmap().index_map().size(
-            IndexMap.MapSize.OWNED)
-        fixed = [start + k for bc in bcs for k in bc.get_boundary_values() if k < owned]
         self.fixed = (self.Mphi.getOwnershipRange()[0]
-                      + np.flatnonzero(np.isin(phi_dofs, fixed))).astype(PETSc.IntType)
+                      + np.flatnonzero(np.isin(phi_dofs, fixed_dofs(W, bcs)))).astype(
+                          PETSc.IntType)
         self.Mphi.zeroRowsColumns(self.fixed, diag=1.)
         self.kH = self.inner_ksp(prefix + "H_")
         self.kM = self.inner_ksp(prefix + "M_")
         self.alpha = self.c = self.H_coefficients = self.B = None
+
+    def inner(self, k):
+        """Count inner solve k's iterations (telemetry's role phase_field_H), and warn
+        once if it stopped at its iteration limit, which telemetry's outer counts would
+        not show."""
+        from petsc4py import PETSc
+        telemetry.current.count("phase_field_H", k.getIterationNumber())
+        if (k.getConvergedReason() == PETSc.KSP.ConvergedReason.DIVERGED_MAX_IT
+                and not getattr(self, "warned", False)):
+            self.warned = True
+            info_blue("PhaseFieldSchur: the inner H solve stopped at its {} iterations; "
+                      "its preconditioner (H_ options) needs a stronger one".format(
+                          k.getTolerances()[3]))
 
     @staticmethod
     def inner_ksp(prefix):
@@ -184,7 +215,9 @@ class PhaseFieldSchur:
         if (self.alpha, self.c) != self.H_coefficients:
             H = self.Mphi.copy()
             H.scale(math.sqrt(self.alpha))
-            H.axpy(math.sqrt(self.c), self.Kphi)
+            Kphi = self.block(self.Kphi_form)
+            H.axpy(math.sqrt(self.c), Kphi)
+            Kphi.destroy()
             H.zeroRowsColumns(self.fixed, diag=1.)
             self.kH.setOperators(H)
             self.H_coefficients = self.alpha, self.c
@@ -200,8 +233,10 @@ class PhaseFieldSchur:
         self.B.mult(t0, s1)
         rphi.axpy(-1., s1)                  # r_phi - B Mg^-1 r_g
         self.kH.solve(rphi, s1)             # S^-1 ~ H^-1 Mphi H^-1
+        self.inner(self.kH)
         self.Mphi.mult(s1, s2)
         self.kH.solve(s2, s1)               # z_phi
+        self.inner(self.kH)
         self.D.mult(s1, t0)
         rg.axpy(-1., t0)                    # r_g - D z_phi
         self.kM.solve(rg, t1)               # z_g
@@ -210,19 +245,28 @@ class PhaseFieldSchur:
         self.to_g.scatter(t1, z, ins, rev)
 
 
+# BoomerAMG for the Schur preconditioner's H in 2D: HMIS and ext+i, without the 3D
+# settings' aggressive coarsening
+H_BOOMERAMG_2D = {"pc_hypre_boomeramg_coarsen_type": "HMIS",
+                  "pc_hypre_boomeramg_interp_type": "ext+i",
+                  "pc_hypre_boomeramg_strong_threshold": 0.25}
+
+
 def phase_field_schur_solver(W, phase_field_krylov_solver, krylov_solvers, bcs):
     """Krylov solver for the (phi, g) system with the PhaseFieldSchur
     preconditioner (bcs: the system's Dirichlet conditions). Its inner solvers
     take PETSc options under the prefixes H_ and M_ in petsc_options. H, a mass
-    plus a stiffness matrix, is solved with one BoomerAMG cycle in 2D and with
-    CG and Jacobi in 3D, where a BoomerAMG cycle costs more than the iterations
-    it saves; Mg, a mass matrix, with four Chebyshev-Jacobi iterations. An inner
-    Krylov solve is not a fixed linear map, so the outer method must then be a
-    flexible one (fgmres or gcr)."""
-    if W.mesh().geometry().dim() == 2:
-        H = {"H_ksp_type": "preonly", "H_pc_type": "hypre", "H_pc_hypre_type": "boomeramg"}
-    else:
-        H = {"H_ksp_type": "cg", "H_pc_type": "jacobi", "H_ksp_rtol": 1e-2, "H_ksp_max_it": 50}
+    plus a stiffness matrix, is solved with one BoomerAMG cycle, whose cost does not
+    grow as the mesh is refined, while a Krylov solve's iterations would: with HMIS
+    coarsening and ext+i interpolation, which depend less on the order of the dofs
+    than the default (H_BOOMERAMG_2D; femtools.ksp.BOOMERAMG_3D's settings in 3D,
+    whose aggressive coarsening makes the outer iterations grow in 2D); Mg, a mass
+    matrix, with four Chebyshev-Jacobi iterations. An inner Krylov solve (H_ksp_type
+    cg, say) is not a fixed linear map, so the outer method must then be a flexible
+    one (fgmres or gcr)."""
+    H = {"H_ksp_type": "preonly", "H_pc_type": "hypre", "H_pc_hypre_type": "boomeramg"}
+    three_d = geometric_dimension(space_mesh(W)) == 3
+    H.update({"H_" + k: v for k, v in (ksp.BOOMERAMG_3D if three_d else H_BOOMERAMG_2D).items()})
     pc_options = dict(H, pc_type="python", M_ksp_type="chebyshev", M_pc_type="jacobi",
                       M_ksp_max_it=4, M_ksp_norm_type="none",
                       M_ksp_chebyshev_esteig="0,0.1,0,1.1")
@@ -287,15 +331,20 @@ def velocity_matrices(Md, bcs, u_components):
     return Matrix(Md), {ui: Matrix(Md) for ui in u_components}
 
 
-def velocity_tentative_solve(ui, A, Ai, bcs, x_, du_, u_sol, b, udiff, unorm,
-                             u_components, inner_iter, **NS_namespace):
-    """Solve for one component of the tentative velocity."""
+def velocity_tentative_solve(ui, A, Ai, Md, bcs, x_, du_, u_sol, b, udiff, unorm,
+                             u_components, inner_iter, tstep, velocity_preconditioner_steps,
+                             **NS_namespace):
+    """Solve for one component of the tentative velocity, adding the squares of the L2
+    norms of its change and of its new value to udiff and unorm (the driver takes
+    their roots once every component is solved)."""
     # When all components share the matrix A (Ai is None), it only changes at the
     # start of a timestep, so the preconditioner is rebuilt for the first solve of
-    # the timestep and reused after that. With one matrix per component (Ai), the
-    # solver switches matrices between solves and must rebuild each time.
+    # a timestep, every velocity_preconditioner_steps timesteps, and reused
+    # otherwise. With one matrix per component (Ai), the solver switches matrices
+    # between solves and must rebuild each time.
     if Ai is None:
-        u_sol.set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]))
+        u_sol.set_reuse_preconditioner(not (inner_iter == 1 and ui == u_components[0]
+                                            and rebuild_step(tstep, velocity_preconditioner_steps)))
 
     [apply_bc(bc, b[ui]) for bc in bcs[ui]]
     du_[ui].zero()
@@ -304,8 +353,14 @@ def velocity_tentative_solve(ui, A, Ai, bcs, x_, du_, u_sol, b, udiff, unorm,
     u_sol.solve(Ai[ui] if Ai else A, x_[ui], b[ui])
     t1.stop()
     du_[ui].axpy(-1., x_[ui])
-    udiff[0] += du_[ui].norm('l2')
-    unorm[0] += x_[ui].norm('l2')
+    udiff[0] += mass_norm2(Md, du_[ui])
+    unorm[0] += mass_norm2(Md, x_[ui])
+
+
+def rebuild_step(tstep, steps):
+    """Whether a preconditioner rebuilt every `steps` timesteps (1: every timestep)
+    is rebuilt at timestep tstep, the first one counted 1."""
+    return (tstep - 1) % max(int(steps), 1) == 0
 
 
 def velocity_tentative_assemble(**NS_namespace):
@@ -371,9 +426,9 @@ def rotational_fields(rotational, q, Q, V, mu_):
         raise ValueError("rotational={!r}: True or False".format(rotational))
     if not rotational:
         return dict(mass_Q_inv=None, mu_Q=None, mu_mass_Q=None, rotational_work=None)
-    if Q.ufl_element().degree() > 1:
+    if element_degree(Q) > 1:
         raise ValueError("rotational=True needs a P1 pressure: the lumped P{} mass has "
-                         "zeros".format(Q.ufl_element().degree()))
+                         "zeros".format(element_degree(Q)))
     mass_Q_inv = assemble(q * dx)
     mass_Q_inv.set_local(1. / mass_Q_inv.get_local())
     mass_Q_inv.apply('insert')
@@ -397,7 +452,7 @@ def rotational_pressure_update(rotational, x_, divu, mu_, mu_Q, mass_Q_inv, mu_m
         return
     if inner_iter == 1:
         if mu_Q is not mu_:
-            interpolate(mu_, mu_Q.function_space(), out=mu_Q)
+            interpolate(mu_, function_space(mu_Q), out=mu_Q)
         mu_mass_Q.zero()
         mu_mass_Q.axpy(1., mu_Q.vector())
         mu_mass_Q *= mass_Q_inv
@@ -414,6 +469,13 @@ def rotational_pressure_update(rotational, x_, divu, mu_, mu_Q, mass_Q_inv, mu_m
 def velocity_update(**NS_namespace):
     """Update the velocity after finishing pressure velocity iterations."""
     pass
+
+
+def coupled_solve(**NS_namespace):
+    """Solve a step's velocity and pressure as one system (velocity_pressure_solve=
+    "coupled"); a solver that has none raises."""
+    raise NotImplementedError("velocity_pressure_solve='coupled': only the BDF solver has "
+                              "a coupled velocity-pressure solve")
 
 def print_velocity_pressure_info(num_iter, print_velocity_pressure_convergence,
                                  inner_iter, udiff, unorm, dp_, **NS_namespace):
@@ -449,13 +511,17 @@ def wall_potential_linear_derivative(phi, phi0):
 class PhaseFieldOnVelocitySpace:
     """The phase field phi, taken from the mixed (phi, g) function, as a Function
     c on the velocity space V, by femtools.fast_interpolation: a transfer matrix
-    built once, then a sparse matrix-vector product per update."""
+    built once, then a sparse matrix-vector product per update. On the dual mesh,
+    phi at V's nodes, which are the phase field's mesh's too (DualMesh.inject)."""
 
-    def __init__(self, W, V):
+    def __init__(self, V):
         self.c = Function(V)
+        self.dual = dual.current()
 
     def __call__(self, phig):
-        return interpolate(phig.split()[0], self.c.function_space(), out=self.c)
+        if self.dual is not None:
+            return self.dual.inject(phig, 0, self.c)
+        return interpolate(phig.split()[0], function_space(self.c), out=self.c)
 
 
 def set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu):
@@ -514,16 +580,19 @@ def incremental_pressure_assemble(b, x_, Ap, divu, alpha, **NS_namespace):
     divu.assemble_rhs()
     b['p'][:] = divu.rhs
     b['p'] *= -alpha[0]
-    b['p'].axpy(1., Ap * x_['p'])
+    axpy(b['p'], 1., mult(Ap, x_['p']))
 
 
 def incremental_pressure_solve(dp_, x_, Ap, p_null, b, p_sol, bcs, inner_iter, tstep,
-                               constant_poisson_coefficient, **NS_namespace):
+                               constant_poisson_coefficient, pressure_preconditioner_steps,
+                               **NS_namespace):
     """Solve the pressure equation; dp_ is the change of the pressure."""
     # Rebuilding the AMG preconditioner is expensive, so it is reused while Ap is
-    # unchanged: within a time step, or for the whole run when Ap is constant.
+    # unchanged (within a time step, or for the whole run when Ap is constant), and
+    # rebuilt only every pressure_preconditioner_steps timesteps otherwise.
     p_sol.set_reuse_preconditioner(inner_iter > 1 or (constant_poisson_coefficient
-                                                      and tstep > 1))
+                                                      and tstep > 1)
+                                   or not rebuild_step(tstep, pressure_preconditioner_steps))
     [apply_bc(bc, b['p']) for bc in bcs['p']]
     dp = dp_.vector()
     dp.zero()
@@ -549,23 +618,38 @@ def incremental_velocity_update(u_components, bcs, gradp, dp_, x_, rho, rho_inv_
         if constant_poisson_coefficient:
             x_[ui].axpy(-1. / (alpha[0] * min(rho)), gradp[ui].vector())
         else:
-            x_[ui].axpy(-1. / alpha[0], gradp[ui].vector() * rho_inv_.vector())
+            axpy(x_[ui], -1. / alpha[0], pointwise(gradp[ui].vector(), rho_inv_.vector()))
         [apply_bc(bc, x_[ui]) for bc in bcs[ui]]
 
 
+def convection_form(w, u, v, skew, coefficient=1.0):
+    """The convection of the velocity component u by w, tested with v, times
+    coefficient: (w.grad u) v, plus 1/2 (div w) u v when skew. w is continuous (it
+    lives on the velocity space), so the skew form is antisymmetric up to the boundary
+    flux 1/2 int (w.n) u v ds: convection adds no kinetic energy on walls and periodic
+    sides even where w, extrapolated from discretely divergence-free fields, is not
+    exactly divergence-free. At open ends the flux is the energy convected through
+    them, as with the plain form."""
+    form = dot(w, nabla_grad(u)) * v
+    if skew:
+        form = form + 0.5 * div(w) * u * v
+    return coefficient * form * dx
+
+
 def phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
-                       epsilon, angles, ds, assemble_matrix):
+                       epsilon, angles, ds):
     """Forms and matrices of the (phi, g) system of the Cahn-Hilliard equation.
 
     The double-well potential is linearized about phi_1 (tangent line), with an
-    error of O(dt^2). The matrix is split in two parts:
-      a_pf_full  the part that changes every timestep: advection by u_adv and the
-                 linearized potential, including the wall terms. One form.
-      Apf_const  the part that does not: mobility diffusion, the mass matrix for g
-                 and the capillary term, plus the time-derivative term
-                 alpha0*Mpf[0], which assemble_phase_field_system adds (the
-                 coefficient it holds is kept in Apf_alpha).
-    Lpft is the right-hand side of the linearized potential.
+    error of O(dt^2). The matrix Apf is assembled every timestep from one form:
+    advection by u_adv, the linearized potential with its wall terms, mobility
+    diffusion, the mass matrix for g, the capillary term, and the time-derivative
+    term alpha0 times phi's mass matrix. a_pf_full holds that form, with alpha0 a
+    Constant on the phase field's mesh (its second item), so that another alpha0 (a
+    variable time step) does not make another form to compile; Apf_alpha holds the
+    alpha0 last set. Lpft is the right-hand side of the
+    linearized potential. Mpf is phi's mass matrix for products (its nonzero entries
+    only: the mixed space's pattern holds four blocks) and its form.
     """
     fprime = potential_linear_derivative(phi, phi_1)
     fwprime = wall_potential_linear_derivative(phi, phi_1)
@@ -573,35 +657,30 @@ def phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_ba
                               angles, sigma, fwprime, eta, ds)
     apft, Lpft = lhs(Fpft), rhs(Fpft)
 
-    Mpf = (assemble_matrix(inner(phi, xi) * dx), assemble_matrix(g * eta * dx))
-    Kpf = (assemble_matrix(inner(grad(g), grad(xi)) * dx),
-           assemble_matrix(inner(grad(phi), grad(eta)) * dx))
+    mass = inner(phi, xi) * dx
+    Mphi = assemble(mass)
     # Conservative advection of phi: -int phi (u.grad xi) dx + int (u.n) phi xi ds.
     # The boundary term gives the right flux at open boundaries.
     a_pf = -inner(dot(grad(xi), u_adv), phi) * dx + dot(u_adv, normal) * xi * phi * ds
+    a_rest = (M * inner(grad(g), grad(xi)) * dx + g * eta * dx
+              - sigma_bar * epsilon * inner(grad(phi), grad(eta)) * dx)
+    alpha0 = constant_on(0.0, space_mesh(
+        ufl.algorithms.extract_arguments(phi)[0].ufl_function_space()))
+    return dict(Apf=Mphi, Mpf=(nonzero_part(Mphi), mass), Lpft=Lpft,
+                a_pf_full=(a_pf + apft + a_rest + alpha0 * mass, alpha0),
+                Apf_alpha=np.full(1, np.nan))
 
-    Apf_const = Matrix(Mpf[0])
-    Apf_const.zero()
-    Apf_const.axpy(M, Kpf[0], True)
-    Apf_const.axpy(1., Mpf[1], True)
-    Apf_const.axpy(-sigma_bar * epsilon, Kpf[1], True)
-    return dict(Apf=Matrix(Mpf[0]), Mpf=Mpf, Lpft=Lpft, a_pf_full=a_pf + apft,
-                Apf_const=Apf_const, Apf_alpha=np.zeros(1))
 
-
-def assemble_phase_field_system(alpha0, Apf, a_pf_full, Apf_const, Apf_alpha, Mpf,
+def assemble_phase_field_system(alpha0, Apf, a_pf_full, Apf_alpha, Mpf,
                                 Lpft, b, bpf, fpf, t):
     """Assemble the phase-field matrix Apf, with the time-derivative term
     alpha0*Mpf[0], and the parts of the right-hand side b that do not involve
     earlier timesteps: the linearized potential and the source term bpf (if any).
     The caller adds the time-derivative terms of the earlier timesteps to b."""
     if alpha0 != Apf_alpha[0]:
-        # The constant part only changes when the time-derivative coefficient does.
-        Apf_const.axpy(alpha0 - Apf_alpha[0], Mpf[0], True)
+        a_pf_full[1].assign(float(alpha0))
         Apf_alpha[0] = alpha0
-
-    assemble(a_pf_full, tensor=Apf)  # advection + linearized potential
-    Apf.axpy(1., Apf_const, True)    # + diffusion, g-mass, capillary, dt-mass
+    assemble(a_pf_full[0], tensor=Apf)
 
     assemble(Lpft, tensor=b)
     # Source term (used by manufactured solutions)

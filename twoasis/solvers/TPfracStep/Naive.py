@@ -25,13 +25,11 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import math
 
-from dolfin import (
-    assemble, div, dot, dx, Function, grad, inner, lhs, normalize,
-    PETScKrylovSolver, rhs, solve)
+from twoasis.backend import (
+    assemble, assemble_matrix, constant_nullspace, div, dot, dx, element_degree, Function,
+    grad, inner, lhs, normalize, PETScKrylovSolver, rhs, solve, TestFunction, TrialFunction)
 
-from femtools.nullspace import constant_nullspace
-
-from twoasis.common.utilities import homogenize
+from twoasis.common.utilities import axpy, homogenize, mass_norm2, pointwise
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
     add_contact_angles, PhaseFieldOnVelocitySpace, potential_linear_derivative,
@@ -43,13 +41,17 @@ __all__ = list(_solver_all)
 
 def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_, g_, phi_1,
           V, Q, x_, bcs, dt, rho, mu, sigma, epsilon, M, angles, ds, normal, acc, gradp_avg,
-          fpf, bpf, velocity_update_solver, **NS_namespace):
+          fpf, bpf, velocity_update_solver, skew_convection, **NS_namespace):
     """Define the forms of all equations."""
     sigma_bar = sigma * 3. / (2 * math.sqrt(2))
+    from twoasis.common import dual
+    if dual.current() is not None:
+        raise NotImplementedError("the Naive solver writes each equation as one form on one "
+                                  "mesh: phase_refine (the dual mesh) needs BDF or IPCS")
 
     # Density, its inverse and viscosity on V, set from the phase field
     rho_, rho_inv_, mu_ = Function(V), Function(V), Function(V)
-    phi_V = PhaseFieldOnVelocitySpace(q_['phig'].function_space(), V)
+    phi_V = PhaseFieldOnVelocitySpace(V)
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
     # Cahn-Hilliard: conservative advection of phi (the boundary term gives the
@@ -66,12 +68,16 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
     if bpf:
         Fpf -= fpf * xi * dx
 
-    # Tentative velocity, component i: semi-implicit convection by u_1, viscous
+    # Tentative velocity, component i: semi-implicit convection by u_1 (skew-symmetric
+    # with skew_convection, as in the BDF and IPCS solvers' convection_form), viscous
     # stress div(mu grad(u)) plus its transpose part grad(mu).d(u_1)/dx_i
     # (explicit), the pressure at the current inner iteration, the capillary
     # force -phi grad(g), the mean pressure gradient and the body force rho*acc.
+    conv = rho_ * dot(u_1, grad(u)) * v * dx
+    if skew_convection:
+        conv = conv + 0.5 * rho_ * div(u_1) * u * v * dx
     Fu = {ui: ((1. / dt) * rho_ * (u - q_1[ui]) * v * dx
-               + rho_ * dot(u_1, grad(u)) * v * dx
+               + conv
                + mu_ * inner(grad(u), grad(v)) * dx
                - inner(grad(mu_), u_1.dx(i)) * v * dx
                + p_.dx(i) * v * dx
@@ -98,7 +104,7 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
     # so (then the inverse row sums ML_inv are needed), and otherwise uses the
     # consistent mass matrix with homogeneous Dirichlet conditions.
     ML_inv = None
-    if velocity_update_solver.get('method') == 'lumping' and V.ufl_element().degree() == 1:
+    if velocity_update_solver.get('method') == 'lumping' and element_degree(V) == 1:
         ML_inv = assemble(v * dx)
         ML_inv.set_local(1. / ML_inv.get_local())
         ML_inv.apply('insert')
@@ -107,7 +113,8 @@ def setup(u_components, u, v, p, q, phi, g, xi, eta, q_, q_1, u_, u_1, p_, phi_,
     return dict(Fpf=(lhs(Fpf), rhs(Fpf)), Fu={ui: (lhs(F), rhs(F)) for ui, F in Fu.items()},
                 Fp=(lhs(Fp), rhs(Fp)), rho_=rho_, rho_inv_=rho_inv_, mu_=mu_, phi_V=phi_V,
                 sigma_bar=sigma_bar, p_sol=p_sol, ML_inv=ML_inv,
-                bcs0={ui: homogenize(bcs[ui]) for ui in u_components}, dpdx=Function(V))
+                bcs0={ui: homogenize(bcs[ui]) for ui in u_components}, dpdx=Function(V),
+                Mv=assemble_matrix(inner(TrialFunction(V), TestFunction(V)) * dx))
 
 
 def phase_field_solve(Fpf, q_, bcs, t, fpf, bpf, **NS_namespace):
@@ -122,13 +129,15 @@ def assemble_first_inner_iter(phi_V, rho_, rho_inv_, mu_, q_, rho, mu, **NS_name
     set_mixed_fields(phi_V, rho_, rho_inv_, mu_, q_, rho, mu)
 
 
-def velocity_tentative_solve(ui, Fu, q_, x_, bcs, udiff, unorm, **NS_namespace):
-    """Solve for one component of the tentative velocity."""
+def velocity_tentative_solve(ui, Fu, q_, x_, bcs, udiff, unorm, Mv, **NS_namespace):
+    """Solve for one component of the tentative velocity, adding the squares of the L2
+    norms of its change and of its new value to udiff and unorm (Mv: the velocity's
+    mass matrix)."""
     change = x_[ui].copy()
     solve(Fu[ui][0] == Fu[ui][1], q_[ui], bcs[ui])
     change.axpy(-1., x_[ui])
-    udiff[0] += change.norm('l2')
-    unorm[0] += x_[ui].norm('l2')
+    udiff[0] += mass_norm2(Mv, change)
+    unorm[0] += mass_norm2(Mv, x_[ui])
 
 
 def pressure_solve(Fp, p_, dp_, bcs, p_sol, Q, **NS_namespace):
@@ -155,5 +164,5 @@ def velocity_update(u_components, u, v, x_, bcs, bcs0, dp_, dpdx, dt, rho_inv_, 
             dpdx.vector().axpy(1., assemble(dp_.dx(i) * v * dx) * ML_inv)
         else:
             solve(u * v * dx == dp_.dx(i) * v * dx, dpdx, bcs0[ui])
-        x_[ui].axpy(-dt, dpdx.vector() * rho_inv_.vector())
+        axpy(x_[ui], -dt, pointwise(dpdx.vector(), rho_inv_.vector()))
         [bc.apply(x_[ui]) for bc in bcs[ui]]

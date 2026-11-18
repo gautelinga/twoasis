@@ -20,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import COLS, QUIET, golden_compare, load_tdata, run_twoasis
+from conftest import COLS, QUIET, golden_compare, load_tdata, once, run_twoasis
 
 # Coarse level, on half the default height. Linear growth for t > 1.5.
 RT = dict(QUIET, problem="RayleighTaylor2D", solver="BDF", Ly=2, A=0.005,
@@ -65,6 +65,11 @@ GAMMA = growth_rate(2 * np.pi, 1., 1., 0.01, 3., 0.01)
 def run_rt(workdir, **params):
     """Run RayleighTaylor2D; return (tdata, amplitude data)."""
     run_twoasis(workdir, **params)
+    return read_rt(workdir)
+
+
+def read_rt(workdir):
+    """(tdata, amplitude data) of a RayleighTaylor2D run in workdir."""
     amp = Path(workdir) / "results" / "data" / "1" / "Stats" / "amplitude.dat"
     return load_tdata(workdir), np.loadtxt(str(amp))
 
@@ -78,7 +83,7 @@ def measured_rate(amplitude):
 
 @pytest.fixture(scope="session")
 def rt(tmp_path_factory):
-    return run_rt(tmp_path_factory.mktemp("rayleigh_taylor"), **RT)
+    return read_rt(once(tmp_path_factory, "rayleigh_taylor", lambda wd: run_twoasis(wd, **RT)))
 
 
 def test_theory():

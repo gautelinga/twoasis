@@ -16,24 +16,27 @@ iterations. Problem hooks (initialize, pre_solve_hook, temporal_hook, ...) are c
 with the whole namespace.
 """
 import importlib
-from os import path
+from os import makedirs, path
 
 from numpy import array
-from dolfin import (
-    as_vector, assemble, DOLFIN_EPS, dx, FacetNormal, FiniteElement, Function, FunctionSpace,
-    list_timings, Measure, MixedElement, MPI, parameters, split, TestFunction,
+from twoasis.backend import name as backend_name
+from twoasis.backend import (
+    as_vector, assemble, BoundaryMarkers, check_periodic_pairing, collect_garbage, DOLFIN_EPS,
+    dx, FacetNormal, FiniteElement, Function, FunctionSpace, geometric_dimension, list_timings,
+    Measure, mesh_comm, MixedElement, MPI, parameters, set_default_mesh, split, TestFunction,
     TestFunctions, TimingClear, TimingType, TrialFunction, TrialFunctions, Vector, XDMFFile)
 
-from femtools.boundaries import BoundaryMarkers
-
 import twoasis.common
+import twoasis.common.telemetry
 import twoasis.problems
 import twoasis.problems.TPfracStep
+import twoasis.problems.TPfracStep.shared
 import twoasis.solvers.TPfracStep
 from twoasis.common import (
     create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
     save_solution)
-from twoasis.common.utilities import check_periodic_pairing, Coefficient, phi_g
+import twoasis.common.dual
+from twoasis.common.utilities import Coefficient, phi_g
 from twoasis.problems import info_green, info_red, initial_memory_use, oasis_memory, OasisTimer
 
 
@@ -61,6 +64,7 @@ if problemspec is None:
 
 # Import the problem module
 if MPI.rank(MPI.comm_world) == 0:
+    print('Backend: ' + backend_name)
     print('Importing problem module '+problemname+':\n'+problemspec.origin)
 problemmod = importlib.util.module_from_spec(problemspec)
 problemspec.loader.exec_module(problemmod)
@@ -78,6 +82,8 @@ problem_parameters(**vars())
 
 # Update current namespace with NS_parameters and commandline_kwargs ++
 vars().update(post_import_problem(**vars()))
+# The backend this run is on (backend=auto resolved), recorded with the parameters.
+backend = NS_parameters["backend"] = backend_name
 
 if scalar_components:
     raise NotImplementedError("passive scalars (scalar_components) are not supported by the "
@@ -102,9 +108,21 @@ if rotational and not hasattr(solver, "pressure_update"):
         raise ValueError("rotational=True: the {} solver has no rotational pressure "
                          "update".format(solver.__name__.split(".")[-1]))
     rotational = False
+if velocity_pressure_solve not in ("passes", "coupled"):
+    raise ValueError("velocity_pressure_solve={!r}: 'passes' or 'coupled'".format(
+        velocity_pressure_solve))
+if velocity_pressure_solve == "coupled":
+    if not hasattr(solver, "coupled_solve"):
+        raise ValueError("velocity_pressure_solve='coupled': the {} solver has none; "
+                         "use solver='BDF'".format(solver.__name__.split(".")[-1]))
+    if velocity_degree <= pressure_degree:
+        raise ValueError("velocity_pressure_solve='coupled' needs an inf-sup stable pair, "
+                         "velocity_degree > pressure_degree (here {} and {}): the coupled "
+                         "equal-order system is not stabilised".format(velocity_degree,
+                                                                       pressure_degree))
 
 # Create lists of components solved for
-dim = mesh.geometry().dim()
+dim = geometric_dimension(mesh)
 u_components = ['u' + str(x) for x in range(dim)]
 #u_components = ['u']
 sys_comp = u_components + ['p'] + ['phig'] + scalar_components
@@ -114,22 +132,44 @@ uphi_components = u_components + ['phig']
 # Set up initial folders for storing results
 newfolder, tstepfiles = create_initial_folders(**vars())
 
-# Declare FunctionSpaces and arguments
+# Per-step telemetry (twoasis/common/telemetry.py), started before the solvers are made.
+if telemetry:
+    if MPI.rank(MPI.comm_world) == 0:
+        makedirs(path.join(newfolder, "Stats"), exist_ok=True)
+    MPI.barrier(MPI.comm_world)
+    tel = twoasis.common.telemetry.start(path.join(newfolder, "Stats", "telemetry.jsonl"),
+                                         MPI.comm_world)
+else:
+    tel = twoasis.common.telemetry.start()
+
+# Declare FunctionSpaces and arguments. Constants made without a mesh are the flow mesh's.
+set_default_mesh(mesh)
 V = Q = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 #V = VectorFunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 #S = FunctionSpace(mesh, 'CG', velocity_degree, constrained_domain=constrained_domain)
 if velocity_degree != pressure_degree:
     Q = FunctionSpace(mesh, 'CG', pressure_degree,
                       constrained_domain=constrained_domain)
-# The phase field and the chemical potential may use a lower degree than the
-# velocity (e.g. P1 with P2 velocity); by default they use the velocity's.
+# The phase field and the chemical potential use the pressure's degree by default: on one
+# mesh the capillary force -phi*grad(g) then lies in the gradients the pressure can
+# balance. With a higher degree it leaves bulk forces the pressure cannot cancel, which
+# blow a run up where the densities or viscosities differ strongly or the interface meets
+# walls. The dual mesh (phase_refine > 0) is richer than the pressure in the same way and
+# needs a smaller step.
 if phase_field_degree is None:
-    phase_field_degree = velocity_degree
+    phase_field_degree = pressure_degree
 if chemical_potential_degree is None:
     chemical_potential_degree = phase_field_degree
-phi_el = FiniteElement('CG', mesh.ufl_cell(), phase_field_degree)
-g_el = FiniteElement('CG', mesh.ufl_cell(), chemical_potential_degree)
-W = FunctionSpace(mesh, MixedElement([phi_el, g_el]),
+# Recorded in the checkpoints, so a restart builds the spaces they were written in
+NS_parameters.update(phase_field_degree=phase_field_degree,
+                     chemical_potential_degree=chemical_potential_degree)
+# The phase field's mesh: the flow mesh, or with phase_refine > 0 its uniform refinement
+# (the dual mesh, twoasis/common/dual.py), where W lives.
+dual = twoasis.common.dual.start(mesh, phase_refine, constrained_domain)
+pf_mesh = dual.fine if dual else mesh
+phi_el = FiniteElement('CG', pf_mesh.ufl_cell(), phase_field_degree)
+g_el = FiniteElement('CG', pf_mesh.ufl_cell(), chemical_potential_degree)
+W = FunctionSpace(pf_mesh, MixedElement([phi_el, g_el]),
                   constrained_domain=constrained_domain)
 S_DG0 = FunctionSpace(mesh, "DG", 0, constrained_domain=constrained_domain)
 check_periodic_pairing(constrained_domain, [V, Q] + (
@@ -142,10 +182,14 @@ subdomains.set_all(0)
 vars().update(mark_subdomains(**vars()) or {})
 ds = Measure("ds", domain=mesh, subdomain_data=subdomains)
 normal = FacetNormal(mesh)
+# On the dual mesh, the markers' refinement, where integrals of the phase field over
+# marked facets go (twoasis/common/dual.py, retarget)
+if dual:
+    dual.markers(subdomains)
 
 #constrained_domain.mark(subd, 1)
 #wall.mark(subd, 2)
-with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "subdomains.xdmf")) as xdmff:
+with XDMFFile(mesh_comm(mesh), path.join(newfolder, "subdomains.xdmf")) as xdmff:
     xdmff.write(subdomains)
 
 u = TrialFunction(V)
@@ -214,7 +258,7 @@ bcs = create_bcs(**vars())
 angles = contact_angles(**vars())
 
 if len(angles) > 0 and isinstance(angles[0][0], Function):
-    with XDMFFile(mesh.mpi_comm(), path.join(newfolder, "angles.xdmf")) as xdmff:
+    with XDMFFile(mesh_comm(mesh), path.join(newfolder, "angles.xdmf")) as xdmff:
         xdmff.write(angles[0][0])
 
 
@@ -255,6 +299,11 @@ anderson = (twoasis.solvers.TPfracStep.AndersonPressure(anderson_depth)
 
 # Anything problem specific
 vars().update(pre_solve_hook(**vars()))
+# The PETSc objects that setup made and dropped (petsc4py keeps them until this)
+collect_garbage()
+
+# |div u| and |grad u| each stat_interval timesteps (Stats/divergence.dat)
+divergence_stats = twoasis.problems.TPfracStep.shared.DivergenceStats(u_, mesh, newfolder)
 
 tx = OasisTimer('Timestep timer')
 tx.start()
@@ -269,14 +318,17 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     udiff = array([1e8])  # Norm of velocity change over last inner iter
     unorm = array([0.])   # ... and of the velocity
     num_iter = max(iters_on_first_timestep, max_iter) if tstep <= 10 else max_iter
+    tel.start_step()
 
     start_timestep_hook(**vars())
 
     # Solve for phase field
     t0 = OasisTimer('Solving phase field', print_solve_info)
-    phase_field_assemble(**vars())
+    with tel.block("phase_field_assemble"):
+        phase_field_assemble(**vars())
     phase_field_hook(**vars())
-    phase_field_solve(**vars())
+    with tel.block("phase_field_solve"):
+        phase_field_solve(**vars())
     t0.stop()
 
     # A prescribed physical pressure p + phi*g follows the new phase field.
@@ -287,38 +339,85 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
             bc.update_physical(phig_values)
 
     # Iterate until the velocity changes by less than max_error, or by less than
-    # max_error_rel relative to its norm; the absolute test decides for a fluid
-    # (nearly) at rest.
+    # max_error_rel relative to its norm, both L2 norms (independent of the mesh); the
+    # absolute test decides for a fluid (nearly) at rest.
+    growing = 0           # passes in a row whose velocity change grew, above the first's
+    if velocity_pressure_solve == "coupled":
+        # One system for the step's velocity and pressure; the passes below then do
+        # not run (no velocity change left), nor does the velocity update.
+        inner_iter = 1
+        t0 = OasisTimer("Coupled velocity-pressure solve")
+        with tel.block("first_inner_assemble"):
+            assemble_first_inner_iter(**vars())
+        with tel.block("coupled_solve"):
+            coupled_solve(**vars())
+        t0.stop()
+        udiff[0] = 0.0
     while (udiff[0] > max(max_error, max_error_rel * unorm[0])
            and inner_iter < num_iter):
         inner_iter += 1
+        udiff_last = udiff[0]
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
-            assemble_first_inner_iter(**vars())
+            with tel.block("first_inner_assemble"):
+                assemble_first_inner_iter(**vars())
         udiff[0] = unorm[0] = 0.0
         for i, ui in enumerate(u_components):
             t1 = OasisTimer('Solving tentative velocity ' + ui, print_solve_info)
-            velocity_tentative_assemble(**vars())
+            with tel.block("velocity_assemble"):
+                velocity_tentative_assemble(**vars())
             velocity_tentative_hook(**vars())
-            velocity_tentative_solve(**vars())
+            with tel.block("velocity_solve"):
+                velocity_tentative_solve(**vars())
             t1.stop()
+        udiff[0], unorm[0] = udiff[0] ** 0.5, unorm[0] ** 0.5
+        # Growth counts only above the first pass's change: a change that grows
+        # but stays below it is the solves' noise near convergence, not divergence.
+        if inner_iter == 1:
+            udiff_first = udiff[0]
+        growing = (growing + 1 if inner_iter > 1 and udiff_last < udiff[0]
+                   and udiff[0] > udiff_first else 0)
+        if diverging_passes and growing >= diverging_passes:
+            raise RuntimeError(
+                "timestep {}: the inner passes diverge (the velocity change grew {} passes "
+                "in a row, to {:.2e}); a smaller dt may help. The last checkpoint is kept."
+                .format(tstep, growing, udiff[0]))
 
         t0 = OasisTimer("Pressure solve", print_solve_info)
-        pressure_assemble(**vars())
+        with tel.block("pressure_assemble"):
+            pressure_assemble(**vars())
         pressure_hook(**vars())
-        pressure_solve(**vars())
-        pressure_update(**vars())
-        if anderson is not None:
-            anderson(x_['p'], inner_iter)
+        with tel.block("pressure_solve"):
+            pressure_solve(**vars())
+        with tel.block("pressure_update"):
+            pressure_update(**vars())
+            # Mix only when another pass follows: the velocity update after the
+            # last pass uses that pass's own pressure change, so the stored
+            # pressure must be the one it came from.
+            if (anderson is not None and inner_iter < num_iter
+                    and udiff[0] > max(max_error, max_error_rel * unorm[0])):
+                anderson(x_['p'], inner_iter)
         t0.stop()
 
         print_velocity_pressure_info(**vars())
 
+    # The passes stopped at their limit without converging: worth knowing, since the
+    # step then carries the velocity-pressure splitting error of its last pass.
+    if num_iter > 1 and udiff[0] > max(max_error, max_error_rel * unorm[0]):
+        info_red("Warning: timestep {}: {} inner passes without converging (velocity change "
+                 "{:.2e}, tolerance {:.2e})".format(tstep, inner_iter, udiff[0],
+                                                    max(max_error, max_error_rel * unorm[0])))
+
     # Update velocity
-    t0 = OasisTimer("Velocity update")
-    velocity_update(**vars())
-    t0.stop()
+    if velocity_pressure_solve == "passes":
+        t0 = OasisTimer("Velocity update")
+        with tel.block("velocity_update"):
+            velocity_update(**vars())
+        t0.stop()
+    if tstep % stat_interval == 0:
+        with tel.block("hooks"):
+            divergence_stats(tstep, t)
 
     # Solve for scalars
     if len(scalar_components) > 0:
@@ -331,10 +430,12 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
 
     # temporal_hook may return a dict of values to update; None means nothing.
     # A returned stop=True ends the run after this step.
-    vars().update(temporal_hook(**vars()) or {})
+    with tel.block("hooks"):
+        vars().update(temporal_hook(**vars()) or {})
 
-    # Save solution if required and check for killoasis file
-    stop = save_solution(**vars()) or stop
+        # Save solution if required and check for killoasis file
+        stop = save_solution(**vars()) or stop
+    tel.end_step(tstep, t, inner_iter)
 
     # Update to a new timestep
     for ui in u_components:
@@ -356,6 +457,7 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
     for ci in scalar_components:
         x_1[ci].zero()
         x_1[ci].axpy(1., x_[ci])
+    collect_garbage()  # what this step dropped
 
     # Print some information
     if tstep % print_intermediate_info == 0:
@@ -379,6 +481,7 @@ info_red('Total memory use of solver = ' +
 
 for tstepfile in tstepfiles.values():
     tstepfile.close()
+tel.close()
 if restart_folder is not None:
     merge_visualization_files(**vars())
 

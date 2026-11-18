@@ -8,11 +8,10 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
-from dolfin import DirichletBC, Expression, SubDomain
+from twoasis.backend import DirichletBC, Expression, extent, hmax, SubDomain
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
-from femtools.periodic import extent
 from twoasis.problems.TPfracStep.shared import (
     load_mesh, PeriodicBox, standard_stats, start_timestamps, write_tdata, write_timestamp)
 
@@ -59,7 +58,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         bdf_order=1,
         AB_projection_pressure=False,
         max_iter=20,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+        max_error=2e-5,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=100,  # Number of iterations on first timestep
         velocity_tolerance_factor=0.1,
     )
@@ -74,7 +73,7 @@ def mark_subdomains(subdomains, mesh, **NS_namespace):
     """Mark the wall 1 and add the tube's ends z0, z1 and radius R to the namespace."""
     lo, hi = extent(mesh)
     R = hi[0]
-    Walls(R, mesh.hmax()**2 / R).mark(subdomains, 1)
+    Walls(R, hmax(mesh)**2 / R).mark(subdomains, 1)
     return dict(z0=lo[2], z1=hi[2], R=R)
 
 

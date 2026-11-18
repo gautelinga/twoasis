@@ -16,11 +16,11 @@ __copyright__ = ("Copyright (C) 2024 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
-from dolfin import assemble, Constant, DirichletBC, Expression, Function, interpolate
+from twoasis.backend import (
+    assemble, Constant, DirichletBC, Expression, extent, Function, interpolate)
 
 from twoasis.common.utilities import set_subfunction
 from twoasis.problems import info_red
-from femtools.periodic import extent
 from twoasis.problems.TPfracStep.shared import (
     Faces, load_mesh, mark_walls, PeriodicBox, standard_stats, start_timestamps,
     write_tdata)
@@ -60,7 +60,7 @@ def problem_parameters(NS_parameters, **NS_namespace):
         bdf_order=1,
         AB_projection_pressure=False,
         max_iter=5,                 # Number of inner pressure velocity iterations on timestep
-        max_error=1e-3,               # Tolerance for inner iterations (pressure velocity iterations)
+        max_error=2e-5,               # Tolerance for inner iterations (pressure velocity iterations)
         iters_on_first_timestep=10,  # Number of iterations on first timestep
     )
 
@@ -89,12 +89,15 @@ def contact_angles(theta, V, meshfile, sigma, x_min, x_max, **NS_namespace):
     factor = 1.3
 
     s_ = np.zeros_like(s.vector()[:])
-    for i, xr in enumerate(obst):
-        #print(i)
-        x, r = xr[:3], xr[3]
-        reps = np.linalg.norm(xx - np.outer(np.ones(len(xx)), x), axis=1)/r - cutoff
+    # Each sphere adds to the points within (cutoff + frac) radii of its centre: a tree
+    # of this process's points finds them, not a pass over all points per sphere.
+    from scipy.spatial import cKDTree
+    near = cKDTree(xx).query_ball_point(obst[:, :3], obst[:, 3] * (cutoff + frac))
+    for (x, r), idx in zip(zip(obst[:, :3], obst[:, 3]), near):
+        idx = np.asarray(idx, dtype=np.int64)
+        reps = np.linalg.norm(xx[idx] - x, axis=1)/r - cutoff
         ds = 1-reps/frac
-        s_[ds > 0] += ds[ds > 0]
+        np.add.at(s_, idx[ds > 0], ds[ds > 0])
 
     rmean = obst[:, 3].mean()
 

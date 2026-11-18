@@ -15,6 +15,7 @@ variants) checking:
     without the previous time level; leaves no temporary checkpoint folders;
     and refuses a checkpoint of bare vectors on another number of processes.
 """
+import pickle
 import shutil
 from os import path
 from pathlib import Path
@@ -23,7 +24,7 @@ import numpy as np
 import pytest
 
 from conftest import (BUBBLE, BUBBLE_P1, COLS, MASS_TOL, QUIET, assert_close, assert_last_close,
-                      assert_mass_conserved, copy_run, golden_compare, load_tdata,
+                      assert_mass_conserved, copy_run, dolfin_only, golden_compare, load_tdata,
                       require_mpi, run_twoasis, to_bare_vectors)
 
 # Scalars pinned by the golden tests.
@@ -134,6 +135,20 @@ def test_restart_from_a_copied_checkpoint(tmp_path_factory, bubble_bdf):
     assert np.loadtxt(str(wd / "elsewhere" / "Stats" / "tdata.dat")).shape[0] == 10
 
 
+def test_restart_with_the_degree_unset(tmp_path):
+    """A checkpoint whose parameters leave the phase field's degree unset holds it in the
+    velocity's degree (P2 here): the restart reads it into that space."""
+    run_twoasis(tmp_path, solver="BDF", T=0.02, phase_field_degree=2, **BUBBLE)
+    ckpt = tmp_path / "results" / "data" / "1" / "Checkpoint"
+    params = pickle.loads((ckpt / "params.dat").read_bytes())
+    assert (params["phase_field_degree"], params["velocity_degree"]) == (2, 2)
+    params.update(phase_field_degree=None, chemical_potential_degree=None)
+    (ckpt / "params.dat").write_bytes(pickle.dumps(params))
+    run_twoasis(tmp_path, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
+    restarted = pickle.loads((ckpt / "params.dat").read_bytes())
+    assert (restarted["phase_field_degree"], restarted["tstep"]) == (2, 20)
+
+
 def test_restart_time_series(tmp_path):
     """The time series and statistics across restarts: a run saves past its last checkpoint
     (step 10), a restart from that checkpoint replaces the later steps, and a
@@ -209,6 +224,7 @@ def test_restart_on_another_process_count(tmp_path_factory, bubble_bdf, bubble_b
         assert_close("np2 restart " + name, td[-1, COLS[name]], td_s[-1, COLS[name]], 1e-4, 1e-7)
 
 
+@dolfin_only                 # bare vectors: dolfin's checkpoint format
 def test_bare_vectors_on_another_process_count(tmp_path_factory, bubble_bdf):
     """A checkpoint of bare vectors holds them in the dof order of the run that
     wrote it, so a restart on another number of processes stops with a clear
@@ -220,6 +236,7 @@ def test_bare_vectors_on_another_process_count(tmp_path_factory, bubble_bdf):
         run_twoasis(wd, nprocs=2, solver="BDF", T=0.04, restart_folder=str(ckpt), **BUBBLE)
 
 
+@dolfin_only                 # bare vectors: dolfin's checkpoint format
 def test_restart_from_bare_vectors(bubble_bdf_restarted_bare_vectors, bubble_bdf_long):
     """Restart from a checkpoint of bare vectors, without the previous level of
     p and phi.
@@ -268,3 +285,46 @@ def test_taylorbubble_smoke(tmp_path, solver):
     td = load_tdata(tmp_path)
     assert np.isfinite(td).all()
     assert_mass_conserved(td, 1e-5)
+
+
+def test_checkpoint_by_wall_time(tmp_path):
+    """checkpoint_minutes checkpoints once that much wall time has passed since the last
+    checkpoint, here at every step, though `checkpoint` would never."""
+    import pickle
+    run_twoasis(tmp_path, solver="BDF", T=0.007,
+                **dict(BUBBLE, checkpoint=1000000, checkpoint_minutes=1e-9))
+    with open(str(tmp_path / "results" / "data" / "1" / "Checkpoint" / "params.dat"),
+              "rb") as f:
+        assert pickle.load(f)["tstep"] == 4      # the last of the four steps
+
+
+@pytest.mark.parametrize("bdf_order, previous", [(1, False), (2, True)])
+def test_checkpoint_previous_level(tmp_path, bdf_order, previous):
+    """A checkpoint holds the previous level only when a restart reads it (BDF2)."""
+    import h5py
+    run_twoasis(tmp_path, solver="BDF", T=0.005,
+                **dict(BUBBLE, checkpoint=2, bdf_order=bdf_order))
+    with h5py.File(str(tmp_path / "results" / "data" / "1" / "Checkpoint" / "u0.h5"),
+                   "r") as h5:
+        assert ("previous" in h5) == previous
+
+
+def test_restart_keeps_this_codes_max_error_for_an_older_norm(tmp_path):
+    """A checkpoint that does not record inner_norm stopped its inner passes on another
+    norm: a restart from it uses this code's max_error, not the checkpoint's."""
+    import pickle
+    run_twoasis(tmp_path, solver="BDF", T=0.005, **dict(BUBBLE, checkpoint=2))
+    ckpt = tmp_path / "results" / "data" / "1" / "Checkpoint"
+    with open(str(ckpt / "params.dat"), "rb") as f:
+        params = pickle.load(f)
+    expected = params["max_error"]
+    params.pop("inner_norm")
+    params["max_error"] = 1e-3
+    with open(str(ckpt / "params.dat"), "wb") as f:
+        pickle.dump(params, f)
+    run_twoasis(tmp_path, solver="BDF", T=0.009, restart_folder=str(ckpt),
+                **dict(BUBBLE, checkpoint=2))
+    with open(str(ckpt / "params.dat"), "rb") as f:     # the restart's own checkpoint
+        again = pickle.load(f)
+    assert again["tstep"] == 4
+    assert again["max_error"] == expected and again["inner_norm"] == "L2"

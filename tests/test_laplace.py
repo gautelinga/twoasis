@@ -2,17 +2,17 @@
 
 The case runs until dP and max|u| are steady and writes them, with the
 equilibrium bubble radius R_eq, to Stats/steady.dat. Measured (sigma = 1,
-R = 0.25, epsilon = 1.28*h, M = 0.1):
+R = 0.25, epsilon = 1.28*h, M = 0.1, the P1 phase field on the mesh refined once):
 
     epsilon   dP vs sigma/R_eq   shrinkage 1 - R_eq/R
-    0.04      0.000%             4.5%
-    0.02      0.026%             2.3%
+    0.04      -0.19%             4.6%
+    0.02      0.44%              2.3%
 
 dP follows the Laplace law for the actual radius. The bubble shrinks because
 the bulk phase field shifts away from +-1 at equilibrium, by an amount first
 order in epsilon. For the bubble at rest there are no steady spurious
-currents: max|u| at steady state is set by the solver tolerances (1.6e-7 with
-the defaults, 6.8e-10 with tolerances of 1e-10 on the coarse level). Moving interfaces
+currents: max|u| at steady state is set by the solver tolerances (2.8e-8 with
+the defaults, 2.9e-10 with tolerances of 1e-10 on the coarse level). Moving interfaces
 are not covered. See LaplaceBubble2D.py for the dependence on
 density, viscosity, Ohnesorge and Cahn numbers.
 """
@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import QUIET, golden_compare, load_tdata, run_twoasis
+from conftest import QUIET, golden_compare, load_tdata, once, run_twoasis
 
 # Columns of LaplaceBubble2D's Stats/tdata.dat and Stats/steady.dat.
 LCOLS = dict(tstep=0, t=1, dP=2, exact=3, P_in=4, P_out=5, u_max=6, E_kin=7, phim=8,
@@ -42,12 +42,17 @@ SOLVER_LEVEL = 1e-6
 # Tolerances tight enough to drive max|u| far below SOLVER_LEVEL.
 TIGHT = dict(krylov_solvers='{"relative_tolerance": 1e-10, "absolute_tolerance": 1e-16, '
                             '"maximum_iterations": 5000}',
-             max_error=1e-10, max_iter=100)
+             max_error=5e-13, max_iter=100)
 
 
 def run_laplace(workdir, **params):
     """Run LaplaceBubble2D; return (tdata, steady values or None)."""
     run_twoasis(workdir, **params)
+    return read_laplace(workdir)
+
+
+def read_laplace(workdir):
+    """(tdata, steady values or None) of a LaplaceBubble2D run in workdir."""
     steady = Path(workdir) / "results" / "data" / "1" / "Stats" / "steady.dat"
     return load_tdata(workdir), (np.loadtxt(str(steady)) if steady.exists() else None)
 
@@ -58,7 +63,8 @@ def shrinkage(steady):
 
 @pytest.fixture(scope="session")
 def laplace(tmp_path_factory):
-    return run_laplace(tmp_path_factory.mktemp("laplace"), **LAPLACE)
+    return read_laplace(once(tmp_path_factory, "laplace",
+                             lambda wd: run_twoasis(wd, **LAPLACE)))
 
 
 def test_reaches_steady_state(laplace):
@@ -107,7 +113,7 @@ def test_refinement(tmp_path, laplace):
     """Halving epsilon and h halves the shrinkage (first order) and keeps the
     Laplace law, with the velocity settling at solver level. The steady state
     does not depend on the mobility, so the finer level uses a larger one to
-    reach it in half the time (shrinkage 2.31% with M = 0.4 and with 0.1)."""
+    reach it in half the time (shrinkage 2.33% with M = 0.4 and with 0.1)."""
     _, coarse = laplace
     _, fine = run_laplace(tmp_path, **dict(LAPLACE, epsilon=0.02, res=0.015625, dt=0.0007,
                                             stat_interval=14, M=0.4))
@@ -121,7 +127,7 @@ def test_refinement(tmp_path, laplace):
 @pytest.mark.slow
 def test_no_steady_spurious_currents(tmp_path, laplace):
     """Tightening the solver tolerances drives the steady max|u| down by orders
-    of magnitude (2.0e-8 -> 2.1e-10 measured) and leaves dP unchanged: for the
+    of magnitude (2.8e-8 -> 2.9e-10 measured) and leaves dP unchanged: for the
     bubble at rest, g is constant at equilibrium, so the force -phi*grad(g)
     vanishes and u = 0 is an exact steady state."""
     _, default = laplace

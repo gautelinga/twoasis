@@ -32,6 +32,7 @@ import twoasis.problems
 import twoasis.problems.TPfracStep
 import twoasis.problems.TPfracStep.shared
 import twoasis.solvers.TPfracStep
+import twoasis.solvers.TPfracStep.adapt
 from twoasis.common import (
     create_initial_folders, init_from_restart, merge_visualization_files, parse_command_line,
     save_solution)
@@ -108,6 +109,10 @@ if rotational and not hasattr(solver, "pressure_update"):
         raise ValueError("rotational=True: the {} solver has no rotational pressure "
                          "update".format(solver.__name__.split(".")[-1]))
     rotational = False
+twoasis.solvers.TPfracStep.check_chns_options(chns_solve, initial_guess, dt_split_max,
+                                               phase_refine)
+if chns_solve != "split":
+    velocity_pressure_solve = "coupled"   # part of the coupled CH-NS step
 if velocity_pressure_solve not in ("passes", "coupled"):
     raise ValueError("velocity_pressure_solve={!r}: 'passes' or 'coupled'".format(
         velocity_pressure_solve))
@@ -305,6 +310,14 @@ collect_garbage()
 # |div u| and |grad u| each stat_interval timesteps (Stats/divergence.dat)
 divergence_stats = twoasis.problems.TPfracStep.shared.DivergenceStats(u_, mesh, newfolder)
 
+# chns_solve="auto"'s choice of step (switch.py; None for the other chns_solve)
+chns_switch = vars().get("chns_switch")
+
+# The adaptive time step (None: dt fixed)
+adapt = (twoasis.solvers.TPfracStep.adapt.Controller(dt_adapt, dt, epsilon, VV['phig'],
+                                                     mesh_comm(mesh))
+         if dt_adapt else None)
+
 tx = OasisTimer('Timestep timer')
 tx.start()
 total_timer = OasisTimer("Start simulations", True)
@@ -312,121 +325,156 @@ total_timer = OasisTimer("Start simulations", True)
 # already hold it, and saving would overwrite the checkpoint's previous level).
 stop = save_solution(**vars()) if restart_folder is None else False
 while t < (T - tstep * DOLFIN_EPS) and not stop:
-    t += dt
-    tstep += 1
-    inner_iter = 0
-    udiff = array([1e8])  # Norm of velocity change over last inner iter
-    unorm = array([0.])   # ... and of the velocity
-    num_iter = max(iters_on_first_timestep, max_iter) if tstep <= 10 else max_iter
-    tel.start_step()
+    # One step; with dt_adapt, a step whose solve fails is redone from the same levels
+    # at a smaller dt (adapt.Controller.retry_dt).
+    dt_1_before = NS_parameters.get("dt_1")
+    attempt = 0
+    while True:
+        try:
+            t += dt
+            tstep += 1
+            inner_iter = 0
+            udiff = array([1e8])  # Norm of velocity change over last inner iter
+            unorm = array([0.])   # ... and of the velocity
+            num_iter = max(iters_on_first_timestep, max_iter) if tstep <= 10 else max_iter
+            tel.start_step()
 
-    start_timestep_hook(**vars())
+            start_timestep_hook(**vars())
 
-    # Solve for phase field
-    t0 = OasisTimer('Solving phase field', print_solve_info)
-    with tel.block("phase_field_assemble"):
-        phase_field_assemble(**vars())
-    phase_field_hook(**vars())
-    with tel.block("phase_field_solve"):
-        phase_field_solve(**vars())
-    t0.stop()
+            # Solve for phase field
+            t0 = OasisTimer('Solving phase field', print_solve_info)
+            with tel.block("phase_field_assemble"):
+                phase_field_assemble(**vars())
+            phase_field_hook(**vars())
+            with tel.block("phase_field_solve"):
+                phase_field_solve(**vars())
+            t0.stop()
 
-    # A prescribed physical pressure p + phi*g follows the new phase field.
-    physical_bcs = [bc for bc in bcs['p'] if hasattr(bc, 'update_physical')]
-    if physical_bcs:
-        phig_values = phi_g(q_)
-        for bc in physical_bcs:
-            bc.update_physical(phig_values)
+            # A prescribed physical pressure p + phi*g follows the new phase field.
+            physical_bcs = [bc for bc in bcs['p'] if hasattr(bc, 'update_physical')]
+            if physical_bcs:
+                phig_values = phi_g(q_)
+                for bc in physical_bcs:
+                    bc.update_physical(phig_values)
 
-    # Iterate until the velocity changes by less than max_error, or by less than
-    # max_error_rel relative to its norm, both L2 norms (independent of the mesh); the
-    # absolute test decides for a fluid (nearly) at rest.
-    growing = 0           # passes in a row whose velocity change grew, above the first's
-    if velocity_pressure_solve == "coupled":
-        # One system for the step's velocity and pressure; the passes below then do
-        # not run (no velocity change left), nor does the velocity update.
-        inner_iter = 1
-        t0 = OasisTimer("Coupled velocity-pressure solve")
-        with tel.block("first_inner_assemble"):
-            assemble_first_inner_iter(**vars())
-        with tel.block("coupled_solve"):
-            coupled_solve(**vars())
-        t0.stop()
-        udiff[0] = 0.0
-    while (udiff[0] > max(max_error, max_error_rel * unorm[0])
-           and inner_iter < num_iter):
-        inner_iter += 1
-        udiff_last = udiff[0]
+            # Iterate until the velocity changes by less than max_error, or by less than
+            # max_error_rel relative to its norm, both L2 norms (independent of the mesh); the
+            # absolute test decides for a fluid (nearly) at rest.
+            growing = 0           # passes in a row whose velocity change grew, above the first's
+            if velocity_pressure_solve == "coupled":
+                # One system for the step's velocity and pressure; the passes below then do
+                # not run (no velocity change left), nor does the velocity update.
+                inner_iter = 1
+                t0 = OasisTimer("Coupled velocity-pressure solve")
+                with tel.block("first_inner_assemble"):
+                    assemble_first_inner_iter(**vars())
+                with tel.block("coupled_solve"):
+                    coupled_solve(**vars())
+                t0.stop()
+                udiff[0] = 0.0
+            while (udiff[0] > max(max_error, max_error_rel * unorm[0])
+                   and inner_iter < num_iter):
+                inner_iter += 1
+                udiff_last = udiff[0]
 
-        t0 = OasisTimer("Tentative velocity")
-        if inner_iter == 1:
-            with tel.block("first_inner_assemble"):
-                assemble_first_inner_iter(**vars())
-        udiff[0] = unorm[0] = 0.0
-        for i, ui in enumerate(u_components):
-            t1 = OasisTimer('Solving tentative velocity ' + ui, print_solve_info)
-            with tel.block("velocity_assemble"):
-                velocity_tentative_assemble(**vars())
-            velocity_tentative_hook(**vars())
-            with tel.block("velocity_solve"):
-                velocity_tentative_solve(**vars())
-            t1.stop()
-        udiff[0], unorm[0] = udiff[0] ** 0.5, unorm[0] ** 0.5
-        # Growth counts only above the first pass's change: a change that grows
-        # but stays below it is the solves' noise near convergence, not divergence.
-        if inner_iter == 1:
-            udiff_first = udiff[0]
-        growing = (growing + 1 if inner_iter > 1 and udiff_last < udiff[0]
-                   and udiff[0] > udiff_first else 0)
-        if diverging_passes and growing >= diverging_passes:
-            raise RuntimeError(
-                "timestep {}: the inner passes diverge (the velocity change grew {} passes "
-                "in a row, to {:.2e}); a smaller dt may help. The last checkpoint is kept."
-                .format(tstep, growing, udiff[0]))
+                t0 = OasisTimer("Tentative velocity")
+                if inner_iter == 1:
+                    with tel.block("first_inner_assemble"):
+                        assemble_first_inner_iter(**vars())
+                udiff[0] = unorm[0] = 0.0
+                for i, ui in enumerate(u_components):
+                    t1 = OasisTimer('Solving tentative velocity ' + ui, print_solve_info)
+                    with tel.block("velocity_assemble"):
+                        velocity_tentative_assemble(**vars())
+                    velocity_tentative_hook(**vars())
+                    with tel.block("velocity_solve"):
+                        velocity_tentative_solve(**vars())
+                    t1.stop()
+                udiff[0], unorm[0] = udiff[0] ** 0.5, unorm[0] ** 0.5
+                # Growth counts only above the first pass's change: a change that grows
+                # but stays below it is the solves' noise near convergence, not divergence.
+                if inner_iter == 1:
+                    udiff_first = udiff[0]
+                growing = (growing + 1 if inner_iter > 1 and udiff_last < udiff[0]
+                           and udiff[0] > udiff_first else 0)
+                if diverging_passes and growing >= diverging_passes:
+                    raise RuntimeError(
+                        "timestep {}: the inner passes diverge (the velocity change grew {} passes "
+                        "in a row, to {:.2e}); a smaller dt may help. The last checkpoint is kept."
+                        .format(tstep, growing, udiff[0]))
 
-        t0 = OasisTimer("Pressure solve", print_solve_info)
-        with tel.block("pressure_assemble"):
-            pressure_assemble(**vars())
-        pressure_hook(**vars())
-        with tel.block("pressure_solve"):
-            pressure_solve(**vars())
-        with tel.block("pressure_update"):
-            pressure_update(**vars())
-            # Mix only when another pass follows: the velocity update after the
-            # last pass uses that pass's own pressure change, so the stored
-            # pressure must be the one it came from.
-            if (anderson is not None and inner_iter < num_iter
-                    and udiff[0] > max(max_error, max_error_rel * unorm[0])):
-                anderson(x_['p'], inner_iter)
-        t0.stop()
+                t0 = OasisTimer("Pressure solve", print_solve_info)
+                with tel.block("pressure_assemble"):
+                    pressure_assemble(**vars())
+                pressure_hook(**vars())
+                with tel.block("pressure_solve"):
+                    pressure_solve(**vars())
+                with tel.block("pressure_update"):
+                    pressure_update(**vars())
+                    # Mix only when another pass follows: the velocity update after the
+                    # last pass uses that pass's own pressure change, so the stored
+                    # pressure must be the one it came from.
+                    if (anderson is not None and inner_iter < num_iter
+                            and udiff[0] > max(max_error, max_error_rel * unorm[0])):
+                        anderson(x_['p'], inner_iter)
+                t0.stop()
 
-        print_velocity_pressure_info(**vars())
+                print_velocity_pressure_info(**vars())
 
-    # The passes stopped at their limit without converging: worth knowing, since the
-    # step then carries the velocity-pressure splitting error of its last pass.
-    if num_iter > 1 and udiff[0] > max(max_error, max_error_rel * unorm[0]):
-        info_red("Warning: timestep {}: {} inner passes without converging (velocity change "
-                 "{:.2e}, tolerance {:.2e})".format(tstep, inner_iter, udiff[0],
-                                                    max(max_error, max_error_rel * unorm[0])))
+            # The passes stopped at their limit without converging: worth knowing, since the
+            # step then carries the velocity-pressure splitting error of its last pass.
+            if num_iter > 1 and udiff[0] > max(max_error, max_error_rel * unorm[0]):
+                info_red("Warning: timestep {}: {} inner passes without converging (velocity "
+                         "change {:.2e}, tolerance {:.2e})".format(
+                             tstep, inner_iter, udiff[0],
+                             max(max_error, max_error_rel * unorm[0])))
 
-    # Update velocity
-    if velocity_pressure_solve == "passes":
-        t0 = OasisTimer("Velocity update")
-        with tel.block("velocity_update"):
-            velocity_update(**vars())
-        t0.stop()
-    if tstep % stat_interval == 0:
-        with tel.block("hooks"):
-            divergence_stats(tstep, t)
+            # Update velocity
+            if velocity_pressure_solve == "passes":
+                t0 = OasisTimer("Velocity update")
+                with tel.block("velocity_update"):
+                    velocity_update(**vars())
+                t0.stop()
+            if tstep % stat_interval == 0:
+                with tel.block("hooks"):
+                    divergence_stats(tstep, t)
 
-    # Solve for scalars
-    if len(scalar_components) > 0:
-        scalar_assemble(**vars())
-        for ci in scalar_components:
-            t1 = OasisTimer('Solving scalar {}'.format(ci), print_solve_info)
-            scalar_hook(**vars())
-            scalar_solve(**vars())
-            t1.stop()
+            # Solve for scalars
+            if len(scalar_components) > 0:
+                scalar_assemble(**vars())
+                for ci in scalar_components:
+                    t1 = OasisTimer('Solving scalar {}'.format(ci), print_solve_info)
+                    scalar_hook(**vars())
+                    scalar_solve(**vars())
+                    t1.stop()
+            if adapt is not None:
+                adapt.check_finite(x_, sys_comp)
+            break
+        except Exception as err:
+            if adapt is None or not twoasis.solvers.TPfracStep.adapt.retryable(err):
+                raise
+            attempt += 1
+            t -= dt
+            tstep -= 1
+            NS_parameters["dt_1"] = dt_1_before
+            for ui in sys_comp:
+                x_[ui].zero()
+                x_[ui].axpy(1.0, x_1[ui])
+            dt_failed, dt = dt, adapt.retry_dt(dt, attempt, err)
+            NS_parameters["dt"] = dt
+            info_red("timestep {}: {}; redoing it with dt {:.4g} (was {:.4g})".format(
+                tstep + 1, err, dt, dt_failed))
+
+    # The error of the step (dt_adapt): measured before the levels move
+    if adapt is not None:
+        adapt_e = (None if tstep == bdf1_tstep
+                   else adapt.error(x_, x_1, x_2, beta, u_components))
+        tel.note(dt=dt, retries=attempt,
+                 **{k: adapt.last[k] if adapt_e is not None else None
+                    for k in ("e", "e_phi", "e_u")})
+    # chns_solve="auto": the step this one was (switch.py)
+    if chns_switch is not None:
+        tel.note(mode=chns_switch.mode)
 
     # temporal_hook may return a dict of values to update; None means nothing.
     # A returned stop=True ends the run after this step.
@@ -458,6 +506,16 @@ while t < (T - tstep * DOLFIN_EPS) and not stop:
         x_1[ci].zero()
         x_1[ci].axpy(1., x_[ci])
     collect_garbage()  # what this step dropped
+
+    # The next step's dt (dt_adapt) and, with chns_solve="auto", its mode (the split
+    # step's dt capped); kept in NS_parameters, so that a checkpoint has them
+    if adapt is not None:
+        dt = adapt.next_dt(dt, adapt_e, t, T,
+                           limit=chns_switch.next_dt if chns_switch is not None else None)
+        NS_parameters["dt"] = dt
+    elif chns_switch is not None:
+        dt = chns_switch.next_dt(dt)
+        NS_parameters["dt"] = dt
 
     # Print some information
     if tstep % print_intermediate_info == 0:

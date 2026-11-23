@@ -309,3 +309,313 @@ def test_coupled_iterations_independent_of_mesh(tmp_path):
         its.append([r["solvers"]["coupled"]["its"] for r in records])
     coarse, fine = its
     assert len(fine) == 5 and max(fine) <= 1.5 * max(coarse) and max(fine) < 25, its
+
+
+def test_adaptive_dt(tmp_path):
+    """dt_adapt (solvers/TPfracStep/adapt.py): from a small first step the rising bubble's
+    dt grows by at most 2 a step, the measured errors stay near their tolerance once it
+    has, the last step ends at T, and the result stays near the fixed-dt run's."""
+    fixed, adaptive = tmp_path / "fixed", tmp_path / "adaptive"
+    common = dict(QUIET, problem="Bubble2D", res=1 / 32, T=0.02, telemetry=True)
+    fixed.mkdir()
+    run_twoasis(fixed, dt=0.001, **common)
+    adaptive.mkdir()
+    run_twoasis(adaptive, dt=0.0002,
+                dt_adapt='{"tol_x": 1e-3, "rtol_u": 1e-2, "atol_u": 1e-4, "dt_max": 0.004}',
+                **common)
+    records = telemetry.read(str(adaptive / "results" / "data" / "1" / "Stats" /
+                                 "telemetry.jsonl"))
+    dts = np.array([r["dt"] for r in records])
+    assert dts[0] == pytest.approx(0.0002) and dts.max() > 5 * dts[0]
+    assert np.all(dts[1:] / dts[:-1] <= 2 + 1e-12)
+    assert records[-1]["t"] == pytest.approx(0.02, abs=1e-12)
+    assert all(r["retries"] == 0 for r in records)
+    e = [r["e"] for r in records[5:] if r["e"] is not None]
+    assert max(e) < 2.0
+    td, td_ref = load_tdata(adaptive), load_tdata(fixed)
+    assert td[-1, COLS["t"]] == pytest.approx(td_ref[-1, COLS["t"]])
+    for name, rtol in (("u0m", 5e-2), ("E_int", 1e-3), ("y_cm", 1e-3)):
+        assert td[-1, COLS[name]] == pytest.approx(td_ref[-1, COLS[name]], rel=rtol), name
+
+
+def test_coupled_chns_implicit_physical_pressure(tmp_path, lattice_meshes):
+    """The coupled CH-NS step (chns_solve="coupled") on PoreThroat2D's open ends: with
+    the physical pressure's boundary rows implicit in g a meniscus released at dt 102.4,
+    far past the meniscus's own period, settles to rest."""
+    params = dict(QUIET, problem="PoreThroat2D", Lx=4.0, res=PORE["res"], epsilon=0.1,
+                  M=1e-3, rho=[1, 1], dp_start=0.8, dp=0.8, chns_solve="coupled",
+                  dt=102.4, T=12 * 102.4, stat_interval=1)
+    shutil.copytree(str(lattice_meshes), str(tmp_path / "meshes"))
+    run_twoasis(tmp_path, **params)
+    rows = np.loadtxt(str(tmp_path / "results" / "data" / "1" / "Stats" / "throat.dat"))
+    assert len(rows) >= 12 and np.isfinite(rows[:, 5]).all()
+    assert rows[-1, 5] < 1e-3 * rows[0, 5]
+
+
+def test_coupled_chns_flow_solve(tmp_path, lattice_meshes):
+    """The iterative coupled CH-NS step's flow solve (monolithic.py): with its tolerance
+    against the outer residual and the projection's pressure as its first guess, a
+    meniscus at dt 102.4 takes a quarter of the outer iteration limit at most (with the
+    tolerance against the flow solve's own right-hand side and a zero guess it stopped at
+    the limit), and ends at the direct solve's result."""
+    params = dict(QUIET, problem="PoreThroat2D", Lx=4.0, res=PORE["res"], epsilon=0.1,
+                  M=1e-3, rho=[1.4, 1], dp_start=0.8, dp=0.8, velocity_pressure_solve="coupled",
+                  chns_solve="coupled", dt=102.4, T=4.5 * 102.4, telemetry=True,
+                  checkpoint=4)
+    runs = {"direct": '{"method": "direct"}', "default": '{}'}
+    for name in runs:
+        shutil.copytree(str(lattice_meshes), str(tmp_path / name / "meshes"))
+    run_concurrently(*[lambda n=n, c=c: run_twoasis(tmp_path / n, chns_solver=c, **params)
+                       for n, c in runs.items()])
+    data = tmp_path / "{}" / "results" / "data" / "1"
+    its = [r["solvers"]["chns"]["its"] for r in
+           telemetry.read(str(data).format("default") + "/Stats/telemetry.jsonl")]
+    assert len(its) >= 4 and max(its) < 200 / 4, its
+    ref, f = checkpoint_fields(tmp_path / "direct"), checkpoint_fields(tmp_path / "default")
+    err = {k: np.linalg.norm(f[k] - ref[k]) / np.linalg.norm(ref[k]) for k in f}
+    assert max(err.values()) < 2e-4, err
+
+
+class FakeKSP:
+    """What the phase-field preconditioner's reuse functions use of a petsc4py KSP."""
+
+    class PC:
+        flag = None
+
+        def setReusePreconditioner(self, flag):
+            self.flag = flag
+
+    def __init__(self):
+        self.handle = object()
+        self.pc = self.PC()
+
+    def getPC(self):
+        return self.pc
+
+
+def test_reuse_phase_field_preconditioner():
+    """The phase field's preconditioner is kept only when asked and while alpha0 stays
+    within 10 % of the alpha0 it was built with (an adaptive dt rebuilds it)."""
+    from twoasis.solvers.TPfracStep import reuse_phase_field_preconditioner as reuse
+
+    ksp = FakeKSP()
+    steps = [(False, 1.0, False),   # first build
+             (True, 1.05, True),    # within 10 %
+             (False, 1.05, False),  # a rebuild step: built at 1.05 now
+             (True, 1.2, False),    # alpha0 moved by > 10 %: rebuilt at 1.2
+             (True, 1.25, True)]
+    for ask, alpha, keep in steps:
+        assert reuse(ksp, ask, alpha) is keep, (ask, alpha)
+        assert ksp.pc.flag is keep
+
+
+def test_phase_field_preconditioner_steps(tmp_path):
+    """phase_field_preconditioner_steps=5: the phase field's preconditioner is built on
+    the first step of every five, and on step 2, where alpha0 changes from BDF1's to
+    BDF2's; the run's result is unchanged (the Krylov solves converge to the same
+    tolerance)."""
+    every, fifth = tmp_path / "every", tmp_path / "fifth"
+    common = dict(QUIET, problem="Bubble2D", res=1 / 32, T=0.02, telemetry=True,
+                  velocity_pressure_solve="coupled")
+    for wd, steps in ((every, 1), (fifth, 5)):
+        wd.mkdir()
+    run_concurrently(lambda: run_twoasis(every, phase_field_preconditioner_steps=1, **common),
+                     lambda: run_twoasis(fifth, phase_field_preconditioner_steps=5, **common))
+    built = []
+    for wd in (every, fifth):
+        records = telemetry.read(str(wd / "results" / "data" / "1" / "Stats" / "telemetry.jsonl"))
+        built.append([r["tstep"] for r in records if r["solvers"]["phase_field"]["pc_setups"]])
+    assert built == [list(range(1, 11)), [1, 2, 6]]
+    assert_last_close(load_tdata(fifth), load_tdata(every),
+                      [("u0m", 1e-6), ("E_kin", 1e-6), ("E_int", 1e-6)],
+                      "phase field preconditioner steps")
+
+
+@pytest.mark.parametrize("chns_solve", ["split", "coupled"])
+def test_extrapolated_initial_guess(tmp_path, chns_solve):
+    """initial_guess="extrapolated" (the BDF extrapolation as the Krylov solves' first
+    guess): at the same tolerance the result is closer to a tight-tolerance run than with
+    the previous step's solution as the guess (the stopping test is relative to the
+    initial residual, so a closer guess ends closer)."""
+    common = dict(BUBBLE, solver="BDF", T=0.02, velocity_pressure_solve="coupled",
+                  chns_solve=chns_solve)
+    if chns_solve == "coupled":
+        common["chns_solver"] = '{"method": "iterative"}'
+    tol = '{"relative_tolerance": %g, "absolute_tolerance": 1e-20, "maximum_iterations": 2000}'
+    wds = {k: tmp_path / k for k in ("ref", "previous", "extrapolated")}
+    for wd in wds.values():
+        wd.mkdir()
+    run_concurrently(
+        lambda: run_twoasis(wds["ref"], krylov_solvers=tol % 1e-12, **common),
+        lambda: run_twoasis(wds["previous"], initial_guess="previous",
+                            krylov_solvers=tol % 1e-6, **common),
+        lambda: run_twoasis(wds["extrapolated"], initial_guess="extrapolated",
+                            krylov_solvers=tol % 1e-6, **common))
+    ref = checkpoint_fields(wds["ref"])
+    err = {}
+    for k in ("previous", "extrapolated"):
+        f = checkpoint_fields(wds[k])
+        err[k] = max(np.linalg.norm(f[n] - ref[n]) / np.linalg.norm(ref[n]) for n in f)
+    assert err["previous"] < 1e-4 and err["extrapolated"] < err["previous"] / 2, err
+
+
+def test_adaptive_dt_ramp():
+    """dt_adapt's step ratio: within [1/ramp, ramp] while the measure fast_cut_on names is
+    <= fast_cut, cut by up to shrink above it, unchanged within the deadband; the last two
+    steps before T equal. By default only e_phi cuts fast."""
+    from twoasis.solvers.TPfracStep.adapt import DEFAULTS, Controller
+    c = Controller.__new__(Controller)      # next_dt needs only the configuration
+    c.cfg = dict(DEFAULTS, dt_min=1e-6, fast_cut_on="e")
+    c.ceiling = None
+    ramp, T = DEFAULTS["ramp"], 1e9
+    assert c.next_dt(1.0, 1e-6, 0.0, T) == pytest.approx(ramp)          # small e: grow gently
+    assert c.next_dt(1.0, 1.5, 0.0, T) == pytest.approx(1 / ramp)       # e above 1: shrink gently
+    assert c.next_dt(1.0, 0.81, 0.0, T) == 1.0                          # f = 1.0: the deadband
+    assert c.next_dt(1.0, 3.0, 0.0, T) == pytest.approx(0.9 / 3 ** 0.5)  # e > fast_cut: cut
+    assert c.next_dt(1.0, 100.0, 0.0, T) == pytest.approx(DEFAULTS["shrink"])
+    assert c.next_dt(1.0, 1e-6, 0.0, 1.5) == pytest.approx(0.75)        # 1.5 left: two of 0.75
+    assert c.next_dt(0.75, 1e-6, 0.75, 1.5) == pytest.approx(0.75)
+    c.cfg["fast_cut_on"] = DEFAULTS["fast_cut_on"]                     # e_phi; e = e_u: gentle
+    c.last = dict(e=3.0, e_phi=0.5, e_u=3.0)
+    assert c.next_dt(1.0, 3.0, 0.0, T) == pytest.approx(1 / ramp)
+    c.last = dict(e=3.0, e_phi=3.0, e_u=0.5)                           # e = e_phi: cut
+    assert c.next_dt(1.0, 3.0, 0.0, T) == pytest.approx(0.9 / 3 ** 0.5)
+
+
+def test_adaptive_dt_limit():
+    """next_dt's `limit` (chns_solve="auto"'s cap) gets the proposed dt and the step the
+    error allows (`wanted`, safety e^(-1/2) dt), and acts before the last steps are evened
+    out."""
+    from twoasis.solvers.TPfracStep.adapt import DEFAULTS, Controller
+    c = Controller.__new__(Controller)
+    c.cfg = dict(DEFAULTS, dt_min=1e-6)
+    c.ceiling = None
+    c.last = dict(e=0.25, e_phi=0.25, e_u=0.25)
+    seen = []
+    assert c.next_dt(1.0, 0.25, 0.0, 1e9, limit=lambda n, w: seen.append((n, w)) or 0.5) == 0.5
+    assert seen == [(pytest.approx(DEFAULTS["ramp"]), pytest.approx(0.9 / 0.25 ** 0.5))]
+    assert c.wanted == pytest.approx(1.8)
+    # 1.2 left, capped at 1.0: two steps of 0.6, not 1.0 and 0.2
+    assert c.next_dt(1.0, 0.25, 0.0, 1.2, limit=lambda n, w: min(n, 1.0)) == pytest.approx(0.6)
+    c.next_dt(1.0, None, 0.0, 1e9)
+    assert c.wanted is None
+
+
+def test_chns_switch_rules():
+    """chns_solve="auto"'s choice of step (switch.py): split at the start when dt <=
+    switch_down dt_split_max, its dt capped there; to coupled only when the cap holds the
+    split step back and the step the error allows exceeds cost_ratio times the cap; back
+    to split at a dt <= switch_down times the cap; at most one switch in `hold` steps;
+    on_switch told each switch; the mode given (a restart's) kept."""
+    from twoasis.solvers.TPfracStep.switch import Switch
+
+    class Quick(Switch):
+        cost_ratio, hold = 2.0, 3
+
+    told = []
+    s = Quick(10.0, 1.0, on_switch=told.append)
+    assert s.mode == "split"
+    assert s.next_dt(5.0, 50.0) == 5.0 and s.mode == "split"      # below the cap: split
+    assert s.next_dt(11.0, 15.0) == 10.0 and s.mode == "split"    # capped; wanted < 2 cap
+    assert s.next_dt(11.0, 25.0) == 11.0 and s.mode == "coupled"  # capped, wanted > 2 cap
+    assert s.next_dt(5.0, 5.0) == 5.0 and s.mode == "coupled"     # held: 1 step after
+    assert s.next_dt(5.0) == 5.0 and s.mode == "coupled"          # 2
+    assert s.next_dt(9.5) == 9.5 and s.mode == "coupled"          # 9.5 > 0.9 cap: coupled
+    assert s.next_dt(5.0) == 5.0 and s.mode == "split"            # back
+    assert told == ["coupled", "split"] and s.switches == 2
+    assert Switch(10.0, 9.5).mode == "coupled"
+    assert Switch(10.0, 50.0, mode="split").mode == "split"
+    fixed = Switch(10.0, 1.0)
+    assert [fixed.next_dt(1.0) for _ in range(30)] == [1.0] * 30 and fixed.switches == 0
+    for bad in (None, 0.0):
+        with pytest.raises(ValueError):
+            Switch(bad, 1.0)
+    with pytest.raises(ValueError):
+        Switch(1.0, 1.0, mode="passes")
+
+
+def test_forget_phase_field_preconditioner():
+    """After forget_phase_field_preconditioner the phase field's preconditioner is
+    rebuilt on its next solve even at the alpha0 it was built with (a switch of
+    chns_solve="auto" changes the operator, not alpha0)."""
+    from twoasis.solvers.TPfracStep import (forget_phase_field_preconditioner as forget,
+                                           reuse_phase_field_preconditioner as reuse)
+
+    ksp = FakeKSP()
+    assert reuse(ksp, False, 1.0) is False
+    assert reuse(ksp, True, 1.0) is True
+    forget(ksp)
+    assert reuse(ksp, True, 1.0) is False
+    assert reuse(ksp, True, 1.0) is True
+
+
+def test_chns_solver_settings():
+    """chns_solver's settings are completed with monolithic.DEFAULTS; an unknown key or
+    value is refused."""
+    from twoasis.solvers.TPfracStep.monolithic import DEFAULTS, settings
+    assert settings({}) == DEFAULTS
+    assert settings(dict(method="direct", relative_tolerance=1e-10))["inner"] == "krylov"
+    with pytest.raises(ValueError, match="unknown keys"):
+        settings(dict(inner_tolerence=1e-2))
+    with pytest.raises(ValueError, match="method"):
+        settings(dict(method="lu"))
+
+
+def test_check_chns_options():
+    """The CH-NS step's options are refused when unknown or when they do not fit: the
+    coupled steps have no dual mesh, dt_split_max is chns_solve="auto"'s."""
+    from twoasis.solvers.TPfracStep import check_chns_options as check
+    check("split", "previous", None, 1)
+    check("auto", "extrapolated", 25.6, 0)
+    for args, message in ((("stabilised", "previous", None, 0), "chns_solve"),
+                          (("coupled", "previous", None, 1), "dual mesh"),
+                          (("coupled", "previous", 25.6, 0), "dt_split_max"),
+                          (("split", "last", None, 0), "initial_guess")):
+        with pytest.raises(ValueError, match=message):
+            check(*args)
+
+
+@pytest.mark.parametrize("method", ["direct", "iterative"])
+def test_chns_auto(tmp_path, method):
+    """chns_solve="auto" on the rising bubble, dt_adapt from a small first step: split
+    steps until the controller wants more than dt_split_max, then coupled ones, one
+    switch (telemetry's mode); the split steps' phase-field solves keep their tolerance
+    (an iterative coupled step has a phase-field solver of its own); the result stays
+    near the coupled run's. A restart from a checkpoint taken in coupled mode continues
+    coupled, and with dt held below the cap switches to split."""
+    adapt = '{"tol_x": 1e-3, "rtol_u": 1e-2, "atol_u": 1e-4, "dt_max": 0.004}'
+    cap = 0.0004    # the switch to coupled comes when the error allows 2.5 cap = 0.001
+    common = dict(QUIET, problem="Bubble2D", res=1 / 32, T=0.02, telemetry=True, dt=0.0002,
+                  dt_adapt=adapt, chns_solver='{"method": "%s"}' % method)
+    auto, coupled = tmp_path / "auto", tmp_path / "coupled"
+    for wd in (auto, coupled):
+        wd.mkdir()
+    run_concurrently(
+        lambda: run_twoasis(auto, chns_solve="auto", dt_split_max=cap,
+                            **dict(common, checkpoint=30)),
+        lambda: run_twoasis(coupled, chns_solve="coupled", **common))
+    stats = "results/data/1/Stats/telemetry.jsonl"
+    records = telemetry.read(str(auto / stats))
+    modes = [r["mode"] for r in records]
+    first = modes.index("coupled")
+    assert 5 < first < 30 and set(modes[:first]) == {"split"}, modes
+    assert set(modes[first:]) == {"coupled"}, modes
+    dts = np.array([r["dt"] for r in records])
+    assert dts[:first].max() <= cap * (1 + 1e-12) and dts[first:].max() > cap
+    assert all("chns" not in r["solvers"] or not r["solvers"]["chns"]["solves"]
+               for r in records[:first])
+    assert min(r["solvers"]["phase_field"]["its"] for r in records[5:first]) >= 5
+    td, td_ref = load_tdata(auto), load_tdata(coupled)
+    assert td[-1, COLS["t"]] == pytest.approx(td_ref[-1, COLS["t"]])
+    for name, rtol in (("u0m", 5e-2), ("E_int", 1e-3), ("y_cm", 1e-3)):
+        assert td[-1, COLS[name]] == pytest.approx(td_ref[-1, COLS[name]], rel=rtol), name
+    # the restart (from step 30, into the same run folder): coupled first (the
+    # checkpoint's step was), then split below the cap (dt_max merges into the
+    # checkpoint's dt_adapt)
+    run_twoasis(auto, restart_folder="results/data/1/Checkpoint", T=0.016, dt=0.0003,
+                dt_adapt='{"dt_max": 0.0003}', **{
+                    k: v for k, v in common.items() if k not in ("T", "dt", "dt_adapt")})
+    records = telemetry.read(str(auto / stats))
+    start = len(records) - 1 - [r["tstep"] for r in records][::-1].index(31)  # restart
+    modes = [r["mode"] for r in records[start:]]
+    assert modes[0] == "coupled" and modes[1:] and set(modes[1:]) == {"split"}, modes

@@ -38,7 +38,7 @@ Install them the same way:
 for repo in femtools partractools meshtools; do
     git clone https://github.com/gautelinga/$repo.git
 done
-git -C femtools checkout 696f85b
+git -C femtools checkout a849000
 git -C partractools checkout 2026.2.1
 git -C meshtools checkout 2026.2.0
 for repo in femtools partractools meshtools; do

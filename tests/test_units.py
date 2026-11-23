@@ -161,23 +161,23 @@ def test_phase_field_schur_solver_converges():
 
 
 def test_phase_field_schur_inner_solvers():
-    """H is solved with BoomerAMG in 2D and CG-Jacobi in 3D, and petsc_options
-    with the prefix H_ choose another."""
+    """H is solved by GMRES with BoomerAMG, to a relative 1e-2, in 2D and 3D, and
+    petsc_options with the prefix H_ choose another."""
     from twoasis.solvers.TPfracStep import phase_field_schur_solver
 
     def inner(sol):
         kH = sol.ksp().getPC().getPythonContext().kH
-        return kH.getType(), kH.getPC().getType()
+        return kH.getType(), kH.getPC().getType(), kH.getTolerances()[0]
 
-    assert inner(schur_solve(8)) == ("preonly", "hypre")
+    assert inner(schur_solve(8)) == ("gmres", "hypre", 1e-2)
     assert inner(schur_solve(8, petsc_options={"H_ksp_type": "cg", "H_pc_type": "jacobi"})) \
-        == ("cg", "jacobi")
+        == ("cg", "jacobi", 1e-2)
     mesh = dolfin.UnitCubeMesh(2, 2, 2)
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
     assert inner(phase_field_schur_solver(
         W, dict(solver_type="fgmres", preconditioner_type="schur"), {}, [])) \
-        == ("preonly", "hypre")
+        == ("gmres", "hypre", 1e-2)
 
 
 def test_phase_field_schur_solver_needs_a_flexible_method():
@@ -186,8 +186,10 @@ def test_phase_field_schur_solver_needs_a_flexible_method():
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
     with pytest.raises(ValueError, match="flexible"):
-        phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur",
-                                         petsc_options={"H_ksp_type": "cg"}), {}, [])
+        phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur"),
+                                 {}, [])
+    phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur",
+                                     petsc_options={"H_ksp_type": "preonly"}), {}, [])
 
 
 def test_krylov_solver_petsc_options_reach_the_blocks():

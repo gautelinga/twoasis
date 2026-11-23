@@ -152,6 +152,8 @@ KRYLOV_SETTINGS = ("krylov_solvers", "velocity_krylov_solver", "pressure_krylov_
                    "phase_field_krylov_solver", "velocity_update_solver")
 # The velocity update's own settings that are part of the scheme, not of its solver.
 VELOCITY_UPDATE_SCHEME = ("method", "low_memory_version")
+# Parameters a run stores itself, beside the defaults and the problem's.
+RUN_STATE = ("problem", "num_processes", "dt_1", "chns_mode")
 
 
 def checkpoint_parameters(restart_folder):
@@ -206,6 +208,17 @@ def post_import_problem(NS_parameters, mesh, commandline_kwargs,
                      "velocity's change; using max_error={} (or set it on the command "
                      "line)".format(saved["max_error"], NS_parameters.get("max_error")))
             saved = {k: v for k, v in saved.items() if k not in ("max_error", "inner_norm")}
+        # A stored parameter this code does not have was renamed or removed since the
+        # checkpoint was written: it changes nothing, and the run takes the default of
+        # whatever replaced it.
+        unknown = sorted(k for k in saved if k not in NS_parameters and k not in RUN_STATE)
+        if unknown:
+            info_red("Restart: the checkpoint's {} not a parameter of this code and changes "
+                     "nothing{}; set what is meant on the command line".format(
+                         ", ".join(unknown) + (" are" if len(unknown) > 1 else " is"),
+                         "".join(" ({}: did you mean {}?)".format(k, " or ".join(m))
+                                 for k in unknown
+                                 for m in [difflib.get_close_matches(k, NS_parameters)] if m)))
         NS_parameters.update({k: v for k, v in saved.items() if k not in KRYLOV_SETTINGS})
         update = saved.get("velocity_update_solver", {})
         NS_parameters["velocity_update_solver"] = dict(

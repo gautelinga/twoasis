@@ -50,6 +50,9 @@ class _Off:
     def start_step(self):
         pass
 
+    def note(self, **values):
+        pass
+
     def end_step(self, tstep, t, passes):
         pass
 
@@ -100,6 +103,7 @@ class Telemetry:
         self._pc_time_before = {}
         self._blocks = dict.fromkeys(BLOCKS, 0.0)
         self._inner = {}
+        self._notes = {}
         # appended to: a restart writes into its run's folder, after the steps before it
         self._file = open(path, "a") if comm.rank == 0 else None
         self._t0 = None
@@ -131,6 +135,10 @@ class Telemetry:
     def start_step(self):
         self._t0 = time.perf_counter()
 
+    def note(self, **values):
+        """Values (JSON-serialisable, the same on every rank) to write with this step."""
+        self._notes.update(values)
+
     def end_step(self, tstep, t, passes):
         wall = time.perf_counter() - self._t0
         roles = sorted(self._solvers)
@@ -157,6 +165,7 @@ class Telemetry:
                                           pc_seconds=times[nb + len(roles) + k])
             for r, s in sorted(self._inner.items()):
                 line["solvers"][r] = dict(s)
+            line.update(self._notes)
             self._file.write(json.dumps(line) + "\n")
             self._file.flush()
         for r, pc, pt in zip(roles, pcs, pc_times):
@@ -165,6 +174,7 @@ class Telemetry:
             self._solvers[r].update(solves=0, its=0, seconds=0.0)
         self._blocks = dict.fromkeys(self._blocks, 0.0)
         self._inner = {}
+        self._notes = {}
 
     def close(self):
         if self._file is not None:

@@ -10,24 +10,34 @@ import math
 
 import numpy as np
 from twoasis.backend import (
-    as_vector, assemble, Constant, DOLFIN_EPS_LARGE, dot, dx, Function, grad,
-    inner, Timer)
+    apply_bc, as_backend_type, as_vector, assemble, Constant, DOLFIN_EPS_LARGE,
+    dot, dx, Function, grad, inner, Timer)
 from twoasis.problems import info_blue
 from twoasis.common.utilities import axpy, mult, pointwise
 from twoasis.solvers.TPfracStep import __all__ as _solver_all
 from twoasis.solvers.TPfracStep import (
-    assemble_phase_field_system, assemble_pressure_matrix,
+    assemble_phase_field_system, assemble_pressure_matrix, forget_phase_field_preconditioner,
     incremental_pressure_assemble as pressure_assemble,
     incremental_pressure_solve as pressure_solve,
     incremental_velocity_update as velocity_update, krylov_get_solvers,
-    phase_field_system, PhaseFieldOnVelocitySpace, pressure_matrix, projection_solver,
+    phase_field_solve as split_phase_field_solve,
+    phase_field_solver, phase_field_system, PhaseFieldOnVelocitySpace, pressure_matrix,
+    projection_solver,
     krylov_solver_parameters, rebuild_step, rotational_fields,
     rotational_pressure_update as pressure_update, set_mixed_fields, velocity_matrices,
     convection_form)
 from twoasis.solvers.TPfracStep import coupled as _coupled
+from twoasis.solvers.TPfracStep import monolithic as _monolithic
+from twoasis.solvers.TPfracStep import switch as _switch
 
 # The functions the main script takes from a solver.
 __all__ = list(_solver_all)
+
+
+def coupled_step(chns, chns_switch=None):
+    """Whether this step is the coupled CH-NS step: chns is its solver (None when none
+    was built), chns_switch chns_solve="auto"'s choice of step (switch.py)."""
+    return chns is not None and (chns_switch is None or chns_switch.coupled)
 
 
 def has_previous_level(x_1, x_2, fields):
@@ -52,7 +62,9 @@ def setup(u_components, u, v, p, q, bcs, #dt,
           initial_step_1st_order, tstep, rotational,
           velocity_update_solver, assemble_matrix, homogenize, acc, gradp_avg,
           GradFunction, PhiGradRHS, DivRHS, TPsource, krylov_solvers, b,
-          velocity_pressure_solve, coupled_krylov_solver, skew_convection, **NS_namespace):
+          velocity_pressure_solve, coupled_krylov_solver, skew_convection, chns_solve,
+          chns_solver, VV, dt, NS_parameters, phase_field_krylov_solver, pf_sol=None,
+          dt_split_max=None, **NS_namespace):
     """Preassemble matrices."""
     sigma_bar = sigma * 3./(2*math.sqrt(2))
 
@@ -85,7 +97,11 @@ def setup(u_components, u, v, p, q, bcs, #dt,
     # term alpha[0] times phi's mass matrix to the constant part whenever alpha[0]
     # changes: on the first step, and when switching from BDF1 to BDF2.
     pf = phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
-                            epsilon, angles, ds)
+                            epsilon, angles, ds, advection=chns_solve != "coupled")
+
+    # phi* (and g*): the phase field extrapolated to the new time level, for the coupled
+    # step
+    phig_s = Function(VV['phig']) if chns_solve in ("coupled", "auto") else None
 
     # Allocate a dictionary of Functions for holding and computing pressure gradients
     gradp = {ui: GradFunction(p_, V, i=i, name='dpd' + ('x', 'y', 'z')[i],
@@ -95,7 +111,7 @@ def setup(u_components, u, v, p, q, bcs, #dt,
              for i, ui in enumerate(u_components)}
 
     phigradg = {ui: PhiGradRHS(q_['phig'], V, i)
-             for i, ui in enumerate(u_components)}
+                for i, ui in enumerate(u_components)}
 
     # Decide whether the first step of this run is first order (BDF1).
     #   True  -> BDF1 on the first step of a new run.
@@ -158,21 +174,60 @@ def setup(u_components, u, v, p, q, bcs, #dt,
             u_components, x_, b, A, Ai, gradp, divu, d['Ap'], d['p_null'], bcs, Q, mu_,
             homogenize, _coupled.solver_options(coupled_krylov_solver, len(u_components)),
             krylov_solver_parameters(name, coupled_krylov_solver, krylov_solvers))
-    d.update(coupled=coupled)
+    chns = chns_switch = None
+    if chns_solve in ("coupled", "auto"):
+        chns_pf_sol = pf_sol
+        if chns_solve == "auto" and _monolithic.settings(chns_solver)["method"] == "iterative":
+            # the coupled step's Schur block sets its solver's tolerances to the inner
+            # ones: the split step's phase-field solve keeps its own
+            chns_pf_sol = phase_field_solver(
+                VV['phig'], phase_field_krylov_solver, krylov_solvers,
+                bcs['phig'], name="chns_phase_field_krylov_solver")
+        chns = _monolithic.CoupledCHNS(
+            coupled, d['Apf'], V, VV['phig'], phig_s, normal, ds, bcs, chns_solver,
+            pf_sol=chns_pf_sol,
+            parameters=krylov_solver_parameters("chns_solver", chns_solver, krylov_solvers),
+            Q=Q)
+    if chns_solve == "auto":
+        solvers = [sol for sol in (pf_sol, chns_pf_sol if chns_pf_sol is not pf_sol else None)
+                   if sol is not None]
+
+        def on_switch(mode):
+            NS_parameters["chns_mode"] = mode
+            for sol in solvers:
+                forget_phase_field_preconditioner(sol.ksp())
+        chns_switch = _switch.Switch(dt_split_max, dt,
+                                     NS_parameters.get("chns_mode"), on_switch=on_switch)
+        NS_parameters["chns_mode"] = chns_switch.mode
+        info_blue("chns_solve='auto': starting with the {} step".format(chns_switch.mode))
+    d.update(coupled=coupled, chns=chns, chns_switch=chns_switch, phig_s=phig_s)
     return d
 
 
-def coupled_solve(coupled, b_tmp, rho_inv_, alpha, dp_, tstep, velocity_preconditioner_steps,
-                  pressure_preconditioner_steps, constant_poisson_coefficient,
-                  **NS_namespace):
+def coupled_solve(coupled, chns, b_tmp, b, x_, x_1, x_2, beta, u_components, rho_inv_, alpha,
+                  dp_, tstep, velocity_preconditioner_steps, pressure_preconditioner_steps,
+                  phase_field_preconditioner_steps, constant_poisson_coefficient,
+                  initial_guess, M, sigma_bar, epsilon, chns_switch=None, **NS_namespace):
     """Solve the step's velocity and pressure as one system (coupled.py), after
     assemble_first_inner_iter; the preconditioners are rebuilt as for the passes.
-    Returns the number of iterations."""
-    return coupled.solve(
-        b_tmp, rho_inv_, alpha, dp_, tstep,
+    With chns_solve="coupled" the phase field and chemical potential are in the
+    system too (monolithic.py), and with "auto" on the steps that are coupled. Returns
+    the number of iterations."""
+    reuse = dict(
         reuse_velocity=not rebuild_step(tstep, velocity_preconditioner_steps),
         reuse_pressure=((constant_poisson_coefficient and tstep > 1)
                         or not rebuild_step(tstep, pressure_preconditioner_steps)))
+    if initial_guess == "extrapolated":
+        # the BDF extrapolation of the velocity and pressure as the first guess (the
+        # coupled CH-NS step's phi and g are phi* and g* already: phase_field_solve)
+        extrapolate_guess(x_, x_1, x_2, beta, u_components + ['p'])
+    if coupled_step(chns, chns_switch):
+        return chns.solve(b_tmp, b['phig'], x_, b, rho_inv_, alpha, dp_, tstep,
+                          mobility=(M, sigma_bar, epsilon),
+                          reuse_phase_field=not rebuild_step(
+                              tstep, phase_field_preconditioner_steps),
+                          **reuse)
+    return coupled.solve(b_tmp, rho_inv_, alpha, dp_, tstep, **reuse)
 
 get_solvers = krylov_get_solvers
 
@@ -181,8 +236,8 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_compone
                               b_tmp, bg0, b0, x_, x_1, x_2, bcs, TPT, rho, mu,
                               rho_, mu_, rho_inv_, phi_V, q_, acc, gradp_avg, bgp0,
                               Fv, matched_mu, matched_properties, phigradg,
-                              Ap, a_p, p_null, constant_poisson_coefficient,
-                              **NS_namespace):
+                              Ap, a_p, p_null, constant_poisson_coefficient, chns,
+                              chns_switch=None, **NS_namespace):
     """Called on the first inner iteration of each timestep.
 
     Assembles everything that stays fixed during the inner iterations: the
@@ -227,9 +282,11 @@ def assemble_first_inner_iter(A, Ai, a_conv, a_conv_visc, dt, Md, scalar_compone
             axpy(b_tmp[ui], 1., pointwise(TPT.vector(), rho_inv_.vector()))
 
         # Capillary force. The phase field is solved before the inner
-        # iterations, so this term is fixed within the timestep.
-        phigradg[ui].assemble_rhs()
-        axpy(b_tmp[ui], -1., pointwise(phigradg[ui].rhs, rho_inv_.vector()))
+        # iterations, so this term is fixed within the timestep; in the coupled
+        # CH-NS step it is in the system's matrix instead.
+        if not coupled_step(chns, chns_switch):
+            phigradg[ui].assemble_rhs()
+            axpy(b_tmp[ui], -1., pointwise(phigradg[ui].rhs, rho_inv_.vector()))
 
     # assemble semi-implicit convection, diffusion etc. for lhs
     if matched_properties:
@@ -277,11 +334,41 @@ def scalar_solve(ci, scalar_components, Ta, b, x_, bcs, c_sol,
     """Solve the scalar equations: none, scalars are not supported."""
     pass
 
+def extrapolate_guess(x_, x_1, x_2, beta, keys):
+    """x_[k] = beta0 x_1[k] + beta1 x_2[k] for each k in keys: the first guess of a
+    step's solve from the BDF extrapolation (initial_guess="extrapolated")."""
+    for k in keys:
+        x_[k].zero()
+        x_[k].axpy(float(beta[0]), x_1[k])
+        x_[k].axpy(float(beta[1]), x_2[k])
+
+
+def phase_field_solve(chns, x_, x_1, x_2, beta, bcs, Apf, Apf_alpha, b, phig_s, M,
+                      initial_guess, chns_switch=None, **NS_namespace):
+    """Solve the (phi, g) system. In the coupled CH-NS step it is solved with the
+    velocity and pressure instead: here x_ takes phi* and g* (phase_field_assemble's),
+    which set the density, the viscosity and the physical pressure's boundary values
+    for the step, and the phase field's Dirichlet conditions are applied to its system."""
+    if not coupled_step(chns, chns_switch):
+        if initial_guess == "extrapolated":
+            extrapolate_guess(x_, x_1, x_2, beta, ['phig'])
+        return split_phase_field_solve(x_=x_, bcs=bcs, Apf=Apf, Apf_alpha=Apf_alpha, b=b, M=M,
+                                       **NS_namespace)
+    x = x_['phig']
+    x.zero()
+    x.axpy(1.0, phig_s.vector())
+    as_backend_type(x).update_ghost_values()
+    [apply_bc(bc, Apf, b['phig']) for bc in bcs['phig']]
+
+
 def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_alpha,
                          b, x_1, x_2, u_adv, u_components, alpha,
-                         beta, bdf_order, bdf1_tstep, fpf, bpf, NS_parameters,
-                         **NS_namespace):
-    """Assemble phase field equation."""
+                         beta, bdf_order, bdf1_tstep, fpf, bpf, NS_parameters, phig_s,
+                         chns_switch=None, a_pf_forms=None, **NS_namespace):
+    """Assemble phase field equation (with chns_solve="auto" the form of the step's
+    mode: with the advection for a split step, without for a coupled one)."""
+    if chns_switch is not None:
+        a_pf_full = a_pf_forms[chns_switch.mode]
     # BDF2 needs the solution at t - 2*dt. On the step where setup found none
     # (bdf1_tstep), take a BDF1 step instead, since BDF2 with a wrong t - 2*dt
     # level does not conserve mass.
@@ -313,6 +400,14 @@ def phase_field_assemble(t, tstep, dt, Apf, Mpf, Lpft, a_pf_full, Apf_alpha,
         u_adv[i].vector().zero()
         u_adv[i].vector().axpy(beta[0], x_1[ui])
         u_adv[i].vector().axpy(beta[1], x_2[ui])
+
+    # phi* and g*, extrapolated as the convecting velocity
+    if phig_s is not None:
+        x = phig_s.vector()
+        x.zero()
+        x.axpy(beta[0], x_1['phig'])
+        x.axpy(beta[1], x_2['phig'])
+        as_backend_type(x).update_ghost_values()
 
     t1 = Timer("Phase field assemble")
     assemble_phase_field_system(alpha[0], Apf, a_pf_full, Apf_alpha, Mpf,

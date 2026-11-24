@@ -8,9 +8,10 @@ __copyright__ = ("Copyright (C) 2022 " + __author__ + "; based on Oasis, "
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
-from twoasis.backend import DirichletBC, Expression, extent, hmax, SubDomain
+from twoasis.backend import (
+    assemble, cos, DirichletBC, dx, Expression, extent, hmax, sin, SpatialCoordinate, SubDomain)
 
-from twoasis.common.utilities import set_subfunction
+from twoasis.common.utilities import compute_ind, set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
     load_mesh, PeriodicBox, standard_stats, start_timestamps, write_tdata, write_timestamp)
@@ -104,14 +105,33 @@ def pre_solve_hook(**NS_namespace):
         ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt"], **NS_namespace)
 
 
+def plug_position(q_, mesh, ds, z0, z1, R):
+    """Where the bubble (phi = -1) is along the tube: z_c, its centroid, and z_w, its centroid
+    on the wall (the mean of its two contact lines' positions when it spans the tube), each
+    the circular mean of z over the period weighted by its indicator, so that a bubble across
+    the periodic ends keeps one position; and L_w, its wetted length on the wall (its wall
+    area over 2 pi R). All processes must call it (it assembles)."""
+    ind_ = compute_ind(q_, -1)
+    k = 2 * np.pi / (z1 - z0)
+    z = SpatialCoordinate(mesh)[2]
+
+    def circular_mean(measure):
+        c, s = (assemble(ind_ * f(k * (z - z0)) * measure) for f in (cos, sin))
+        return z0 + (np.arctan2(s, c) % (2 * np.pi)) / k
+    return [circular_mean(dx(domain=mesh)), circular_mean(ds(1)),
+            assemble(ind_ * ds(1)) / (2 * np.pi * R)]
+
+
 def temporal_hook(q_, tstep, t, u_, p_, phi_, rho_, sigma, epsilon, volume, statsfolder,
-                  timestampsfolder, stat_interval, timestamps_interval, uv, mesh, **NS_namespace):
-    """Write to Stats/tdata.dat: tstep, t, u0m, u1m, u2m, phim and the energies per
-    volume (kinetic, interface gradient and double-well parts); and u, p and phi
-    to Timestamps/ every timestamps_interval steps."""
+                  timestampsfolder, stat_interval, timestamps_interval, uv, mesh, ds, z0, z1, R,
+                  **NS_namespace):
+    """Write to Stats/tdata.dat: tstep, t, u0m, u1m, u2m, phim, the energies per volume
+    (kinetic, interface gradient and double-well parts) and the bubble's position (z_c, z_w,
+    L_w: plug_position); and u, p and phi to Timestamps/ every timestamps_interval steps."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         write_tdata(statsfolder, tstep, t,
-                    standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh))
+                    standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
+                    + plug_position(q_, mesh, ds, z0, z1, R))
     if tstep % timestamps_interval == 0:
         write_timestamp(tstep, t, mesh, uv, q_, p_, timestampsfolder)

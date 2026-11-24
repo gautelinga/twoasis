@@ -94,6 +94,7 @@ INNER_ITERATIONS = 30           # the iterative method's inner solves: iteration
 DEFAULTS = dict(
     method="iterative",
     inner_tolerance=1e-1,       # the iterative method's inner solves: relative tolerance
+    inner_iterations=INNER_ITERATIONS,   # ... and iteration limit (an option for the flow study)
     inner="krylov",
     petsc_options={},
 )
@@ -313,7 +314,7 @@ class CoupledCHNS:
         pc.setType("python")
         pc.setPythonContext(self.pc)
 
-        tol, maxit = cfg["inner_tolerance"], INNER_ITERATIONS
+        tol, maxit = cfg["inner_tolerance"], cfg["inner_iterations"]
         inner = {k[3:]: v for k, v in cfg["petsc_options"].items() if k.startswith("ns_")}
         # K_NS: FGMRES with the velocity-pressure preconditioner
         self.kns = PETSc.KSP().create(comm)

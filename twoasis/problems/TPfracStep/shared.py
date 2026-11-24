@@ -189,10 +189,11 @@ class DivergenceStats:
 
 def write_tdata(statsfolder, tstep, t, entries):
     """Append the line "tstep t entries..." to statsfolder/tdata.dat (on rank 0),
-    with 8 decimals for t and each entry (append_row)."""
+    t with 8 decimals and each entry with 11 significant digits, so that small values
+    (a velocity near rest) keep their digits (append_row)."""
     if MPI.rank(MPI.comm_world) == 0:
         append_row(path.join(statsfolder, "tdata.dat"), tstep,
-                   ("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
+                   ("{:d} {:.8f} " + " ".join("{:.10e}" for _ in entries) + "\n").format(
                        tstep, t, *entries))
 
 

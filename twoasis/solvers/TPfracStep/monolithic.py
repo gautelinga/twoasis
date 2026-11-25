@@ -34,6 +34,11 @@ linear coupled scheme of Garcke, Hinze & Kahle (Appl. Numer. Math. 99, 2016) res
 this. With variable density W weights the force by 1/rho at the velocity's nodes and the
 exchange is no longer exact.
 
+On the dual mesh (phase_refine > 0, twoasis/common/dual.py) phi and g live on a uniform
+refinement of the flow mesh, and C, T and B join the two meshes: CouplingBlocks assembles
+them on the fine mesh and takes them to the flow mesh exactly, so the exchange above
+holds there too.
+
 The system is solved by chns_solver's method:
 
 - "direct": the nest of the blocks is converted to one AIJ matrix each step and
@@ -70,9 +75,11 @@ The system is solved by chns_solver's method:
   and "lu_pf" only the flow's or only the phase field's.
 """
 
+import numpy as np
+
 from twoasis.backend import (
-    as_backend_type, assemble, dx, fixed_dofs, ksp, split, TestFunction, TestFunctions,
-    TrialFunction, TrialFunctions)
+    as_backend_type, assemble, dx, fixed_dofs, Function, ksp, split, TestFunction,
+    TestFunctions, TrialFunction, TrialFunctions)
 from twoasis.common import telemetry
 from twoasis.problems import info_red
 from twoasis.solvers.TPfracStep import INITIAL_RESIDUAL, prepare_phase_field_preconditioner
@@ -232,6 +239,98 @@ class CHNSPreconditioner:
 
 
 
+class CouplingBlocks:
+    """The blocks that couple the flow and the phase field (see the module docstring): C_i,
+    T_i and, when `physical_rows` (Q's dofs of the physical-pressure conditions, global
+    indices) is not None, B, for phi* the phi of `phig_s` (a Function on W); C, T and B are
+    their Mats, the same objects for the whole run.
+
+    On one mesh they are the forms' matrices. On the dual mesh (twoasis/common/dual.py),
+    where W lives on a refinement of V's mesh, C_i and T_i are assembled with the velocity
+    in Vf, the Lagrange space of V's degree on the fine mesh, and taken to V by the nested
+    prolongation P: C_i = P^T C_f,i and T_i = T_f,i P. That is exact, V being a subspace of
+    Vf, so C^T = -T holds where it holds on one mesh. B's rows are p + phi* g at the flow
+    mesh's boundary vertices; Q's nodes are fine nodes too, so B = diag(phi*) R_g there,
+    R_g the injection of g onto Q's nodes, and zero on the other rows."""
+
+    def __init__(self, V, W, Q, phig_s, normal, ds, d, physical_rows, fixed_pf):
+        from petsc4py import PETSc
+        from twoasis.common import dual
+        self.dual, self.phig_s, self.fixed_pf = dual.current(), phig_s, fixed_pf
+        Vf = self.dual.fine_space(V) if self.dual is not None else V
+        phi_s = split(phig_s)[0]
+        _, g = TrialFunctions(W)
+        xi, _ = TestFunctions(W)
+        u, v = TrialFunction(Vf), TestFunction(Vf)
+        self.c_forms = [phi_s * g.dx(i) * v * dx for i in range(d)]
+        self.t_forms = [-phi_s * u * xi.dx(i) * dx + phi_s * u * normal[i] * xi * ds
+                        for i in range(d)]
+        self.Cf = [assemble(f) for f in self.c_forms]
+        self.Tf = [assemble(f) for f in self.t_forms]
+        if self.dual is None:
+            self.C = [_mat(M) for M in self.Cf]
+            self.T = [_mat(M) for M in self.Tf]
+        else:
+            self.P = self.dual.prolongation(V, Vf)
+            self.C = [self.P.transposeMatMult(_mat(M)) for M in self.Cf]
+            self.T = [_mat(M).matMult(self.P) for M in self.Tf]
+
+        self.B = None
+        if physical_rows is None:
+            return
+        rows = np.asarray(physical_rows, dtype=PETSc.IntType)
+        if self.dual is None:
+            # the boundary form's rows over the lumped boundary mass (vertex quadrature)
+            q = TestFunction(Q)
+            dsv = ds(metadata={"quadrature_degree": 1, "quadrature_rule": "vertex"})
+            w = _vec(assemble(q * dsv))
+            self.b_form = phi_s * g * q * dsv
+            self.Bm = assemble(self.b_form)
+            self.B = _mat(self.Bm)
+            values = 1.0 / w.getValues(rows)
+        else:
+            # phi* at the rows' nodes (B_scale times phi* injected) times R_g's g there; R_g's
+            # other rows stay in B's pattern, scaled to zero
+            self.R_g = self.dual.injection(W, 1, Q)
+            self.B = self.R_g.duplicate(copy=True)
+            self.phi_Q = Function(Q)
+            w = self.R_g.createVecLeft()
+            self.s = w.duplicate()
+            values = np.ones(len(rows))
+        self.B_scale = w.duplicate()
+        self.B_scale.set(0.0)
+        self.B_scale.setValues(rows, values)
+        self.B_scale.assemble()
+
+    def assemble(self, w):
+        """The blocks for this step's phi*, C_i's rows scaled by w[i] (1/rho, zero on
+        the velocity's Dirichlet rows), T_i's rows of the phase field's Dirichlet dofs
+        zero."""
+        from petsc4py import PETSc
+        for f, M in zip(self.c_forms, self.Cf):
+            assemble(f, tensor=M)
+        for f, M in zip(self.t_forms, self.Tf):
+            assemble(f, tensor=M)
+            _mat(M).zeroRows(self.fixed_pf, diag=0.0)
+        if self.dual is not None:
+            for M, C in zip(self.Cf, self.C):
+                self.P.transposeMatMult(_mat(M), result=C)
+            for M, T in zip(self.Tf, self.T):
+                _mat(M).matMult(self.P, result=T)
+        for C, wi in zip(self.C, w):
+            C.diagonalScale(L=wi)
+        if self.B is None:
+            return
+        if self.dual is None:
+            assemble(self.b_form, tensor=self.Bm)
+            self.B.diagonalScale(L=self.B_scale)
+        else:
+            self.dual.inject(self.phig_s, 0, self.phi_Q)
+            self.s.pointwiseMult(_vec(self.phi_Q.vector()), self.B_scale)
+            self.R_g.copy(self.B, PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
+            self.B.diagonalScale(L=self.s)
+
+
 class CoupledCHNS:
     """The system above and its solver, built once from the coupled velocity-pressure
     system `vp` (a CoupledVelocityPressure), the (phi, g) matrix Apf and the space
@@ -246,35 +345,14 @@ class CoupledCHNS:
         cfg = settings(cfg)
         self.vp, self.Apf, self.bcs = vp, Apf, bcs
         comm = PETSc.COMM_WORLD
-        phi_s = split(phig_s)[0]
-        _, g = TrialFunctions(W)
-        xi, _ = TestFunctions(W)
-        u, v = TrialFunction(V), TestFunction(V)
+        v = TestFunction(V)
         d = len(vp.uc)
-        self.c_forms = [phi_s * g.dx(i) * v * dx for i in range(d)]
-        self.t_forms = [-phi_s * u * xi.dx(i) * dx + phi_s * u * normal[i] * xi * ds
-                        for i in range(d)]
-        self.Cm = [assemble(f) for f in self.c_forms]
-        self.Tm = [assemble(f) for f in self.t_forms]
-        self.WC = [_mat(C) for C in self.Cm]
-        self.fixed_pf = fixed_dofs(W, bcs['phig']).astype(PETSc.IntType)
-
-        # The physical pressure's boundary rows: p + phi* g = P (B, see the docstring)
+        # The coupling blocks; the physical pressure's boundary rows p + phi* g = P in B
         self.physical = [bc for bc in bcs['p'] if hasattr(bc, 'update_physical')]
-        self.Bpg = None
-        if self.physical:
-            q = TestFunction(Q)
-            dsv = ds(metadata={"quadrature_degree": 1, "quadrature_rule": "vertex"})
-            self.b_form = phi_s * g * q * dsv
-            self.Bm = assemble(self.b_form)
-            w = _vec(assemble(q * dsv))
-            rows = fixed_dofs(Q, self.physical).astype(PETSc.IntType)
-            self.s_pg = w.duplicate()
-            self.s_pg.set(0.0)
-            self.s_pg.setValues(rows, 1.0 / w.getValues(rows))
-            self.s_pg.assemble()
-            self.Bpg = _mat(self.Bm)
-            self.Bpg.diagonalScale(L=self.s_pg)
+        rows = fixed_dofs(Q, self.physical) if self.physical else None
+        self.blocks = CouplingBlocks(V, W, Q, phig_s, normal, ds, d, rows,
+                                     fixed_dofs(W, bcs['phig']).astype(PETSc.IntType))
+        self.WC, self.Bpg = self.blocks.C, self.blocks.B
 
         A = vp.Amats
         rows = []
@@ -282,7 +360,7 @@ class CoupledCHNS:
             rows.append([A[i] if j == i else None for j in range(d)]
                         + [vp.WG[i], self.WC[i]])
         rows.append(vp.D + [vp.C, self.Bpg])
-        rows.append([_mat(T) for T in self.Tm] + [None, _mat(Apf)])
+        rows.append(self.blocks.T + [None, _mat(Apf)])
         self.K = PETSc.Mat().createNest(rows, comm=comm)
         self.K.setUp()
         self.isets = self.K.getNestISs()[0]
@@ -369,16 +447,9 @@ class CoupledCHNS:
             vp.scale_gradients(rho_inv_)
         else:
             vp.prepare(rho_inv_, alpha, reuse_velocity, reuse_pressure)
-        if self.Bpg is not None:
-            assemble(self.b_form, tensor=self.Bm)
-            self.Bpg.diagonalScale(L=self.s_pg)
-            for bc in self.physical:
-                bc.boundary_value.vector()[:] = bc.physical
-        for i in range(len(uc)):
-            assemble(self.c_forms[i], tensor=self.Cm[i])
-            self.WC[i].diagonalScale(L=vp.w[i])  # 1/rho, zero on Dirichlet rows
-            assemble(self.t_forms[i], tensor=self.Tm[i])
-            _mat(self.Tm[i]).zeroRows(self.fixed_pf, diag=0.0)
+        self.blocks.assemble(vp.w)
+        for bc in self.physical:
+            bc.boundary_value.vector()[:] = bc.physical
 
         if self.method == "direct":
             # petsc4py's convert() without `out` converts in place: the nest would be gone

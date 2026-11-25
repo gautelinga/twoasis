@@ -84,7 +84,8 @@ NS_parameters.update(
     # step by dt (twoasis/solvers/TPfracStep/switch.py), the split step's dt capped at
     # dt_split_max (required), its largest stable dt. "coupled" and "auto" solve the
     # velocity and pressure together (velocity_pressure_solve="coupled") and need
-    # solver="BDF" and no dual mesh.
+    # solver="BDF"; with phase_refine > 0 (the dual mesh) their blocks that join the
+    # meshes are monolithic.CouplingBlocks'.
     chns_solve="split",
     dt_split_max=None,
     # Adaptive time step (solvers/TPfracStep/adapt.py): None (dt fixed) or a dict of

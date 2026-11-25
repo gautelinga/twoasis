@@ -30,14 +30,11 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "phase_field_schur_solver", "phase_field_krylov_solve", "coupled_solve"]
 
 
-def check_chns_options(chns_solve, initial_guess, dt_split_max, phase_refine):
+def check_chns_options(chns_solve, initial_guess, dt_split_max):
     """ValueError for a CH-NS step option (problems/TPfracStep/__init__.py) that is
     unknown or does not fit the others."""
     if chns_solve not in ("split", "coupled", "auto"):
         raise ValueError("chns_solve={!r}: 'split', 'coupled' or 'auto'".format(chns_solve))
-    if chns_solve != "split" and phase_refine:
-        raise ValueError("chns_solve={!r} has no dual mesh: phase_refine=0".format(
-            chns_solve))
     if dt_split_max is not None and chns_solve != "auto":
         raise ValueError("dt_split_max is for chns_solve='auto' (here {!r})".format(
             chns_solve))

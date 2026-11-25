@@ -109,8 +109,7 @@ if rotational and not hasattr(solver, "pressure_update"):
         raise ValueError("rotational=True: the {} solver has no rotational pressure "
                          "update".format(solver.__name__.split(".")[-1]))
     rotational = False
-twoasis.solvers.TPfracStep.check_chns_options(chns_solve, initial_guess, dt_split_max,
-                                               phase_refine)
+twoasis.solvers.TPfracStep.check_chns_options(chns_solve, initial_guess, dt_split_max)
 if chns_solve != "split":
     velocity_pressure_solve = "coupled"   # part of the coupled CH-NS step
 if velocity_pressure_solve not in ("passes", "coupled"):

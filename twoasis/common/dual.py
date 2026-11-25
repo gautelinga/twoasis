@@ -102,13 +102,19 @@ class DualMesh:
 
     # --- transfers -------------------------------------------------------------------
 
-    def _prolongation(self, Vc, Vf):
+    def prolongation(self, Vc, Vf):
+        """The PETSc matrix that takes a Function of Vc (on the flow mesh) to the same
+        Function in Vf (a Lagrange space on the fine mesh of at least Vc's degree): exact,
+        the spaces being nested. Made once."""
         key = ("P", _space_key(Vc), _space_key(Vf))
         if key not in self._mats:
             self._mats[key] = (self.nest.prolongation(Vc, Vf), Vc, Vf)
         return self._mats[key][0]
 
-    def _injection(self, Wf, component, Vc):
+    def injection(self, Wf, component, Vc):
+        """The PETSc matrix that takes component `component` of a Function of Wf (on the
+        fine mesh) to Vc (on the flow mesh): its values at Vc's nodes, which are fine nodes
+        too. Made once."""
         key = ("R", _space_key(Wf), component, _space_key(Vc))
         if key not in self._mats:
             self._mats[key] = (self.nest.injection(Wf, Vc,
@@ -117,7 +123,7 @@ class DualMesh:
 
     def prolong(self, coarse, fine):
         """`fine` (a Function on the fine mesh) = `coarse` (one on the flow mesh) there."""
-        P = self._prolongation(function_space(coarse), function_space(fine))
+        P = self.prolongation(function_space(coarse), function_space(fine))
         P.mult(_petsc(coarse.vector()), _petsc(fine.vector()))
         _updated(fine.vector())
         return fine
@@ -133,14 +139,14 @@ class DualMesh:
     def inject(self, phig, component, out):
         """`out` (a Function on the flow mesh) = component `component` of `phig` (on the
         fine mesh) at out's nodes."""
-        R = self._injection(function_space(phig), component, function_space(out))
+        R = self.injection(function_space(phig), component, function_space(out))
         R.mult(_petsc(phig.vector()), _petsc(out.vector()))
         _updated(out.vector())
         return out
 
     def values_at(self, phig, component, V):
         """This rank's values of component `component` of `phig` at V's owned dofs."""
-        R = self._injection(function_space(phig), component, V)
+        R = self.injection(function_space(phig), component, V)
         y = self._vecs.get(id(R))
         if y is None:
             y = self._vecs[id(R)] = R.createVecLeft()
@@ -220,7 +226,7 @@ class DualMesh:
     def restrict_rhs(self, b_fine, Vf, Vc, out):
         """`out` (a vector over Vc's dofs) = P^T b_fine: a right-hand side assembled
         against Vf's test functions, against Vc's."""
-        P = self._prolongation(Vc, Vf)
+        P = self.prolongation(Vc, Vf)
         P.multTranspose(_petsc(b_fine), _petsc(out))
         return out
 

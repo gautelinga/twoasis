@@ -338,18 +338,40 @@ def test_adaptive_dt(tmp_path):
         assert td[-1, COLS[name]] == pytest.approx(td_ref[-1, COLS[name]], rel=rtol), name
 
 
-def test_coupled_chns_implicit_physical_pressure(tmp_path, lattice_meshes):
+@pytest.mark.parametrize("phase_refine", [0, 1])
+def test_coupled_chns_implicit_physical_pressure(tmp_path, lattice_meshes, phase_refine):
     """The coupled CH-NS step (chns_solve="coupled") on PoreThroat2D's open ends: with
     the physical pressure's boundary rows implicit in g a meniscus released at dt 102.4,
-    far past the meniscus's own period, settles to rest."""
+    far past the meniscus's own period, settles to rest within 16 steps; also with the
+    phase field on the dual mesh (the rows then take g at the flow mesh's boundary
+    nodes)."""
+    rows = _pore_throat_rows(tmp_path, lattice_meshes, phase_refine, "free")
+    assert rows[-1, 5] < 1e-3 * rows[0, 5]
+
+
+def test_coupled_chns_dual_held_ends(tmp_path, lattice_meshes):
+    """The coupled CH-NS step on the dual mesh with PoreThroat2D's phase held at its ends
+    (Dirichlet rows of the phase field in the blocks that join the meshes): the meniscus
+    reaches the steady speed it reaches on one mesh."""
+    one, dual = (_pore_throat_rows(tmp_path / str(k), lattice_meshes, k, "held")
+                 for k in (0, 1))
+    assert dual[-1, 5] == pytest.approx(one[-1, 5], rel=3e-2), (dual[-1, 5], one[-1, 5])
+    assert abs(dual[-1, 5] - dual[-2, 5]) < 1e-2 * dual[-1, 5]
+
+
+def _pore_throat_rows(wd, lattice_meshes, phase_refine, end_phase):
+    """PoreThroat2D's throat.dat after 16 coupled steps of dt 102.4 from a released
+    meniscus (column 5: its speed)."""
     params = dict(QUIET, problem="PoreThroat2D", Lx=4.0, res=PORE["res"], epsilon=0.1,
                   M=1e-3, rho=[1, 1], dp_start=0.8, dp=0.8, chns_solve="coupled",
-                  dt=102.4, T=12 * 102.4, stat_interval=1)
-    shutil.copytree(str(lattice_meshes), str(tmp_path / "meshes"))
-    run_twoasis(tmp_path, **params)
-    rows = np.loadtxt(str(tmp_path / "results" / "data" / "1" / "Stats" / "throat.dat"))
-    assert len(rows) >= 12 and np.isfinite(rows[:, 5]).all()
-    assert rows[-1, 5] < 1e-3 * rows[0, 5]
+                  dt=102.4, T=16 * 102.4, stat_interval=1, phase_refine=phase_refine,
+                  end_phase=end_phase)
+    wd.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(str(lattice_meshes), str(wd / "meshes"))
+    run_twoasis(wd, **params)
+    rows = np.loadtxt(str(wd / "results" / "data" / "1" / "Stats" / "throat.dat"))
+    assert len(rows) >= 16 and np.isfinite(rows[:, 5]).all()
+    return rows
 
 
 def test_coupled_chns_flow_solve(tmp_path, lattice_meshes):
@@ -577,15 +599,14 @@ def test_chns_solver_settings():
 
 
 def test_check_chns_options():
-    """The CH-NS step's options are refused when unknown or when they do not fit: the
-    coupled steps have no dual mesh, dt_split_max is chns_solve="auto"'s."""
+    """The CH-NS step's options are refused when unknown or when they do not fit:
+    dt_split_max is chns_solve="auto"'s."""
     from twoasis.solvers.TPfracStep import check_chns_options as check
-    check("split", "previous", None, 1)
-    check("auto", "extrapolated", 25.6, 0)
-    for args, message in ((("stabilised", "previous", None, 0), "chns_solve"),
-                          (("coupled", "previous", None, 1), "dual mesh"),
-                          (("coupled", "previous", 25.6, 0), "dt_split_max"),
-                          (("split", "last", None, 0), "initial_guess")):
+    check("split", "previous", None)
+    check("auto", "extrapolated", 25.6)
+    for args, message in ((("stabilised", "previous", None), "chns_solve"),
+                          (("coupled", "previous", 25.6), "dt_split_max"),
+                          (("split", "last", None), "initial_guess")):
         with pytest.raises(ValueError, match=message):
             check(*args)
 

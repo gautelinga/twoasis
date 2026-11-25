@@ -1,6 +1,7 @@
 """A plug of one fluid spanning a straight channel, periodic along x, driven by a body force
-F0 along it: Tube3D's case in 2D, for how the discretisation moves the plug (walls at
-y = +-width/2 are straight lines, so no facets). mesh_kind "unstructured" reads a gmsh mesh
+F0 along it: Tube3D's case in 2D, for how the discretisation moves the plug (its walls,
+y = +-width/2, are straight: the mesh holds them exactly, where Tube3D's circle is faceted).
+mesh_kind "unstructured" reads a gmsh mesh
 (meshes/channel_mesh.py), "structured" builds a rectangle mesh that repeats exactly every cell
 along x. The plug's caps are circular arcs of radius Rb, their apexes H from its centre (Rb = 1
 with width 1: the static menisci of a 60 degree contact angle; a large Rb: flat ones)."""
@@ -12,7 +13,7 @@ __license__ = "GNU Lesser GPL version 3 or any later version"
 
 import numpy as np
 from twoasis.backend import (
-    assemble, cos, DirichletBC, dx, Expression, extent, hmax, sin, SpatialCoordinate, SubDomain)
+    assemble, cos, DirichletBC, dx, Expression, extent, sin, SpatialCoordinate, SubDomain)
 
 from twoasis.common.utilities import compute_ind, set_subfunction
 from twoasis.problems import info_red
@@ -32,7 +33,9 @@ class Walls(SubDomain):
 
 
 def meshfile_name(L, width, res):
-    return "meshes/channel_L{}_W{}_res{}.h5".format(L, width, res)
+    """The mesh file meshes/channel_mesh.py writes for these sizes (as floats, so L=4 and
+    L=4.0 name the same file)."""
+    return "meshes/channel_L{}_W{}_res{}.h5".format(float(L), float(width), float(res))
 
 
 def mesh(L, width, res, mesh_kind, **params):
@@ -69,7 +72,7 @@ def constrained_domain(mesh, **params):
 def mark_subdomains(subdomains, mesh, width, **NS_namespace):
     """Mark the walls 1 and add the channel's ends x0, x1 to the namespace."""
     lo, hi = extent(mesh)
-    Walls(width, hmax(mesh)**2 / width + 1e-10).mark(subdomains, 1)
+    Walls(width, 1e-10 * width).mark(subdomains, 1)     # straight: nodes lie on them
     return dict(x0=lo[0], x1=hi[0])
 
 
@@ -94,15 +97,20 @@ def initialize(q_, q_1, q_2, x_1, x_2, bcs, epsilon, VV, x0, x1, H, Rb, plug_shi
 
 
 def plug_position(q_, mesh, ds, x0, x1):
-    """Where the plug (phi = -1) is: x_c, its centroid, and x_w, its centroid on the walls,
-    each the circular mean of x over the period weighted by its indicator; and L_w, its wetted
-    length on each wall (its wall length over the two walls)."""
+    """Where the plug (phi = -1) is: x_c in the bulk and x_w on the walls, each the circular
+    mean of x over the period weighted by its indicator (for a plug short against the period,
+    its centroid); and L_w, its wetted length on each wall (its wall length over the two
+    walls). A position is nan where the plug is absent (x_w: off the walls) or spread evenly
+    over the period. All processes must call it (it assembles)."""
     ind_ = compute_ind(q_, -1)
     k = 2 * np.pi / (x1 - x0)
     x = SpatialCoordinate(mesh)[0]
 
     def circular_mean(measure):
+        w = assemble(ind_ * measure)
         c, s = (assemble(ind_ * f(k * (x - x0)) * measure) for f in (cos, sin))
+        if not w > 0 or np.hypot(c, s) <= 1e-9 * w:
+            return np.nan
         return x0 + (np.arctan2(s, c) % (2 * np.pi)) / k
     return [circular_mean(dx(domain=mesh)), circular_mean(ds(1)), assemble(ind_ * ds(1)) / 2]
 
@@ -114,14 +122,15 @@ def pre_solve_hook(**NS_namespace):
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfolder,
-                  stat_interval, mesh, ds, x0, x1, theta, **NS_namespace):
+                  stat_interval, mesh, ds, x0, x1, angles, **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim, the energies per area (kinetic,
     interface gradient and double-well parts), the plug's position (x_c, x_w, L_w) and the
-    walls' energy per area (E_wall)."""
+    walls' energy per area (E_wall: wall_energy of the contact angles the solver applies, none
+    without one)."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         write_tdata(statsfolder, tstep, t,
                     standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
                     + plug_position(q_, mesh, ds, x0, x1)
-                    + [wall_energy(phi_, sigma, theta, ds(1)) / volume])
+                    + ([wall_energy(phi_, sigma, angles, ds) / volume] if angles else []))
 

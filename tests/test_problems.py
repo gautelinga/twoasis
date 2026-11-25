@@ -313,3 +313,24 @@ def test_tube3d_plug_position_and_wall_energy(tmp_path):
     costheta.vector()[:] = np.cos(1.0)
     assert wall_energy(phi_, 2.0, [(costheta, 1)], ds) == pytest.approx(expect, rel=1e-10)
     assert wall_energy(phi_, 2.0, [], ds) == 0
+
+
+@pytest.mark.parametrize("mesh_kind,theta", [("structured", None), ("structured", 1.0),
+                                             ("unstructured", 1.0)])
+def test_channel2d(tmp_path, mesh_kind, theta):
+    """Channel2D runs on its structured mesh and on meshes/channel_mesh.py's, with and
+    without a contact angle: its statistics end with the plug's position and wetted length,
+    and with the walls' energy only when there is a contact angle."""
+    params = dict(mesh_kind=mesh_kind, res=0.1, L=2, width=1, theta=theta)
+    if mesh_kind == "unstructured":
+        pytest.importorskip("gmsh")
+        pytest.importorskip("meshtools")
+        meshes = tmp_path / "meshes"
+        meshes.mkdir()
+        subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "channel_mesh.py"),
+                        "-L", "2", "-W", "1", "-res", "0.1"],
+                       cwd=str(meshes), check=True, capture_output=True, timeout=300)
+    run_twoasis(tmp_path, problem="Channel2D", dt=0.1, T=0.2, **dict(QUIET, **params))
+    td = load_tdata(tmp_path)
+    assert td.shape[1] == 2 + 6 + 3 + (0 if theta is None else 1), td.shape
+    assert np.isfinite(td).all()

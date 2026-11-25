@@ -1,6 +1,7 @@
 """An unstructured triangle mesh of the channel [-L/2, L/2] x [-W/2, W/2], periodic along x (its
-left and right edges carry the same nodes), for the Channel2D problem: meshes/channel_L<L>_W<W>_
-res<res>.h5, the name Channel2D.meshfile_name reads."""
+left and right edges carry the same nodes), for the Channel2D problem: channel_L<L>_W<W>_
+res<res>.h5 in the current directory (run it in the run's meshes/), the name
+Channel2D.meshfile_name reads."""
 import argparse
 import gmsh
 import numpy as np

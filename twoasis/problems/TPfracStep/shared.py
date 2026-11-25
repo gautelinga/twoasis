@@ -4,7 +4,7 @@ __date__ = "2026-11-02"
 __copyright__ = "Copyright (C) 2026 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-from os import listdir, makedirs, path, remove
+from os import listdir, makedirs, path, remove, rename
 
 import numpy as np
 from twoasis.backend import (
@@ -62,7 +62,7 @@ def interface_energy(phi_, sigma, epsilon, dx):
 
     with sigma_bar = 3*sigma/(2*sqrt(2)), the scaling the solvers use, so that a
     flat interface at equilibrium has the energy sigma per unit area (half in
-    each part). The wall energy from contact angles is not included."""
+    each part). The walls' contact-angle energy is wall_energy's."""
     sigma_bar = 3 * sigma / (2 * np.sqrt(2))
     E_grad = 0.5 * sigma_bar * epsilon * assemble(inner(grad(phi_), grad(phi_)) * dx)
     E_dw = 0.25 * sigma_bar / epsilon * assemble((1 - phi_**2)**2 * dx)
@@ -137,6 +137,18 @@ def standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh):
     return um + [phim, E_kin, E_int, E_pot]
 
 
+def wall_energy(phi_, sigma, angles, ds):
+    """The walls' contact-angle energy, the sum over (theta, marker) in `angles` (the
+    contact_angles the solver applies) of -sigma*cos(theta) * int (3*phi - phi^3)/4 ds(marker):
+    the energy whose phi-derivative is the phase-field equation's wall term
+    (add_contact_angles, f_w' = 3*(1 - phi^2)/4), so that it and interface_energy make the
+    whole free energy. theta is measured through phi = +1; a Function in its place holds
+    cos(theta) pointwise. All processes must call it (it assembles)."""
+    return sum(-sigma * assemble((theta if isinstance(theta, Function) else np.cos(theta))
+                                 * (3 * phi_ - phi_**3) / 4 * ds(mark))
+               for theta, mark in angles)
+
+
 def gravitational_energy(rho_, g0, volume, mesh):
     """The gravitational energy per volume, -rho g0.x, with g0 = None meaning no
     gravity. All processes must call it (it assembles)."""
@@ -155,11 +167,20 @@ def append_row(fname, tstep, line):
     """Append line, the row of time step tstep, to the statistics file fname (call
     on one process). A restart continues the file of the run it restarts, which
     may hold rows from tstep on, written after the checkpoint: the first row this
-    run appends drops those, so that the file is one run's history."""
+    run appends drops those, so that the file is one run's history. A file whose rows
+    have another number of columns (written by code with other statistics) is moved
+    aside to fname.<n>cols, n its columns, and this run starts fname anew."""
     if fname not in _APPENDED and path.exists(fname):
         with open(fname) as f:
             rows = f.readlines()
         keep = [r for r in rows if not r.split() or int(r.split()[0]) < tstep]
+        widths = {len(r.split()) for r in keep if r.split()}
+        if widths and widths != {len(line.split())}:
+            aside = "{}.{}cols".format(fname, "-".join(str(w) for w in sorted(widths)))
+            rename(fname, aside)
+            print("Stats: {} has rows of {} columns, this run writes {}: moved to {}".format(
+                fname, sorted(widths), len(line.split()), aside))
+            keep, rows = [], []
         if len(keep) < len(rows):
             with open(fname, "w") as f:
                 f.writelines(keep)
@@ -189,10 +210,11 @@ class DivergenceStats:
 
 def write_tdata(statsfolder, tstep, t, entries):
     """Append the line "tstep t entries..." to statsfolder/tdata.dat (on rank 0),
-    with 8 decimals for t and each entry (append_row)."""
+    t with 8 decimals and each entry with 11 significant digits, so that small values
+    (a velocity near rest) keep their digits (append_row)."""
     if MPI.rank(MPI.comm_world) == 0:
         append_row(path.join(statsfolder, "tdata.dat"), tstep,
-                   ("{:d} {:.8f} " + " ".join("{:.8f}" for _ in entries) + "\n").format(
+                   ("{:d} {:.8f} " + " ".join("{:.10e}" for _ in entries) + "\n").format(
                        tstep, t, *entries))
 
 

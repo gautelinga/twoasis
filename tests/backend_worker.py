@@ -31,8 +31,8 @@ def mesh_and_markers():
     periodic box, and facet markers with the walls marked 2."""
     if be.name == "dolfin":
         import dolfin as df
-        from femtools.box import Faces
-        from femtools.periodic import periodic_box_from_bounds
+        from feluga.box import Faces
+        from feluga.periodic import periodic_box_from_bounds
         mesh = df.RectangleMesh(df.Point(0., 0.), df.Point(LX, LY), NX, NY, "right")
         box = periodic_box_from_bounds({0: (0., LX)})
         markers = be.BoundaryMarkers(mesh)
@@ -58,8 +58,8 @@ def keys(V, n_sub):
         for i in range(n_sub):
             comp[np.asarray(V.sub(i).dofmap().dofs())] = i
         return np.column_stack([comp, wrapped(X[:, :2])])
-    from femtools.dolfinx.periodic import flat_collapse_map
-    from femtools.backend.dolfinx import unique_dofs
+    from feluga.dolfinx.periodic import flat_collapse_map
+    from feluga.backend.dolfinx import unique_dofs
     U = unique_dofs(V)
     if n_sub == 0:
         X = V.tabulate_dof_coordinates()[:, :2]

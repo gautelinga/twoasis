@@ -312,7 +312,7 @@ def phi_g(q_):
     """phi*g at the dofs of the pressure space (an array of this process's
     values). The capillary force being -phi*grad(g), the solver's pressure p is
     the physical pressure minus phi*g. phi and g are each interpolated onto the
-    pressure space (femtools.fast_interpolation, a transfer matrix built once),
+    pressure space (feluga.fast_interpolation, a transfer matrix built once),
     so phi*g is exact at its nodes."""
     from twoasis.common import dual
     Q = function_space(q_['p'])

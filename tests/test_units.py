@@ -107,9 +107,9 @@ def test_auto_velocity_preconditioner_by_dt_nu_over_h2():
 
 
 def test_boomeramg_takes_the_3d_settings_in_3d():
-    """In 3D a BoomerAMG takes femtools.ksp.BOOMERAMG_3D's settings (the solver's own
+    """In 3D a BoomerAMG takes feluga.ksp.BOOMERAMG_3D's settings (the solver's own
     petsc_options win); in 2D, and another preconditioner, none."""
-    from femtools import ksp
+    from feluga import ksp
     from twoasis.solvers.TPfracStep import for_dimension
     amg = dict(solver_type="bicgstab", preconditioner_type="hypre_amg")
     assert ksp.BOOMERAMG_3D.items() <= for_dimension(amg, 3)["petsc_options"].items()
@@ -124,7 +124,7 @@ def schur_solve(n, fixed=False, petsc_options=None, alpha=1., mobility=1e-2):
     """Solve a (phi, g) system on an n x n mesh with the PhaseFieldSchur
     preconditioner (fixed: phi prescribed on the boundary); returns the solver."""
     from twoasis.solvers.TPfracStep import phase_field_krylov_solve, phase_field_schur_solver
-    from femtools.fast_bc import apply
+    from feluga.fast_bc import apply
     mesh = dolfin.UnitSquareMesh(n, n)
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
@@ -161,23 +161,23 @@ def test_phase_field_schur_solver_converges():
 
 
 def test_phase_field_schur_inner_solvers():
-    """H is solved with BoomerAMG in 2D and CG-Jacobi in 3D, and petsc_options
-    with the prefix H_ choose another."""
+    """H is solved by GMRES with BoomerAMG, to a relative 1e-2, in 2D and 3D, and
+    petsc_options with the prefix H_ choose another."""
     from twoasis.solvers.TPfracStep import phase_field_schur_solver
 
     def inner(sol):
         kH = sol.ksp().getPC().getPythonContext().kH
-        return kH.getType(), kH.getPC().getType()
+        return kH.getType(), kH.getPC().getType(), kH.getTolerances()[0]
 
-    assert inner(schur_solve(8)) == ("preonly", "hypre")
+    assert inner(schur_solve(8)) == ("gmres", "hypre", 1e-2)
     assert inner(schur_solve(8, petsc_options={"H_ksp_type": "cg", "H_pc_type": "jacobi"})) \
-        == ("cg", "jacobi")
+        == ("cg", "jacobi", 1e-2)
     mesh = dolfin.UnitCubeMesh(2, 2, 2)
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
     assert inner(phase_field_schur_solver(
         W, dict(solver_type="fgmres", preconditioner_type="schur"), {}, [])) \
-        == ("preonly", "hypre")
+        == ("gmres", "hypre", 1e-2)
 
 
 def test_phase_field_schur_solver_needs_a_flexible_method():
@@ -186,8 +186,10 @@ def test_phase_field_schur_solver_needs_a_flexible_method():
     P1 = dolfin.FiniteElement("CG", mesh.ufl_cell(), 1)
     W = dolfin.FunctionSpace(mesh, dolfin.MixedElement([P1, P1]))
     with pytest.raises(ValueError, match="flexible"):
-        phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur",
-                                         petsc_options={"H_ksp_type": "cg"}), {}, [])
+        phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur"),
+                                 {}, [])
+    phase_field_schur_solver(W, dict(solver_type="gmres", preconditioner_type="schur",
+                                     petsc_options={"H_ksp_type": "preonly"}), {}, [])
 
 
 def test_krylov_solver_petsc_options_reach_the_blocks():
@@ -262,7 +264,7 @@ def test_velocity_tolerance_factor(factor):
 
 
 def test_boomeramg_3d_settings():
-    """The 3D pressure's BoomerAMG takes femtools.ksp.BOOMERAMG_3D's settings, which the
+    """The 3D pressure's BoomerAMG takes feluga.ksp.BOOMERAMG_3D's settings, which the
     pressure's petsc_options override; 2D and other preconditioners take none."""
     from petsc4py import PETSc
     key = "pressure_krylov_solver_pc_hypre_boomeramg_coarsen_type"
@@ -412,7 +414,7 @@ def test_periodic_map_follows_command_line():
 PERIODIC_3D = r"""
 import sys
 from dolfin import FiniteElement, FunctionSpace, MixedElement, MPI, set_log_level
-from femtools.periodic_partition import PairingError
+from feluga.periodic_partition import PairingError
 from twoasis.backend import check_periodic_pairing
 from twoasis.problems.TPfracStep.shared import centred, load_mesh, PeriodicBox
 set_log_level(40)
@@ -440,7 +442,7 @@ import sys
 import h5py
 import numpy as np
 import dolfin as df
-from femtools.periodic_partition import PairingError
+from feluga.periodic_partition import PairingError
 from twoasis.backend import check_periodic_pairing
 from twoasis.problems import post_import_problem
 from twoasis.problems.TPfracStep.shared import centred, PeriodicBox
@@ -503,7 +505,7 @@ def run_mpi_script(tmp_path, script, *args, nprocs=2):
 
 
 def test_periodic_3d_in_parallel(tmp_path):
-    """A periodic 3D mesh read on two processes (partitioned by femtools) gives
+    """A periodic 3D mesh read on two processes (partitioned by feluga) gives
     spaces that pass the pairing check, on a box centred at the origin; a space
     without the constraint fails it."""
     from conftest import require_mpi
@@ -613,3 +615,19 @@ def test_skew_convection_adds_no_energy():
     plain = -0.5 * dolfin.assemble(dolfin.div(w) * x * x * dolfin.dx)
     assert abs(energy[True]) < 1e-12 * abs(plain)
     assert abs(energy[False] - plain) < 1e-10 * abs(plain)
+
+
+def test_append_row_restart(tmp_path, monkeypatch):
+    """A restart's statistics: the rows written after the checkpoint are dropped, and a
+    file whose rows have another number of columns (code with other statistics) is moved
+    aside to <file>.<n>cols and started anew, so no file holds rows of two widths."""
+    from twoasis.problems.TPfracStep import shared
+    f = tmp_path / "tdata.dat"
+    f.write_text("1 0.1 5\n2 0.2 6\n3 0.3 7\n")
+    monkeypatch.setattr(shared, "_APPENDED", set())
+    shared.append_row(str(f), 3, "3 0.3 8\n")
+    assert f.read_text() == "1 0.1 5\n2 0.2 6\n3 0.3 8\n"
+    monkeypatch.setattr(shared, "_APPENDED", set())
+    shared.append_row(str(f), 3, "3 0.3 8 9\n")
+    assert f.read_text() == "3 0.3 8 9\n"
+    assert (tmp_path / "tdata.dat.3cols").read_text() == "1 0.1 5\n2 0.2 6\n3 0.3 8\n"

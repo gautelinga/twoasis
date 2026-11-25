@@ -33,18 +33,20 @@ from twoasis.backend import (
     TestFunction)
 from twoasis.common import telemetry
 from twoasis.problems import info_red
+from twoasis.solvers.TPfracStep import INITIAL_RESIDUAL
 
 
 def solver_options(cfg, dim):
     """PETSc options for the coupled solver from its settings `cfg`: the outer
     solver_type, restarted every 100 iterations (fgmres, so that the inner solves may
-    also be Krylov ones, set in petsc_options), and one BoomerAMG cycle for each inner
-    solve (femtools.ksp.BOOMERAMG_3D's settings in 3D); cfg's petsc_options override
+    also be Krylov ones, set in petsc_options), its convergence tested against the
+    initial residual (TPfracStep.INITIAL_RESIDUAL), and one BoomerAMG cycle for each inner
+    solve (feluga.ksp.BOOMERAMG_3D's settings in 3D); cfg's petsc_options override
     them."""
     amg = dict(ksp.BOOMERAMG, **(ksp.BOOMERAMG_3D if dim == 3 else {}))
     options = {"ksp_type": ksp.KSP_NAMES.get(cfg.get("solver_type", "fgmres"),
                                              cfg.get("solver_type", "fgmres")),
-               "ksp_gmres_restart": 100}
+               "ksp_gmres_restart": 100, **INITIAL_RESIDUAL}
     for inner in ("u_", "p_"):
         options[inner + "ksp_type"] = "preonly"
         options.update({inner + k: v for k, v in amg.items()})
@@ -58,6 +60,48 @@ def _mat(A):
 
 def _vec(x):
     return as_backend_type(x).vec()
+
+
+def momentum_rhs(b, b_tmp, bcs, uc):
+    """The step's right-hand side in b: each velocity component's b_tmp and the pressure's
+    zero, both with their Dirichlet conditions applied."""
+    for ui in uc:
+        b[ui].zero()
+        b[ui].axpy(1.0, b_tmp[ui])
+        apply_bc(bcs[ui], b[ui])
+    b['p'].zero()
+    apply_bc(bcs['p'], b['p'])
+
+
+def to_nest(vecs, nest, isets):
+    """Copy each vector of `vecs` into its block (index set) of the vector `nest`."""
+    for src, iset in zip(vecs, isets):
+        view = nest.getSubVector(iset)
+        _vec(src).copy(view)
+        nest.restoreSubVector(iset, view)
+
+
+def from_nest(nest, isets, vecs):
+    """Copy each block (index set) of the vector `nest` into its vector of `vecs`."""
+    for dst, iset in zip(vecs, isets):
+        view = nest.getSubVector(iset)
+        view.copy(_vec(dst))
+        nest.restoreSubVector(iset, view)
+
+
+def finish_solve(x_, keys, p_null, p0, dp_):
+    """After a solve wrote x_[k] (k in keys): the pressure normalised when its constants
+    are a null space, the ghost values updated (the assemblies read them), and dp_ the
+    pressure's change from p0 (a PETSc Vec)."""
+    if p_null is not None:
+        normalize(x_['p'])
+    for key in keys:
+        as_backend_type(x_[key]).update_ghost_values()
+    dp = dp_.vector()
+    dp.zero()
+    dp.axpy(1.0, x_['p'])
+    _vec(dp).axpy(-1.0, p0)
+    as_backend_type(dp).update_ghost_values()
 
 
 class BlockPreconditioner:
@@ -141,7 +185,7 @@ class CoupledVelocityPressure:
                 C.setValue(row, row, 1.0)
             C.assemble()
         self.D, self.C = D, C
-        Amats = [_mat(Ai[ui]) if Ai else _mat(A) for ui in self.uc]
+        Amats = self.Amats = [_mat(Ai[ui]) if Ai else _mat(A) for ui in self.uc]
         d = len(self.uc)
         rows = []
         for i in range(d):
@@ -205,18 +249,19 @@ class CoupledVelocityPressure:
         self.B = self.K.createVecLeft()
         self.p0 = _vec(x_['p']).duplicate()
 
-    def solve(self, b_tmp, rho_inv_, alpha, dp_, tstep, reuse_velocity, reuse_pressure):
-        """Solve the step's system from the current x_ (the velocity of the last step,
-        the pressure guess), writing the result into x_; dp_ becomes the pressure's
-        change. Returns the number of FGMRES iterations."""
+    def scale_gradients(self, rho_inv_):
+        """This step's W (the nodal 1/rho, zero on each component's Dirichlet rows) in
+        w, and W G in WG."""
         from petsc4py import PETSc
-        x_, b, uc = self.x_, self.b, self.uc
-        # Coefficients of this step
         rho_inv = _vec(rho_inv_.vector())
         for i, G in enumerate(self.G):
             self.w[i].pointwiseMult(self.masks[i], rho_inv)
             G.copy(self.WG[i], PETSc.Mat.Structure.SAME_NONZERO_PATTERN)
             self.WG[i].diagonalScale(L=self.w[i])
+
+    def prepare(self, rho_inv_, alpha, reuse_velocity, reuse_pressure):
+        """Set this step's coefficients in the blocks and the preconditioner."""
+        self.scale_gradients(rho_inv_)
         interpolate(self.mu_, self.Q, out=self.mu_Q)
         self.mu_m.pointwiseMult(_vec(self.mu_Q.vector()), self.inv_mass)
         self.pc.alpha0 = float(alpha[0])
@@ -224,18 +269,19 @@ class CoupledVelocityPressure:
             k.getPC().setReusePreconditioner(reuse_velocity)
         self.Kp.getPC().setReusePreconditioner(reuse_pressure)
 
+    def solve(self, b_tmp, rho_inv_, alpha, dp_, tstep, reuse_velocity, reuse_pressure):
+        """Solve the step's system from the current x_ (the velocity of the last step,
+        the pressure guess), writing the result into x_; dp_ becomes the pressure's
+        change. Returns the number of FGMRES iterations."""
+        from petsc4py import PETSc
+        x_, b, uc = self.x_, self.b, self.uc
+        self.prepare(rho_inv_, alpha, reuse_velocity, reuse_pressure)
+
         # Right-hand side and first guess, in the nested layout
-        for ui in uc:
-            b[ui].zero()
-            b[ui].axpy(1.0, b_tmp[ui])
-            apply_bc(self.bcs[ui], b[ui])
-        b['p'].zero()
-        apply_bc(self.bcs['p'], b['p'])
-        for key, iset in zip(uc + ['p'], self.isets):
-            for src, dst in ((b[key], self.B), (x_[key], self.X)):
-                view = dst.getSubVector(iset)
-                _vec(src).copy(view)
-                dst.restoreSubVector(iset, view)
+        momentum_rhs(b, b_tmp, self.bcs, uc)
+        keys = uc + ['p']
+        to_nest([b[k] for k in keys], self.B, self.isets)
+        to_nest([x_[k] for k in keys], self.X, self.isets)
         _vec(x_['p']).copy(self.p0)
 
         self.ksp.solve(self.B, self.X)
@@ -250,18 +296,6 @@ class CoupledVelocityPressure:
             info_red("Warning: timestep {}: the coupled velocity-pressure solve stopped at "
                      "its {} iterations without converging".format(tstep, its))
 
-        # The result into x_; dp_ the pressure's change over the step's solve
-        for key, iset in zip(uc + ['p'], self.isets):
-            view = self.X.getSubVector(iset)
-            view.copy(_vec(x_[key]))
-            self.X.restoreSubVector(iset, view)
-        if self.p_null is not None:
-            normalize(x_['p'])
-        for key in uc + ['p']:
-            as_backend_type(x_[key]).update_ghost_values()  # the assemblies read ghosts
-        dp = dp_.vector()
-        dp.zero()
-        dp.axpy(1.0, x_['p'])
-        _vec(dp).axpy(-1.0, self.p0)
-        as_backend_type(dp).update_ghost_values()
+        from_nest(self.X, self.isets, [x_[k] for k in keys])
+        finish_solve(x_, keys, self.p_null, self.p0, dp_)
         return its

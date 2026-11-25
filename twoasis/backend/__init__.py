@@ -1,8 +1,8 @@
 """The finite-element backend twoasis's driver and solvers run on.
 
 The driver (TPfracStep.py), the solvers (solvers/TPfracStep) and the problems take their
-finite-element names from here: femtools.backend's names (femtools.backend.NAMES), from
-femtools.backend.dolfin or femtools.backend.dolfinx, with the dual mesh's measures and
+finite-element names from here: feluga.backend's names (feluga.backend.NAMES), from
+feluga.backend.dolfin or feluga.backend.dolfinx, with the dual mesh's measures and
 Dirichlet conditions (twoasis/backend/_dual.py).
 
 Which one is fixed when this module is first imported (`choose`): backend=dolfin,
@@ -55,9 +55,9 @@ def choose(argv=None, environ=None):
 
 def _names():
     import importlib
-    from femtools.backend import NAMES
+    from feluga.backend import NAMES
     from twoasis.backend._dual import dirichlet_class, measure_class
-    base = importlib.import_module("femtools.backend." + choose())
+    base = importlib.import_module("feluga.backend." + choose())
     names = {n: getattr(base, n) for n in NAMES}
     names["Measure"] = measure_class(base.ufl)
     names["dx"] = names["Measure"]("dx")
@@ -66,5 +66,5 @@ def _names():
 
 
 globals().update(_names())
-from femtools.backend import NAMES  # noqa: E402
+from feluga.backend import NAMES  # noqa: E402
 __all__ = list(NAMES)

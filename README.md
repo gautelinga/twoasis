@@ -29,19 +29,19 @@ python3 -m pip install --user --break-system-packages --no-deps -e .
 
 *twoasis* also needs 
 
-* [femtools](https://github.com/gautelinga/femtools): the common API of the two backends (`femtools.backend`), periodic boundary conditions, improved output, parallel partition of periodic 3D meshes
+* [feluga](https://github.com/gautelinga/feluga): the common API of the two backends (`feluga.backend`), periodic boundary conditions, improved output, parallel partition of periodic 3D meshes
 * [partractools](https://github.com/gautelinga/partractools): output for [partrac](https://github.com/gautelinga/partrac)
 * [meshtools](https://github.com/gautelinga/meshtools): for the mesh scripts in `meshes/`
 
 Install them the same way:
 ```
-for repo in femtools partractools meshtools; do
+for repo in feluga partractools meshtools; do
     git clone https://github.com/gautelinga/$repo.git
 done
-git -C femtools checkout 696f85b
+git -C feluga checkout 8aa0fbb
 git -C partractools checkout 2026.2.1
 git -C meshtools checkout 2026.2.0
-for repo in femtools partractools meshtools; do
+for repo in feluga partractools meshtools; do
     python3 -m pip install --user --break-system-packages --no-deps -e $repo
 done
 ```
@@ -119,7 +119,7 @@ twoasis TPfracStep problem=PeriodicBubble2D backend=dolfinx
 ```
 
 Both backends run every problem and solver, serially or in parallel, agree within solver precision, read and write the same files, which restart on either backend and on any number of processes, and time series in the same XDMF layout. A DOLFINx run does not import dolfin, and vice versa.
-The finite-element calls go through `twoasis.backend`, which takes its names from `femtools.backend.dolfin` or `femtools.backend.dolfinx`.
+The finite-element calls go through `twoasis.backend`, which takes its names from `feluga.backend.dolfin` or `feluga.backend.dolfinx`.
 
 ## Output and checkpoints
 
@@ -183,7 +183,7 @@ Bernaise is described in:
 twoasis has been validated against its two-phase (uncharged) variant in Bernaise. Bernaise's mesh scripts also make the meshes of `Porous2D` and `Porous2DFlux` (`mesh=periodic_porous_2d`) and of `CylArr2D` (`mesh=cyl_arr_2d`): run `python3 generate_mesh.py mesh=... key=value ...` in Bernaise's `utilities/` folder, which writes to its `meshes/`.
 
 ## AI declaration
-*twoasis* was primarily human-developed from its beginning in March 2022 until September 2026. Since then, AI tools (Claude Opus 5/5.5, Fable 5) have been used for bug fixing, code optimization, building an extensive test suite, and for adapting the code to the dolfinx backend (through femtools). Every commit has been approved and checked by the developers.
+*twoasis* was primarily human-developed from its beginning in March 2022 until September 2026. Since then, AI tools (Claude Opus 5/5.5, Fable 5) have been used for bug fixing, code optimization, building an extensive test suite, and for adapting the code to the dolfinx backend (through feluga). Every commit has been approved and checked by the developers.
 The user is responsible for the physical validity of the results.
 
 ## License

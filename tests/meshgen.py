@@ -18,7 +18,7 @@ def obstacle_mesh(path, lower, upper, obstacles, periodic, res):
     radius), periodic along the axes where `periodic` is True, with cells of
     size about res; write the mesh to path (dolfin's HDF5 layout)."""
     import gmsh
-    from femtools.dolfin_layout import write_mesh_arrays
+    from feluga.dolfin_layout import write_mesh_arrays
 
     dim = len(lower)
     lower, upper = np.asarray(lower, float), np.asarray(upper, float)

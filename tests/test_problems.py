@@ -137,7 +137,7 @@ def test_problem_runs_on_dual_mesh(tmp_path, problem):
 def test_mesh_problem_restart_on_other_process_count(tmp_path, problem, nprocs):
     """A checkpoint written in serial, restarted on nprocs processes (the mesh
     read and its periodic partition repaired, Porous3D: partitioned by
-    femtools), continues as the uninterrupted serial run does. The checkpoint is
+    feluga), continues as the uninterrupted serial run does. The checkpoint is
     the run's second, whose dof tables are those of its first, linked."""
     require_mpi(nprocs)
     params = dict(QUIET, problem=problem, dt=1e-4, checkpoint=2, **with_mesh(tmp_path, problem))
@@ -216,11 +216,11 @@ def test_partrac_case_walls(tmp_path):
     for wall_upgrade, and 1 and 3 processes write the same facets."""
     import shutil
     import dolfin
-    from femtools.boundaries import read
+    from feluga.boundaries import read
     from partractools.case import read_params
     from twoasis.problems.TPfracStep.CylArr2D import get_fname
     # The expected walls from dolfin, whichever backend the runs are on
-    from femtools.backend.dolfin import mark_walls, read_mesh_file as load_mesh
+    from feluga.backend.dolfin import mark_walls, read_mesh_file as load_mesh
     require_mpi(3)
     params = with_mesh(tmp_path, "CylArr2D")
     mesh = load_mesh(str(tmp_path / get_fname(ext="h5", **params)))
@@ -262,3 +262,54 @@ def test_porous2d_wetting_direction(tmp_path):
         change[theta] = wet[-1, 2] - wet[0, 2]
         assert_mass_conserved(load_tdata(wd), MASS_TOL)
     assert change[np.pi / 4] > 0.05 and change[3 * np.pi / 4] < -0.05, change
+
+
+def test_tube3d_plug_position_and_wall_energy(tmp_path):
+    """Tube3D's statistics on a known phase field: a bubble across the periodic ends keeps
+    one position (z_c and z_w at the ends, not mid-tube), its wetted length is the band's;
+    no bubble gives nan positions and no wetted length; and the walls' energy of a uniform
+    phi is -sigma*cos(theta)*(3*phi - phi^3)/4 times the wall's area, with theta as an angle
+    or as a Function of cos(theta)."""
+    from twoasis.backend import (assemble, BoundaryMarkers, Constant, constant_on, Expression,
+                                 FiniteElement, Function, FunctionSpace, Measure, MixedElement)
+    from twoasis.common.utilities import set_subfunction, subfunction
+    from twoasis.problems.TPfracStep import Tube3D
+    from twoasis.problems.TPfracStep.shared import wall_energy
+    meshes = tmp_path / "meshes"
+    meshes.mkdir()
+    subprocess.run([sys.executable, str(REPO_ROOT / "meshes" / "tube_mesh.py"),
+                    "-L", "2", "-R", "0.5", "-res", "0.1"],
+                   cwd=str(meshes), check=True, capture_output=True, timeout=300)
+    mesh = Tube3D.mesh(str(meshes / "tube.h5"))
+    box = Tube3D.constrained_domain(mesh)
+    markers = BoundaryMarkers(mesh)
+    markers.set_all(0)
+    ns = Tube3D.mark_subdomains(markers, mesh)
+    z0, z1 = ns["z0"], ns["z1"]
+    ds = Measure("ds", domain=mesh, subdomain_data=markers)
+    el = FiniteElement("CG", mesh.ufl_cell(), 1)
+    q_ = {"phig": Function(FunctionSpace(mesh, MixedElement([el, el]), constrained_domain=box))}
+    k = 2 * np.pi / (z1 - z0)
+
+    # a bubble filling the tube within 0.4 of the periodic ends
+    set_subfunction(q_["phig"], 0, Expression("cos(k*(x[2] - z0)) > cos(k*w) ? -1.0 : 1.0",
+                                              k=k, z0=z0, w=0.4, degree=1))
+    z_c, z_w, L_w = Tube3D.plug_position(q_, mesh, ds, z0, z1)
+    for z in (z_c, z_w):
+        assert min(z - z0, z1 - z) < 0.02, (z, z0, z1)
+    assert L_w == pytest.approx(0.8, abs=0.1)
+
+    set_subfunction(q_["phig"], 0, Constant(1.))
+    z_c, z_w, L_w = Tube3D.plug_position(q_, mesh, ds, z0, z1)
+    assert np.isnan(z_c) and np.isnan(z_w) and L_w == 0
+
+    phi = 0.5
+    set_subfunction(q_["phig"], 0, Constant(phi))
+    phi_ = subfunction(q_["phig"], 0)
+    area = assemble(constant_on(1., mesh) * ds(1))
+    expect = -2.0 * np.cos(1.0) * (3 * phi - phi**3) / 4 * area
+    assert wall_energy(phi_, 2.0, [(1.0, 1)], ds) == pytest.approx(expect, rel=1e-10)
+    costheta = Function(FunctionSpace(mesh, "CG", 1, constrained_domain=box))
+    costheta.vector()[:] = np.cos(1.0)
+    assert wall_energy(phi_, 2.0, [(costheta, 1)], ds) == pytest.approx(expect, rel=1e-10)
+    assert wall_energy(phi_, 2.0, [], ds) == 0

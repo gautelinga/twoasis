@@ -12,8 +12,8 @@ sys.path.append(os.getcwd())
 
 def main():
     """The twoasis command. Under MPI, an exception on one process ends the whole
-    job (femtools.abort) instead of leaving the others waiting."""
-    from femtools.abort import run
+    job (feluga.abort) instead of leaving the others waiting."""
+    from feluga.abort import run
     return run(lambda argv: _main())
 
 def _main():

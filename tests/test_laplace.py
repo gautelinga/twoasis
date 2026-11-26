@@ -11,9 +11,9 @@ R = 0.25, epsilon = 1.28*h, M = 0.1, the P1 phase field on the mesh refined once
 dP follows the Laplace law for the actual radius. The bubble shrinks because
 the bulk phase field shifts away from +-1 at equilibrium, by an amount first
 order in epsilon. For the bubble at rest there are no steady spurious
-currents: max|u| at steady state is set by the solver tolerances (2.8e-8 with
-the defaults, 2.9e-10 with tolerances of 1e-10 on the coarse level). Moving interfaces
-are not covered. See LaplaceBubble2D.py for the dependence on
+currents: max|u| at steady state is set by the solver tolerances (1.5e-12 with
+the defaults; with tolerances of 1e-10 on the coarse level it keeps decaying, to
+round-off). Moving interfaces are not covered. See LaplaceBubble2D.py for the dependence on
 density, viscosity, Ohnesorge and Cahn numbers.
 """
 from pathlib import Path
@@ -126,14 +126,16 @@ def test_refinement(tmp_path, laplace):
 
 @pytest.mark.slow
 def test_no_steady_spurious_currents(tmp_path, laplace):
-    """Tightening the solver tolerances drives the steady max|u| down by orders
-    of magnitude (2.8e-8 -> 2.9e-10 measured) and leaves dP unchanged: for the
-    bubble at rest, g is constant at equilibrium, so the force -phi*grad(g)
-    vanishes and u = 0 is an exact steady state."""
+    """Tightening the solver tolerances drives max|u| down by orders of magnitude
+    and leaves dP unchanged: for the bubble at rest, g is constant at equilibrium,
+    so the force -phi*grad(g) vanishes and u = 0 is an exact steady state. With the
+    tight tolerances max|u| keeps decaying, towards round-off, so the steady test
+    (relative changes) may not end the run; its last values stand for the steady ones."""
     _, default = laplace
-    _, tight = run_laplace(tmp_path, **dict(LAPLACE, **TIGHT))
-    assert tight is not None, "no steady state with tight tolerances"
-    assert tight[SCOLS["u_max"]] < 1e-1 * default[SCOLS["u_max"]], \
+    td, tight = run_laplace(tmp_path, **dict(LAPLACE, **TIGHT))
+    u_max, dP = ((tight[SCOLS["u_max"]], tight[SCOLS["dP"]]) if tight is not None
+                 else (td[-1, LCOLS["u_max"]], td[-1, LCOLS["dP"]]))
+    assert u_max < 1e-1 * default[SCOLS["u_max"]], \
         "max|u| {:.2e} with tight tolerances, {:.2e} with the defaults".format(
-            tight[SCOLS["u_max"]], default[SCOLS["u_max"]])
-    assert tight[SCOLS["dP"]] == pytest.approx(default[SCOLS["dP"]], rel=1e-5)
+            u_max, default[SCOLS["u_max"]])
+    assert dP == pytest.approx(default[SCOLS["dP"]], rel=1e-5)

@@ -52,6 +52,17 @@ NS_parameters.update(
     # pressure's is kept for the whole run anyway when its matrix is constant.
     velocity_preconditioner_steps=1,
     pressure_preconditioner_steps=1,
+    # The phase field's preconditioner (also the coupled CH-NS step's S solve): rebuilt
+    # every that many timesteps, and whenever the BDF coefficient alpha0 has changed by
+    # more than 10 % since it was built (an adaptive dt)
+    phase_field_preconditioner_steps=1,
+    # The BDF solver's first guess for the split phase-field solve and the coupled solve
+    # (velocity_pressure_solve="coupled"): "previous" (the last step's solution) or
+    # "extrapolated" (beta0 x^n + beta1 x^(n-1), the BDF extrapolation, second order).
+    # The stopping tests are relative to the initial residual, so a closer guess ends
+    # closer to the exact solve at the same tolerance; it saves iterations only where
+    # the absolute tolerance binds (slow flow) or with a looser relative tolerance
+    initial_guess="previous",
     # Stop the run with an error when the velocity change of the inner passes has
     # grown this many passes in a row while larger than the first pass's change: the
     # passes diverge, and the step's result would be garbage (0: never). The last
@@ -65,6 +76,26 @@ NS_parameters.update(
     # "coupled" needs an inf-sup stable pair, velocity_degree > pressure_degree, and
     # leaves rotational and the passes' settings unused.
     velocity_pressure_solve="passes",
+    # How a BDF step couples the phase field to the flow: "split", the (phi, g) system
+    # first, advected by the extrapolated velocity, then the flow with the capillary
+    # force of the new phase field; "coupled", the phase field, chemical potential,
+    # velocity and pressure in one linear system (twoasis/solvers/TPfracStep/
+    # monolithic.py), solved by chns_solver's method; or "auto", split or coupled each
+    # step by dt (twoasis/solvers/TPfracStep/switch.py), the split step's dt capped at
+    # dt_split_max (required), its largest stable dt. "coupled" and "auto" solve the
+    # velocity and pressure together (velocity_pressure_solve="coupled") and need
+    # solver="BDF" and no dual mesh.
+    chns_solve="split",
+    dt_split_max=None,
+    # Adaptive time step (solvers/TPfracStep/adapt.py): None (dt fixed) or a dict of
+    # its settings, e.g. dict(tol_x=4e-5, rtol_u=1e-3, atol_u=1e-6, dt_max=25.6)
+    dt_adapt=None,
+    # The coupled CH-NS step's solver: settings that differ from monolithic.DEFAULTS
+    # (twoasis/solvers/TPfracStep/monolithic.py), e.g. dict(method="direct"). method
+    # "iterative" (the default: FGMRES with a block preconditioner; inner_tolerance for
+    # its two inner solves, inner "lu", "lu_ns" or "lu_pf" for diagnosis) or "direct"
+    # (MUMPS LU, for small problems).
+    chns_solver={},
     backend="auto",      # dolfin, dolfinx, or auto: a restart's checkpoint's, else dolfin
                          # (chosen when twoasis.backend is imported; see its docstring)
     telemetry=False,     # write Stats/telemetry.jsonl: per-step times, Krylov iterations and
@@ -155,7 +186,7 @@ NS_parameters.update(
     pressure_krylov_solver=dict(
         solver_type='gmres',
         preconditioner_type='hypre_amg'),  # scales better than 'petsc_amg' on large meshes;
-                                           # femtools.ksp.BOOMERAMG_3D's settings in 3D
+                                           # feluga.ksp.BOOMERAMG_3D's settings in 3D
                                            # (as any BoomerAMG has there)
 
     phase_field_krylov_solver=dict(
@@ -178,10 +209,14 @@ KRYLOV_TOLERANCES = dict(
     velocity_update_solver=dict(relative_tolerance=1e-8, maximum_iterations=200),
     # AMG converges in a few iterations; needing more means it has stalled.
     pressure_krylov_solver=dict(relative_tolerance=1e-6, maximum_iterations=100),
-    # Tight, since it sets the accuracy of the interface.
+    # Tight, since it sets the accuracy of the interface. This one and the coupled
+    # solver's are relative to the initial residual, the step's change (INITIAL_RESIDUAL
+    # in twoasis/solvers/TPfracStep/__init__.py), not to the right-hand side.
     phase_field_krylov_solver=dict(relative_tolerance=1e-8, maximum_iterations=1000),
     # Tight: it sets the accuracy of the step's velocity and pressure.
     coupled_krylov_solver=dict(relative_tolerance=1e-8, maximum_iterations=200),
+    # The coupled CH-NS step's iterative solver (chns_solver method "iterative"), likewise.
+    chns_solver=dict(relative_tolerance=1e-8, maximum_iterations=200),
 )
 
 def velocity_tentative_hook(**NS_namespace):

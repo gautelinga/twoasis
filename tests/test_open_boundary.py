@@ -37,7 +37,7 @@ def test_physical_pressure_at_the_ends(pore_bdf, pore_ipcs):
     followed every step): the last timestamp, which holds p + phi*g, is zero at
     the ends' vertices."""
     import dolfin
-    from femtools.boundaries import read
+    from feluga.boundaries import read
     for wd, _ in (pore_bdf, pore_ipcs):
         case = wd / "results" / "data" / "1" / "Timestamps"
         mesh = dolfin.Mesh()

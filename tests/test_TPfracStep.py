@@ -156,7 +156,7 @@ def test_restart_time_series(tmp_path):
     the first restart's steps. The merged series is one history, and every step
     in it refers to data that exists."""
     import h5py
-    from femtools.xdmf import grids
+    from feluga.xdmf import grids
     params = dict(BUBBLE, solver="BDF", checkpoint=10)
     restart = dict(params, save_step=1, restart_folder="results/data/1/Checkpoint")
     run_twoasis(tmp_path, T=0.03, **dict(params, save_step=5))   # saves t = 0, 0.01, 0.02, 0.03
@@ -328,3 +328,21 @@ def test_restart_keeps_this_codes_max_error_for_an_older_norm(tmp_path):
         again = pickle.load(f)
     assert again["tstep"] == 4
     assert again["max_error"] == expected and again["inner_norm"] == "L2"
+
+
+def test_restart_names_a_checkpoints_parameter_this_code_lacks(tmp_path):
+    """A parameter stored with the checkpoint that this code does not have (renamed or
+    removed since) is reported on restart, with the name it may have become."""
+    import pickle
+    run_twoasis(tmp_path, solver="BDF", T=0.005, **dict(BUBBLE, checkpoint=2))
+    ckpt = tmp_path / "results" / "data" / "1" / "Checkpoint"
+    with open(str(ckpt / "params.dat"), "rb") as f:
+        params = pickle.load(f)
+    params["chekpoint"] = 5
+    with open(str(ckpt / "params.dat"), "wb") as f:
+        pickle.dump(params, f)
+    proc = run_twoasis(tmp_path, solver="BDF", T=0.007, restart_folder=str(ckpt),
+                       **dict(BUBBLE, checkpoint=2))
+    assert "checkpoint's chekpoint is not a parameter" in proc.stdout
+    assert "did you mean checkpoint" in proc.stdout
+    assert "num_processes" not in proc.stdout.split("Restart:")[1].splitlines()[0]

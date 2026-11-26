@@ -16,9 +16,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
-# dolfin (legacy 2019.2), mpi4py and h5py come from apt, and femtools, partractools
+# dolfin (legacy 2019.2), mpi4py and h5py come from apt, and feluga, partractools
 # and meshtools (the mesh scripts) from GitHub (see README.md): install with --no-deps.
-# femtools 696f85b (a commit: the dual mesh on DOLFINx needs what came after 2026.2.4),
+# feluga 8aa0fbb (a commit: the dual mesh on DOLFINx needs what came after femtools 2026.2.4,
+# DOLFINx 0.11 the mixed-space probes and interpolation, and its Krylov solve keeping a
+# preconditioner's reuse flag after that),
 # partractools 2026.2.1 and meshtools 2026.2.0, which README.md and CI pin.
 dependencies = ["numpy", "h5py"]
 

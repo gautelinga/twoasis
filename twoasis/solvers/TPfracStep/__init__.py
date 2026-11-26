@@ -30,6 +30,22 @@ __all__ = ["assemble_first_inner_iter", "velocity_tentative_assemble",
            "phase_field_schur_solver", "phase_field_krylov_solve", "coupled_solve"]
 
 
+def check_chns_options(chns_solve, initial_guess, dt_split_max, phase_refine):
+    """ValueError for a CH-NS step option (problems/TPfracStep/__init__.py) that is
+    unknown or does not fit the others."""
+    if chns_solve not in ("split", "coupled", "auto"):
+        raise ValueError("chns_solve={!r}: 'split', 'coupled' or 'auto'".format(chns_solve))
+    if chns_solve != "split" and phase_refine:
+        raise ValueError("chns_solve={!r} has no dual mesh: phase_refine=0".format(
+            chns_solve))
+    if dt_split_max is not None and chns_solve != "auto":
+        raise ValueError("dt_split_max is for chns_solve='auto' (here {!r})".format(
+            chns_solve))
+    if initial_guess not in ("previous", "extrapolated"):
+        raise ValueError("initial_guess={!r}: 'previous' or 'extrapolated'".format(
+            initial_guess))
+
+
 def krylov_solver_parameters(name, cfg, krylov_solvers):
     """Parameters for the Krylov solver whose settings are NS_parameters[name] (`cfg`).
 
@@ -52,7 +68,7 @@ def krylov_solver_parameters(name, cfg, krylov_solvers):
 
 def krylov_solver(name, cfg, krylov_solvers, pc_options=None):
     """Krylov solver for NS_parameters[name] (`cfg`): its solver_type and
-    preconditioner_type (PETSc's names, or dolfin's: femtools.ksp), then its
+    preconditioner_type (PETSc's names, or dolfin's: feluga.ksp), then its
     petsc_options, any further PETSc options, which are set under the prefix
     '<name>_' (e.g. {"sub_pc_type": "icc"} for bjacobi). `pc_options`, when
     given, replace the preconditioner_type's options."""
@@ -97,9 +113,23 @@ def velocity_preconditioner(cfg, dt, rho, mu, mesh, velocity_degree):
     return dict(cfg, preconditioner_type=pc)
 
 
+# PETSc's convergence test against the initial residual instead of the right-hand side.
+# With the previous step's solution as the first guess, the initial residual measures the
+# step's change, so a relative tolerance bounds the solve's error relative to that change
+# whatever the size of the right-hand side: its pressure terms, large and balanced, make
+# ||b|| a poor scale while the flow is slow.
+INITIAL_RESIDUAL = {'ksp_converged_use_initial_residual_norm': True}
+
+
+def with_initial_residual(cfg):
+    """A Krylov solver's settings `cfg` with the test against the initial residual
+    (INITIAL_RESIDUAL), which cfg's petsc_options may override."""
+    return dict(cfg, petsc_options=dict(INITIAL_RESIDUAL, **(cfg.get('petsc_options') or {})))
+
+
 def for_dimension(cfg, dim):
     """A Krylov solver's settings `cfg` for a mesh of dimension `dim`: in 3D a BoomerAMG
-    takes femtools.ksp.BOOMERAMG_3D's settings, which cfg's petsc_options override."""
+    takes feluga.ksp.BOOMERAMG_3D's settings, which cfg's petsc_options override."""
     if dim == 3 and ksp.PC_NAMES.get(cfg['preconditioner_type']) == ksp.BOOMERAMG:
         cfg = dict(cfg, petsc_options=dict(ksp.BOOMERAMG_3D, **cfg.get('petsc_options', {})))
     return cfg
@@ -108,7 +138,7 @@ def for_dimension(cfg, dim):
 def krylov_get_solvers(krylov_solvers, q_, mesh, bcs, velocity_krylov_solver,
                        velocity_update_solver, pressure_krylov_solver,
                        phase_field_krylov_solver, velocity_tolerance_factor, dt, rho, mu,
-                       velocity_degree, **NS_namespace):
+                       velocity_degree, dt_adapt=None, **NS_namespace):
     """Linear solvers for the BDF and IPCS schemes, in the order tentative
     velocity, pressure, phase field, scalar. Scalars are not supported, so the
     scalar solver is None. The velocity update's solvers belong to the
@@ -122,36 +152,66 @@ def krylov_get_solvers(krylov_solvers, q_, mesh, bcs, velocity_krylov_solver,
     the change stays valid, while the early passes, which change the velocity
     most, are solved loosely."""
     dim = geometric_dimension(mesh)
-    u_cfg = for_dimension(velocity_preconditioner(velocity_krylov_solver, dt, rho, mu, mesh,
+    # With an adaptive dt bounded by dt_max, the preconditioner for dt_max (else the first dt)
+    dt_pc = max(dt, (dt_adapt or {}).get("dt_max") or dt)
+    u_cfg = for_dimension(velocity_preconditioner(velocity_krylov_solver, dt_pc, rho, mu, mesh,
                                                   velocity_degree), dim)
     if velocity_tolerance_factor:
-        u_cfg = dict(u_cfg, relative_tolerance=velocity_tolerance_factor, petsc_options=dict(
-            {'ksp_converged_use_initial_residual_norm': True}, **u_cfg.get('petsc_options', {})))
+        u_cfg = with_initial_residual(dict(u_cfg, relative_tolerance=velocity_tolerance_factor))
     u_sol = krylov_solver("velocity_krylov_solver", u_cfg, krylov_solvers)
     p_cfg = for_dimension(pressure_krylov_solver, dim)
     p_sol = krylov_solver("pressure_krylov_solver", p_cfg, krylov_solvers)
-    if phase_field_krylov_solver['preconditioner_type'] == 'schur':
-        pf_sol = phase_field_schur_solver(function_space(q_['phig']), phase_field_krylov_solver,
-                                          krylov_solvers, bcs['phig'])
-    else:
-        pf_sol = krylov_solver("phase_field_krylov_solver", phase_field_krylov_solver,
-                               krylov_solvers)
+    pf_sol = phase_field_solver(function_space(q_['phig']), phase_field_krylov_solver,
+                                krylov_solvers, bcs['phig'])
     return [u_sol, p_sol, pf_sol, None]
+
+
+def phase_field_solver(W, phase_field_krylov_solver, krylov_solvers, bcs,
+                       name="phase_field_krylov_solver"):
+    """The (phi, g) system's Krylov solver from its settings (tested against the initial
+    residual), with the PhaseFieldSchur preconditioner for preconditioner_type 'schur'.
+    `name` is its PETSc options prefix (with "_") and its name in telemetry."""
+    pf_cfg = with_initial_residual(phase_field_krylov_solver)
+    if pf_cfg['preconditioner_type'] == 'schur':
+        return phase_field_schur_solver(W, pf_cfg, krylov_solvers, bcs, name=name)
+    return krylov_solver(name, pf_cfg, krylov_solvers)
 
 
 class PhaseFieldSchur:
     """Preconditioner for the (phi, g) system [[A, B], [D, Mg]], A = alpha Mphi
     + advection, B = mobility K, D = -sigma_bar epsilon K - the potential, Mg
     the mass matrix of g: the block factorization with the Schur complement
-    S = A - B Mg^-1 D replaced by H Mphi^-1 H, H = sqrt(alpha) Mphi +
-    sqrt(c) Kphi, c = mobility sigma_bar epsilon. Without advection and the
-    potential, and with phi and g in one space, H Mphi^-1 H is spectrally
-    equivalent to S with bounds 1/2 and 1, whatever h and dt (Boyanova,
-    Do-Quang & Neytcheva, CMAM 12, 2012), so the iteration count does not grow
-    as the mesh is refined. At phi's Dirichlet dofs, where the system's rows are
-    the identity, H and Mphi are too. phase_field_krylov_solve gives alpha and
-    c; H is constant while they are, so it and its solver are only set up again
-    when they change, and B and Mg are taken from the system once."""
+    S = A - B Mg^-1 D replaced by a product of two shifted stiffness matrices.
+
+    In the bulk, where the potential's second derivative f'' is F2_BULK, S is
+    alpha M + c K M^-1 K + s K, with c = mobility sigma_bar epsilon and
+    s = mobility sigma_bar F2_BULK / epsilon. Where alpha <= s^2/(4c) (large steps) it
+    factorises exactly as H1 M^-1 H2, H_i = sqrt(c) K + c_i M, c_1 c_2 = alpha,
+    c_1 + c_2 = s/sqrt(c): two positive shifts, the roots of a quadratic. Otherwise
+    H1 = H2 = sqrt(alpha) M + sqrt(c) K, whose product is within a factor 2 of S
+    there (Boyanova, Do-Quang & Neytcheva, CMAM 12, 2012; s = 0 is their setting).
+    The potential's bulk value in the preconditioner is as in Brenner, Diegel & Sung
+    (J. Sci. Comput. 77, 2018). Both forms match the bulk's modes up to that factor,
+    whatever h and dt; the interface, where f'' < F2_BULK, is not in them.
+
+    That is the "bulk" approximation. The "system" one takes the interface too: with
+    G = -D (stiffness, the potential's linearisation f''(phi^n) with its sign, the wall
+    terms), S = alpha M + B Mg^-1 G, and S ~ (B + beta M) Mg^-1 (G + delta M) = S +
+    delta B + beta G, beta delta = alpha, with beta = sqrt(alpha c)/(sigma_bar epsilon)
+    and delta = sqrt(alpha c)/mobility, which balance the two error terms' stiffness
+    parts. Both factors are symmetric, made from the system's own blocks (any variable
+    mobility included), and rebuilt at every setup; it needs phi and g of one degree
+    (their dofs node-aligned), and is used whenever they are, else "bulk".
+
+    At phi's Dirichlet dofs, where the system's rows are the identity, H and Mphi
+    are too. schur_coefficients sets alpha, c and s (and the mobility and sigma_bar
+    epsilon, for "system"); for "bulk" the H are rebuilt (and their AMG set up) only
+    when one of these changes by more than REBUILD_RTOL, and solved by one solver when
+    they are the same. Mg is taken from the system once, B and D at every setup (B
+    changes with a variable mobility)."""
+
+    F2_BULK = 2.0
+    REBUILD_RTOL = 1e-2
 
     def __init__(self, W, prefix, bcs):
         from petsc4py import PETSc
@@ -163,6 +223,14 @@ class PhaseFieldSchur:
         phi_dofs = owned_dofs(W, 0)
         self.is_phi = PETSc.IS().createGeneral(phi_dofs, comm=PETSc.COMM_WORLD)
         self.is_g = PETSc.IS().createGeneral(owned_dofs(W, 1), comm=PETSc.COMM_WORLD)
+        approximation = "system"
+        if (element_degree(W.sub(0)) != element_degree(W.sub(1))
+                or PETSc.COMM_WORLD.tompi4py().allreduce(int(self.is_phi.getLocalSize()
+                                                != self.is_g.getLocalSize())) > 0):
+            approximation = "bulk"
+            info_blue("PhaseFieldSchur: phi and g differ in degree or dof layout; "
+                      "approximation 'bulk' instead of 'system'")
+        self.approximation = approximation
         phi, _ = TrialFunctions(W)
         xi, _ = TestFunctions(W)
         self.Mphi = block(phi * xi * dx)
@@ -174,8 +242,12 @@ class PhaseFieldSchur:
                           PETSc.IntType)
         self.Mphi.zeroRowsColumns(self.fixed, diag=1.)
         self.kH = self.inner_ksp(prefix + "H_")
+        self.kH2 = self.inner_ksp(prefix + "H_")
+        self.second = self.kH2      # the solver of H2: kH when H2 is H1
         self.kM = self.inner_ksp(prefix + "M_")
         self.alpha = self.c = self.H_coefficients = self.B = None
+        self.s = 0.0
+        self.mobility = self.k = None
 
     def inner(self, k):
         """Count inner solve k's iterations (telemetry's role phase_field_H), and warn
@@ -202,7 +274,6 @@ class PhaseFieldSchur:
         from petsc4py import PETSc
         A = pc.getOperators()[0]
         if self.B is None:
-            self.B = A.createSubMatrix(self.is_phi, self.is_g)
             Mg = A.createSubMatrix(self.is_g, self.is_g)
             self.kM.setOperators(Mg)
             self.D = None
@@ -211,16 +282,55 @@ class PhaseFieldSchur:
             self.g = Mg.createVecs() + (Mg.createVecLeft(),)
             self.to_phi = PETSc.Scatter().create(x, self.is_phi, self.phi[0], None)
             self.to_g = PETSc.Scatter().create(x, self.is_g, self.g[0], None)
+        self.B = A.createSubMatrix(self.is_phi, self.is_g, submat=self.B)
         self.D = A.createSubMatrix(self.is_g, self.is_phi, submat=self.D)
-        if (self.alpha, self.c) != self.H_coefficients:
-            H = self.Mphi.copy()
-            H.scale(math.sqrt(self.alpha))
+        if self.approximation == "system":
+            self.system_H()
+            return
+        new = (self.alpha, self.c, self.s)
+        old = self.H_coefficients
+        if old is None or not all(math.isclose(a, b, rel_tol=self.REBUILD_RTOL)
+                                  for a, b in zip(new, old)):
             Kphi = self.block(self.Kphi_form)
-            H.axpy(math.sqrt(self.c), Kphi)
+            Hs = []
+            for shift in self.shifts():
+                H = self.Mphi.copy()
+                H.scale(shift)
+                H.axpy(math.sqrt(self.c), Kphi)
+                H.zeroRowsColumns(self.fixed, diag=1.)
+                Hs.append(H)
             Kphi.destroy()
+            self.kH.setOperators(Hs[0])
+            if len(Hs) > 1:
+                self.kH2.setOperators(Hs[1])
+            self.second = self.kH2 if len(Hs) > 1 else self.kH
+            self.H_coefficients = new
+
+    def system_H(self):
+        """H1 = B + beta Mphi and H2 = G + delta Mphi, G = -D, from this setup's B, D."""
+        from petsc4py import PETSc
+        r = math.sqrt(self.alpha * self.c)
+        beta, delta = r / self.k, r / self.mobility
+        same = PETSc.Mat.Structure.SUBSET_NONZERO_PATTERN
+        H1 = self.B.copy()
+        H1.axpy(beta, self.Mphi, same)
+        H2 = self.D.copy()
+        H2.scale(-1.0)
+        H2.axpy(delta, self.Mphi, same)
+        for H in (H1, H2):
             H.zeroRowsColumns(self.fixed, diag=1.)
-            self.kH.setOperators(H)
-            self.H_coefficients = self.alpha, self.c
+        self.kH.setOperators(H1)
+        self.kH2.setOperators(H2)
+        self.second = self.kH2
+
+    def shifts(self):
+        """The mass shifts of H1 and H2 (one when they are the same)."""
+        a, c, s = self.alpha, self.c, self.s
+        disc = s * s / (4 * c) - a
+        if disc < 0:
+            return [math.sqrt(a)]
+        c1 = s / (2 * math.sqrt(c)) + math.sqrt(disc)
+        return [c1, a / c1]
 
     def apply(self, pc, r, z):
         from petsc4py import PETSc
@@ -232,11 +342,11 @@ class PhaseFieldSchur:
         self.kM.solve(rg, t0)
         self.B.mult(t0, s1)
         rphi.axpy(-1., s1)                  # r_phi - B Mg^-1 r_g
-        self.kH.solve(rphi, s1)             # S^-1 ~ H^-1 Mphi H^-1
+        self.kH.solve(rphi, s1)             # S^-1 ~ H2^-1 Mphi H1^-1
         self.inner(self.kH)
         self.Mphi.mult(s1, s2)
-        self.kH.solve(s2, s1)               # z_phi
-        self.inner(self.kH)
+        self.second.solve(s2, s1)           # z_phi
+        self.inner(self.second)
         self.D.mult(s1, t0)
         rg.axpy(-1., t0)                    # r_g - D z_phi
         self.kM.solve(rg, t1)               # z_g
@@ -252,43 +362,85 @@ H_BOOMERAMG_2D = {"pc_hypre_boomeramg_coarsen_type": "HMIS",
                   "pc_hypre_boomeramg_strong_threshold": 0.25}
 
 
-def phase_field_schur_solver(W, phase_field_krylov_solver, krylov_solvers, bcs):
-    """Krylov solver for the (phi, g) system with the PhaseFieldSchur
-    preconditioner (bcs: the system's Dirichlet conditions). Its inner solvers
-    take PETSc options under the prefixes H_ and M_ in petsc_options. H, a mass
-    plus a stiffness matrix, is solved with one BoomerAMG cycle, whose cost does not
-    grow as the mesh is refined, while a Krylov solve's iterations would: with HMIS
-    coarsening and ext+i interpolation, which depend less on the order of the dofs
-    than the default (H_BOOMERAMG_2D; femtools.ksp.BOOMERAMG_3D's settings in 3D,
-    whose aggressive coarsening makes the outer iterations grow in 2D); Mg, a mass
-    matrix, with four Chebyshev-Jacobi iterations. An inner Krylov solve (H_ksp_type
-    cg, say) is not a fixed linear map, so the outer method must then be a flexible
-    one (fgmres or gcr)."""
-    H = {"H_ksp_type": "preonly", "H_pc_type": "hypre", "H_pc_hypre_type": "boomeramg"}
+def phase_field_schur_solver(W, phase_field_krylov_solver, krylov_solvers, bcs,
+                             name="phase_field_krylov_solver"):
+    """Krylov solver for the (phi, g) system with the PhaseFieldSchur preconditioner
+    (bcs: the system's Dirichlet conditions). Its inner solvers take PETSc options under
+    the prefixes H_ and M_ in petsc_options. H, a mass plus a stiffness matrix, is
+    solved by GMRES to a relative 1e-2, preconditioned by one BoomerAMG cycle, whose
+    cost does not grow as the mesh is refined. GMRES adds cycles where one falls short:
+    at large dt, where H2's shift is small and the potential's negative f'' in the
+    interface can make it indefinite, a single cycle lets the outer iterations grow. The
+    cycle uses HMIS coarsening and ext+i interpolation, which depend less on the order
+    of the dofs than the default (H_BOOMERAMG_2D; feluga.ksp.BOOMERAMG_3D's settings
+    in 3D, whose aggressive coarsening makes the outer iterations grow in 2D). Mg, a
+    mass matrix, is solved with four Chebyshev-Jacobi iterations. An inner Krylov
+    solve is not a fixed linear map, so the outer method must be a flexible one (fgmres,
+    the default, or gcr), or H_ksp_type "preonly" for one cycle."""
+    H = {"H_ksp_type": "gmres", "H_ksp_rtol": 1e-2, "H_ksp_max_it": 50, "H_pc_type": "hypre",
+         "H_pc_hypre_type": "boomeramg"}
     three_d = geometric_dimension(space_mesh(W)) == 3
     H.update({"H_" + k: v for k, v in (ksp.BOOMERAMG_3D if three_d else H_BOOMERAMG_2D).items()})
     pc_options = dict(H, pc_type="python", M_ksp_type="chebyshev", M_pc_type="jacobi",
                       M_ksp_max_it=4, M_ksp_norm_type="none",
                       M_ksp_chebyshev_esteig="0,0.1,0,1.1")
-    name = "phase_field_krylov_solver"
     pf_sol = krylov_solver(name, phase_field_krylov_solver, krylov_solvers, pc_options)
     schur = PhaseFieldSchur(W, name + "_", bcs)
     if schur.kH.getType() != "preonly" and pf_sol.ksp().getType() not in ("fgmres", "gcr"):
         raise ValueError("{}: the 'schur' preconditioner's inner {} solve needs a flexible "
-                         "outer method (fgmres or gcr), not {}".format(
+                         "outer method (fgmres or gcr), not {}, or H_ksp_type "
+                         "preonly".format(
                              name, schur.kH.getType(), pf_sol.ksp().getType()))
     pf_sol.ksp().getPC().setPythonContext(schur)
     return pf_sol
 
 
-def phase_field_krylov_solve(pf_sol, Apf, x, b, alpha, M, sigma_bar, epsilon):
-    """Solve the (phi, g) system, giving a PhaseFieldSchur preconditioner the
-    time-derivative coefficient alpha and the coefficient of its stiffness
-    term, mobility*sigma_bar*epsilon."""
-    pc = pf_sol.ksp().getPC()
-    if pc.getType() == "python":
-        ctx = pc.getPythonContext()
-        ctx.alpha, ctx.c = float(alpha), float(M) * float(sigma_bar) * float(epsilon)
+def schur_coefficients(ctx, alpha, mobility, sigma_bar, epsilon):
+    """Give a PhaseFieldSchur `ctx` the time-derivative coefficient alpha and, from
+    the mobility, the coefficients c and s of its stiffness and potential terms."""
+    ctx.alpha = float(alpha)
+    ctx.mobility = float(mobility)
+    ctx.k = float(sigma_bar) * float(epsilon)
+    ctx.c = float(mobility) * float(sigma_bar) * float(epsilon)
+    ctx.s = float(mobility) * float(sigma_bar) * ctx.F2_BULK / float(epsilon)
+
+
+#: alpha0 at each phase-field KSP's last preconditioner build, by its PETSc handle (a
+#: solver's ksp() gives a new petsc4py object each call)
+_PF_BUILT = {}
+
+
+def forget_phase_field_preconditioner(ksp):
+    """Have the phase-field KSP's preconditioner rebuilt on its next solve: its operator
+    changed in a way alpha0 does not show (chns_solve="auto" switching steps)."""
+    _PF_BUILT.pop(ksp.handle, None)
+
+
+def reuse_phase_field_preconditioner(ksp, reuse, alpha):
+    """Keep the phase-field KSP's preconditioner from its last build when `reuse` and
+    alpha0 is within 10 % of the alpha0 it was built with; else have it rebuilt (and
+    remember alpha0). Returns whether it is kept."""
+    built = _PF_BUILT.get(ksp.handle)
+    keep = bool(reuse and built is not None and abs(alpha - built) <= 0.1 * abs(built))
+    ksp.getPC().setReusePreconditioner(keep)
+    if not keep:
+        _PF_BUILT[ksp.handle] = float(alpha)
+    return keep
+
+
+def prepare_phase_field_preconditioner(ksp, reuse, alpha, M, sigma_bar, epsilon):
+    """Keep the phase-field KSP's preconditioner or have it rebuilt
+    (reuse_phase_field_preconditioner), and give a PhaseFieldSchur that is rebuilt its
+    coefficients (schur_coefficients)."""
+    keep = reuse_phase_field_preconditioner(ksp, reuse, alpha)
+    pc = ksp.getPC()
+    if pc.getType() == "python" and not keep:
+        schur_coefficients(pc.getPythonContext(), alpha, M, sigma_bar, epsilon)
+
+
+def phase_field_krylov_solve(pf_sol, Apf, x, b, alpha, M, sigma_bar, epsilon, reuse=False):
+    """Solve the (phi, g) system (prepare_phase_field_preconditioner first)."""
+    prepare_phase_field_preconditioner(pf_sol.ksp(), reuse, alpha, M, sigma_bar, epsilon)
     pf_sol.solve(Apf, x, b)
 
 
@@ -492,12 +644,13 @@ def phase_field_assemble(**NS_namespace):
 
 
 def phase_field_solve(pf_sol, Apf, Apf_alpha, M, sigma_bar, epsilon, x_, b, bcs,
-                      **NS_namespace):
+                      tstep=1, phase_field_preconditioner_steps=1, **NS_namespace):
     """Solve the (phi, g) system for the phase field and chemical potential."""
     t1 = Timer("Phase field solve")
     [apply_bc(bc, Apf, b['phig']) for bc in bcs['phig']]
     phase_field_krylov_solve(pf_sol, Apf, x_['phig'], b['phig'], Apf_alpha[0], M, sigma_bar,
-                             epsilon)
+                             epsilon,
+                             reuse=not rebuild_step(tstep, phase_field_preconditioner_steps))
     t1.stop()
 
 
@@ -510,7 +663,7 @@ def wall_potential_linear_derivative(phi, phi0):
 
 class PhaseFieldOnVelocitySpace:
     """The phase field phi, taken from the mixed (phi, g) function, as a Function
-    c on the velocity space V, by femtools.fast_interpolation: a transfer matrix
+    c on the velocity space V, by feluga.fast_interpolation: a transfer matrix
     built once, then a sparse matrix-vector product per update. On the dual mesh,
     phi at V's nodes, which are the phase field's mesh's too (DualMesh.inject)."""
 
@@ -637,7 +790,7 @@ def convection_form(w, u, v, skew, coefficient=1.0):
 
 
 def phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_bar,
-                       epsilon, angles, ds):
+                       epsilon, angles, ds, advection=True):
     """Forms and matrices of the (phi, g) system of the Cahn-Hilliard equation.
 
     The double-well potential is linearized about phi_1 (tangent line), with an
@@ -649,7 +802,11 @@ def phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_ba
     variable time step) does not make another form to compile; Apf_alpha holds the
     alpha0 last set. Lpft is the right-hand side of the
     linearized potential. Mpf is phi's mass matrix for products (its nonzero entries
-    only: the mixed space's pattern holds four blocks) and its form.
+    only: the mixed space's pattern holds four blocks) and its form. Without
+    `advection` the form has no advection term (the coupled CH-NS step, monolithic.py,
+    has it in a block of its own). a_pf_forms holds both, "split" (with advection) and
+    "coupled" (without), with the same alpha0, for steps that switch between the two
+    (chns_solve="auto", switch.py).
     """
     fprime = potential_linear_derivative(phi, phi_1)
     fwprime = wall_potential_linear_derivative(phi, phi_1)
@@ -666,8 +823,10 @@ def phase_field_system(phi, xi, g, eta, phi_1, u_adv, normal, M, sigma, sigma_ba
               - sigma_bar * epsilon * inner(grad(phi), grad(eta)) * dx)
     alpha0 = constant_on(0.0, space_mesh(
         ufl.algorithms.extract_arguments(phi)[0].ufl_function_space()))
+    forms = {"split": (a_pf + apft + a_rest + alpha0 * mass, alpha0),
+             "coupled": (apft + a_rest + alpha0 * mass, alpha0)}
     return dict(Apf=Mphi, Mpf=(nonzero_part(Mphi), mass), Lpft=Lpft,
-                a_pf_full=(a_pf + apft + a_rest + alpha0 * mass, alpha0),
+                a_pf_full=forms["split" if advection else "coupled"], a_pf_forms=forms,
                 Apf_alpha=np.full(1, np.nan))
 
 

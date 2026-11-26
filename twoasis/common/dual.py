@@ -1,9 +1,9 @@
 """The dual mesh: the phase field on a uniform refinement of the flow mesh.
 
 With `phase_refine=k` (k > 0) the Cahn-Hilliard system is solved on the flow mesh
-refined uniformly k times (femtools' periodic Plaza: the same cells on dolfin and
+refined uniformly k times (feluga' periodic Plaza: the same cells on dolfin and
 DOLFINx, on any number of ranks), the Navier-Stokes equations on the flow mesh. The two
-meet through sparse matrices built once (femtools.nested_transfer):
+meet through sparse matrices built once (feluga.nested_transfer):
 
 - the velocity onto the fine mesh, exactly (nested Lagrange spaces): the phase field's
   advection, and the statistics that weigh the velocity by the phase field;
@@ -25,7 +25,7 @@ Function). A flow-mesh test or trial function cannot be moved so (it would chang
 tensor's dofs): PhiGradRHS assembles the capillary force on the fine mesh itself.
 """
 
-from femtools.lru import LRU
+from feluga.lru import LRU
 from twoasis.backend import (
     as_backend_type, BoundaryMarkers, Constant, element_degree, Function, FunctionSpace,
     function_space, geometric_dimension, is_lagrange, mesh_id, space_id as _space_key,
@@ -61,7 +61,7 @@ class DualMesh:
     of it, periodic across the faces of `constrained_domain` (a box, or None)."""
 
     def __init__(self, mesh, passes, constrained_domain=None):
-        from femtools.nested_transfer import Nested, refine_uniformly
+        from feluga.nested_transfer import Nested, refine_uniformly
         d = geometric_dimension(mesh)
         box = constrained_domain
         if box is not None and not hasattr(box, "periodic"):
@@ -91,7 +91,7 @@ class DualMesh:
 
     def markers(self, coarse):
         """Facet markers on the fine mesh: each fine facet in a facet of its ancestor
-        cell has that facet's marker, the others 0 (femtools.nested_transfer
+        cell has that facet's marker, the others 0 (feluga.nested_transfer
         .Nested.facet_values). Registered on `coarse`, so that a DirichletBC given
         `coarse` for a space on the fine mesh takes these."""
         fine = BoundaryMarkers(self.fine)
@@ -205,7 +205,7 @@ class DualMesh:
 
     def write_function(self, path, f, name, mode="a"):
         """Function `f` on the fine mesh as dataset `name` of `path`, a row per flow-mesh
-        cell (femtools.nested_transfer.Lattice): read back on any number of ranks and
+        cell (feluga.nested_transfer.Lattice): read back on any number of ranks and
         either backend, the fine mesh being made anew. Collective."""
         self._lattice(function_space(f)).write(path, name, _petsc(f.vector()), mode=mode,
                                                attrs={"layout": "dual-lattice"})

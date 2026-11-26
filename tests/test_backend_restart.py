@@ -1,7 +1,7 @@
 """Checkpoints across the backends: a checkpoint written on one backend (on one process)
 restarts on the other (on three), with BDF2 from the first step, and continues as an
 uninterrupted run on the other backend does. Both write dolfin's HDF5 layout
-(femtools.dolfin_layout, femtools.dolfinx.checkpoint)."""
+(feluga.dolfin_layout, feluga.dolfinx.checkpoint)."""
 import importlib.util
 
 import pytest

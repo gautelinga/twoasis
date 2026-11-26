@@ -10,7 +10,7 @@ import pickle
 import time
 import glob
 
-from femtools.swap import new_folder, recover, swap_in
+from feluga.swap import new_folder, recover, swap_in
 from twoasis.common import dual
 from twoasis.backend import (
     Function, function_space, MPI, space_id, TimeSeriesFile, write_dof_tables,
@@ -149,9 +149,9 @@ def save_checkpoint_solution_h5(tstep, q_, q_1, newfolder, NS_parameters):
     to Checkpoint/.
 
     The files are written to Checkpoint.new/, which then replaces Checkpoint/ by
-    renaming (femtools.swap), so a run stopped while writing leaves the last
+    renaming (feluga.swap), so a run stopped while writing leaves the last
     complete checkpoint in place. Each field is stored as dolfin's
-    HDF5File.write(Function) stores it (femtools.dolfin_layout), with its cells'
+    HDF5File.write(Function) stores it (feluga.dolfin_layout), with its cells'
     global ids and dofs, so that a restart reads it on any number of processes. Those dof tables are fixed for a
     run, so each space's are written once, at the run's first checkpoint
     (dofs_<field>.h5, for the first field on the space), hard-linked into every
@@ -217,7 +217,7 @@ def _restart_reads_previous(NS_parameters):
 
 def recover_checkpoint(checkpointfolder):
     """Put back the last complete checkpoint if a run stopped between the two
-    renames of save_checkpoint_solution_h5 (femtools.swap.recover)."""
+    renames of save_checkpoint_solution_h5 (feluga.swap.recover)."""
     recover(checkpointfolder)
 
 
@@ -409,8 +409,8 @@ def series_files(folder, name):
 
 def merge_visualization_files(newfolder, **namespace):
     """Merge the time series of each field written by a run and the restarts that
-    continued it into the first run's file (femtools.xdmf.merge_series)."""
-    from femtools.xdmf import merge_series
+    continued it into the first run's file (feluga.xdmf.merge_series)."""
+    from feluga.xdmf import merge_series
     if MPI.rank(MPI.comm_world) == 0:
         timefolder = path.join(newfolder, 'Timeseries')
         for name in ["u", "p", "phi", "g"]:
@@ -426,13 +426,13 @@ def load_timeseries(folder, q_, VV, time=None):
     other fields must have a step at the same time. Returns the time read.
 
     The steps of a field are those of the run's files and of the restarts that
-    continued it (femtools.xdmf.continued). Each field is read by femtools
+    continued it (feluga.xdmf.continued). Each field is read by feluga
     (twoasis.backend.read_series_step: XDMFFile2.read_checkpoint on dolfin): from its
     nodal values, P1 or P2, on any number of processes, onto the field's space of any
     degree, whichever backend wrote it. A series whose params.dat marks
     its pressure as the physical one (timeseries_pressure) gives p = P - phi*g;
     a series without that record holds p."""
-    from femtools.xdmf import continued, grids
+    from feluga.xdmf import continued, grids
     from twoasis.backend import (
         geometric_dimension, mesh_comm, read_series_step, read_vector_series_step,
         space_mesh)

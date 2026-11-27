@@ -320,7 +320,7 @@ def test_tube3d_plug_position_and_wall_energy(tmp_path):
 def test_channel2d(tmp_path, mesh_kind, theta):
     """Channel2D runs on its structured mesh and on meshes/channel_mesh.py's, with and
     without a contact angle: its statistics end with the plug's position and wetted length,
-    and with the walls' energy only when there is a contact angle."""
+    the flow in its frame, and the walls' energy only when there is a contact angle."""
     params = dict(mesh_kind=mesh_kind, res=0.1, L=2, width=1, theta=theta)
     if mesh_kind == "unstructured":
         pytest.importorskip("gmsh")
@@ -332,5 +332,44 @@ def test_channel2d(tmp_path, mesh_kind, theta):
                        cwd=str(meshes), check=True, capture_output=True, timeout=300)
     run_twoasis(tmp_path, problem="Channel2D", dt=0.1, T=0.2, **dict(QUIET, **params))
     td = load_tdata(tmp_path)
-    assert td.shape[1] == 2 + 6 + 3 + (0 if theta is None else 1), td.shape
+    assert td.shape[1] == 2 + 6 + 3 + 4 + (0 if theta is None else 1), td.shape
     assert np.isfinite(td).all()
+
+
+def test_comoving_stats():
+    """comoving_stats: a uniform flow U0 is U_p = U0 with no flow in the plug's frame; for a
+    nonuniform flow U_p, u_band and u_co equal the integrals assembled directly and u_max the
+    largest nodal size."""
+    from twoasis.backend import (assemble, constant_on, dx, Expression, FiniteElement, Function,
+                                 FunctionSpace, interpolate, MixedElement)
+    from twoasis.common.utilities import compute_ind, set_subfunction, subfunction
+    from twoasis.problems.TPfracStep.shared import comoving_stats, rectangle_mesh
+    mesh = rectangle_mesh(2, 1, 0.1, centred=True)
+    el = FiniteElement("CG", mesh.ufl_cell(), 1)
+    q_ = {"phig": Function(FunctionSpace(mesh, MixedElement([el, el])))}
+    set_subfunction(q_["phig"], 0, Expression("tanh((std::abs(x[0]) - 0.5)/0.1)", degree=2))
+    phi_ = subfunction(q_["phig"], 0)
+    V = FunctionSpace(mesh, "CG", 2)
+    dX = dx(domain=mesh)
+    volume = assemble(constant_on(1., mesh) * dX)
+
+    u_ = [interpolate(Expression("0.3", degree=0), V), interpolate(Expression("0.0", degree=0), V)]
+    q_.update(u0=u_[0], u1=u_[1])
+    U_p, u_band, u_co, u_max = comoving_stats(q_, u_, phi_, volume, mesh)
+    assert U_p == pytest.approx(0.3, rel=1e-12)
+    assert u_band < 1e-7 and u_co < 1e-7 and u_max < 1e-7
+
+    u_ = [interpolate(Expression("0.3 + x[1] + 0.2*x[0]*x[0]", degree=2), V),
+          interpolate(Expression("x[0]*x[1]", degree=2), V)]
+    q_.update(u0=u_[0], u1=u_[1])
+    U_p, u_band, u_co, u_max = comoving_stats(q_, u_, phi_, volume, mesh)
+    ind_ = compute_ind(q_, -1)
+    assert U_p == pytest.approx(assemble(ind_ * u_[0] * dX) / assemble(ind_ * dX), rel=1e-12)
+    U = constant_on(U_p, mesh)
+    d2 = (u_[0] - U)**2 + u_[1]**2
+    band = 1 - phi_**2
+    assert u_band == pytest.approx(np.sqrt(assemble(band * d2 * dX) / assemble(band * dX)),
+                                   rel=1e-10)
+    assert u_co == pytest.approx(np.sqrt(assemble(d2 * dX) / volume), rel=1e-10)
+    nodal = np.sqrt((u_[0].vector().get_local() - U_p)**2 + u_[1].vector().get_local()**2)
+    assert u_max == pytest.approx(nodal.max(), rel=1e-12)

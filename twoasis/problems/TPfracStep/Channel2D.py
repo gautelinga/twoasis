@@ -2,9 +2,10 @@
 F0 along it: Tube3D's case in 2D, for how the discretisation moves the plug (its walls,
 y = +-width/2, are straight: the mesh holds them exactly, where Tube3D's circle is faceted).
 mesh_kind "unstructured" reads a gmsh mesh
-(meshes/channel_mesh.py), "structured" builds a rectangle mesh that repeats exactly every cell
-along x. The plug's caps are circular arcs of radius Rb, their apexes H from its centre (Rb = 1
-with width 1: the static menisci of a 60 degree contact angle; a large Rb: flat ones)."""
+(meshes/channel_mesh.py; mesh_seed picks one of its meshes), "structured" builds a rectangle
+mesh that repeats exactly every cell along x. The plug's caps are circular arcs of radius Rb,
+their apexes H from its centre (Rb = 1 with width 1: the static menisci of a 60 degree contact
+angle; a large Rb: flat ones)."""
 __author__ = "Gaute Linga <gaute.linga@mn.uio.no>"
 __date__ = "2026-11-25"
 __copyright__ = ("Copyright (C) 2026 " + __author__ + "; based on Oasis, "
@@ -18,8 +19,8 @@ from twoasis.backend import (
 from twoasis.common.utilities import compute_ind, set_subfunction
 from twoasis.problems import info_red
 from twoasis.problems.TPfracStep.shared import (
-    load_mesh, PeriodicBox, rectangle_mesh, standard_stats, start_timestamps, wall_energy,
-    write_tdata)
+    comoving_stats, load_mesh, PeriodicBox, rectangle_mesh, standard_stats, start_timestamps,
+    wall_energy, write_tdata)
 
 
 class Walls(SubDomain):
@@ -32,24 +33,25 @@ class Walls(SubDomain):
         return on_boundary and abs(x[1]) > self.width / 2 - self.tol
 
 
-def meshfile_name(L, width, res):
+def meshfile_name(L, width, res, seed=0):
     """The mesh file meshes/channel_mesh.py writes for these sizes (as floats, so L=4 and
-    L=4.0 name the same file)."""
-    return "meshes/channel_L{}_W{}_res{}.h5".format(float(L), float(width), float(res))
+    L=4.0 name the same file) and seed (its -seed, named only when not 0)."""
+    return "meshes/channel_L{}_W{}_res{}{}.h5".format(
+        float(L), float(width), float(res), "_seed{}".format(int(seed)) if seed else "")
 
 
-def mesh(L, width, res, mesh_kind, **params):
+def mesh(L, width, res, mesh_kind, mesh_seed=0, **params):
     if mesh_kind == "structured":
         return rectangle_mesh(L, width, res, centred=True)
     if mesh_kind == "unstructured":
-        return load_mesh(meshfile_name(L, width, res), periodic=(True, False))
+        return load_mesh(meshfile_name(L, width, res, mesh_seed), periodic=(True, False))
     raise ValueError("mesh_kind {!r}: 'structured' or 'unstructured'".format(mesh_kind))
 
 
 def problem_parameters(NS_parameters, **NS_namespace):
     NS_parameters.update(
         T=1000.0,
-        L=4.0, width=1.0, res=0.04, mesh_kind="unstructured",
+        L=4.0, width=1.0, res=0.04, mesh_kind="unstructured", mesh_seed=0,
         H=1.25, Rb=1.0,              # the plug: cap apexes H from its centre, caps of radius Rb
         plug_shift=0.0,              # the plug's centre: this far from the channel's middle
         dt=0.5,
@@ -118,19 +120,20 @@ def plug_position(q_, mesh, ds, x0, x1):
 def pre_solve_hook(**NS_namespace):
     return start_timestamps(
         ["F0", "g0", "mu", "rho", "sigma", "M", "theta", "epsilon", "dt", "res", "mesh_kind",
-         "H", "Rb", "plug_shift"], **NS_namespace)
+         "mesh_seed", "H", "Rb", "plug_shift"], **NS_namespace)
 
 
 def temporal_hook(q_, tstep, t, u_, phi_, rho_, sigma, epsilon, volume, statsfolder,
                   stat_interval, mesh, ds, x0, x1, angles, **NS_namespace):
     """Write to Stats/tdata.dat: tstep, t, u0m, u1m, phim, the energies per area (kinetic,
-    interface gradient and double-well parts), the plug's position (x_c, x_w, L_w) and the
-    walls' energy per area (E_wall: wall_energy of the contact angles the solver applies, none
-    without one)."""
+    interface gradient and double-well parts), the plug's position (x_c, x_w, L_w), the flow in
+    the plug's frame (U_p, u_band, u_co, u_max: comoving_stats) and the walls' energy per area
+    (E_wall: wall_energy of the contact angles the solver applies, none without one)."""
     info_red("tstep = {}".format(tstep))
     if tstep % stat_interval == 0:
         write_tdata(statsfolder, tstep, t,
                     standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh)
                     + plug_position(q_, mesh, ds, x0, x1)
+                    + comoving_stats(q_, u_, phi_, volume, mesh)
                     + ([wall_energy(phi_, sigma, angles, ds) / volume] if angles else []))
 

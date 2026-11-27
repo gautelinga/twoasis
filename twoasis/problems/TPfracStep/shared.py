@@ -137,6 +137,29 @@ def standard_stats(q_, u_, phi_, rho_, sigma, epsilon, volume, mesh):
     return um + [phim, E_kin, E_int, E_pot]
 
 
+def comoving_stats(q_, u_, phi_, volume, mesh, axis=0):
+    """The flow in the frame moving with the phase phi = -1 along `axis`: its velocity U_p,
+    the mean of u[axis] weighted by its smoothed indicator (compute_ind); u_band, the rms of
+    u - U_p e_axis weighted by 1 - phi^2 (the interfaces); u_co, its rms over the domain; and
+    u_max, its largest size at the velocity's nodes. Returns [U_p, u_band, u_co, u_max]. The
+    squares are assembled expanded in U_p, so the forms do not change with it; round-off then
+    bounds the rms values below at about 1e-8 |U_p|. All processes must call it (it
+    assembles)."""
+    dX = dx(domain=mesh)
+    dim = geometric_dimension(mesh)
+    ind_ = compute_ind(q_, -1)
+    U_p = assemble(ind_ * u_[axis] * dX) / assemble(ind_ * dX)
+
+    def rms(weight, total):
+        uu, ua = (assemble(weight(f) * dX) for f in (sum(u_[i]**2 for i in range(dim)), u_[axis]))
+        return np.sqrt(max(0., uu - 2 * U_p * ua + U_p**2 * total) / total)
+    band = 1 - phi_**2
+    speed2 = sum((q_['u{}'.format(i)].vector().get_local() - (U_p if i == axis else 0.))**2
+                 for i in range(dim))
+    u_max = np.sqrt(MPI.max(MPI.comm_world, speed2.max() if speed2.size else 0.))
+    return [U_p, rms(lambda f: band * f, assemble(band * dX)), rms(lambda f: f, volume), u_max]
+
+
 def wall_energy(phi_, sigma, angles, ds):
     """The walls' contact-angle energy, the sum over (theta, marker) in `angles` (the
     contact_angles the solver applies) of -sigma*cos(theta) * int (3*phi - phi^3)/4 ds(marker):
